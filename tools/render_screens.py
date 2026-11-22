@@ -56,7 +56,7 @@ class Fleet:
 
 def main():
     OUT.mkdir(exist_ok=True)
-    for name, t in (("boot-1", 0.25), ("boot-2", 0.5), ("boot-3", 1.0)):
+    for name, t in (("boot-1", 0.2), ("boot-2", 0.45), ("boot-3", 0.62), ("boot-4", 1.0)):
         ui.splash_frame(t).resize((640, 340), 0).save(OUT / (name + ".png"))
     cfg = dict(config.DEFAULTS, ble=False)
     root = tempfile.mkdtemp()
