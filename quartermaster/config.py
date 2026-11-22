@@ -28,8 +28,6 @@ SETTINGS = [
     ("gps_source", "GPS source", [("auto", "Auto"), ("gpsd", "gpsd"), ("/dev/ttyUSB0", "USB (ttyUSB0)"),
                                   ("/dev/ttyACM0", "USB (ttyACM0)"), ("/dev/ttyS0", "Cap / Grove"), ("off", "Off")],
      "Auto finds a USB, Cap LoRa or Grove GPS by itself."),
-    ("grove_power", "Grove port power", [(False, "Leave"), (True, "On while running")],
-     "Turn on 5 V for a Grove GPS unit."),
     ("live_list", "Live list shows", [("all", "Wi-Fi + BLE"), ("wifi", "Wi-Fi"), ("ble", "Bluetooth")],
      "What scrolls on the wardrive screen."),
     ("auto_start", "Start wardrive on launch", [(False, "No"), (True, "Yes")], "Skip the menu and start scanning."),
