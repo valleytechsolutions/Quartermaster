@@ -115,6 +115,8 @@ def main():
 
     def shot(name):
         app.toast_until = 0
+        while int(time.monotonic() * 2) % 2 or int(time.monotonic() * 3) % 2:    # every blinking mark is lit
+            time.sleep(0.005)
         save(app.compose(), name)
 
     shot("home")

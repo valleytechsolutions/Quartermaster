@@ -18,7 +18,7 @@ import threading
 import time
 import wave
 
-from . import hardware, radios, recon
+from . import faults, hardware, radios, recon
 from .ble import BleScanner
 from .engine import DEFAULT_ROOT, MIN_FREE_BYTES, gps_epoch
 from .tracker import distance_m
@@ -147,17 +147,23 @@ class Recon:
 
     def _housekeeping(self):
         while not self._stop.wait(4.0):
-            if self._hotplug and hasattr(self.fleet, "refresh"):
-                try:
-                    self.adapters = hardware.wifi_adapters()
-                    self.fleet.refresh(self._usable())
-                except OSError:
-                    pass
-            errors = [s["error"] for s in self.fleet.status() if s.get("error")]
-            if errors:
-                self.errors["wifi"] = errors[0]
-            else:
-                self.errors.pop("wifi", None)
+            try:
+                self._follow_adapters()
+            except Exception:
+                faults.note("Recon upkeep")
+
+    def _follow_adapters(self):
+        if self._hotplug and hasattr(self.fleet, "refresh"):
+            try:
+                self.adapters = hardware.wifi_adapters()
+                self.fleet.refresh(self._usable())
+            except OSError:
+                pass
+        errors = [s["error"] for s in self.fleet.status() if s.get("error")]
+        if errors:
+            self.errors["wifi"] = errors[0]
+        else:
+            self.errors.pop("wifi", None)
 
     def stop(self):
         if self.state != "running":
@@ -185,7 +191,14 @@ class Recon:
 
     def _wifi_sink(self, networks, adapter):
         for net in networks:
-            self.observe("wifi", net)
+            self._observe("wifi", net)
+
+    def _observe(self, transport, item):
+        """One device that cannot be read must not hide the others heard with it."""
+        try:
+            self.observe(transport, item)
+        except Exception:
+            faults.note("Recon, a %s device" % transport)
 
     def _ble_loop(self):
         last_rssi = {}
@@ -193,14 +206,19 @@ class Recon:
             try:
                 seen = self.ble.scan()
                 self.errors.pop("ble", None)
+                for item in seen:
+                    if item["address"] and last_rssi.get(item["address"]) != item["rssi"]:
+                        last_rssi[item["address"]] = item["rssi"]
+                        self._observe("ble", item)
             except ScanUnavailable as exc:
                 self.errors["ble"] = str(exc)
                 self._stop.wait(5)
                 continue
-            for item in seen:
-                if item["address"] and last_rssi.get(item["address"]) != item["rssi"]:
-                    last_rssi[item["address"]] = item["rssi"]
-                    self.observe("ble", item)
+            except Exception:
+                faults.note("Recon Bluetooth scan")
+                self.errors["ble"] = "Bluetooth scan failed. Trying again."
+                self._stop.wait(5)
+                continue
             if len(last_rssi) > 20000:
                 last_rssi.clear()
             self._stop.wait(BLE_INTERVAL)
@@ -238,9 +256,7 @@ class Recon:
             device = self.devices.get(key)
             if device is None:
                 if len(self.devices) >= MAX_DEVICES:
-                    oldest = min(self.devices, key=lambda k: (bool(self.devices[k]["category"]),
-                                                              self.devices[k]["last_seen"]))
-                    del self.devices[oldest]
+                    self._make_room()
                 device = self.devices[key] = {
                     "transport": transport, "address": address, "first_seen": now, "count": 0, "best_rssi": rssi,
                     "rssi_history": deque(maxlen=60), "places": [], "alerted_at": 0.0, "logged_at": 0.0,
@@ -326,6 +342,12 @@ class Recon:
         except (OSError, ValueError):
             self.counters["log_errors"] += 1
             self.errors["storage"] = "Recon log write failed"
+
+    def _make_room(self):
+        """Drop the tenth of the table least worth keeping: not flagged first, then longest unheard."""
+        keys = sorted(self.devices, key=lambda k: (bool(self.devices[k]["category"]), self.devices[k]["last_seen"]))
+        for key in keys[:max(1, MAX_DEVICES // 10)]:
+            del self.devices[key]
 
     def device_list(self, show_all=False, sort="threat"):
         with self.lock:

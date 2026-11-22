@@ -3,6 +3,7 @@ import csv
 from quartermaster import engine
 from quartermaster.engine import Wardrive
 from quartermaster.wifi import parse_iw_scan
+from tests.fakes import QuietFleet, networks
 from tests.test_core import SCAN, FIX, NOW
 
 
@@ -51,7 +52,7 @@ def test_wardrive_dedups_across_adapters_and_logs(tmp_path):
     assert len(lines) == 5 and drive.log_path.name == "quartermaster_20261118-110640.wigle.csv"
     summary = list(csv.DictReader((tmp_path / "logs" / "quartermaster_20261118-110640.summary.csv").open()))
     assert len(summary) == 3 and summary[0]["StrongestRSSI"] == "-61" and summary[0]["WeakestRSSI"] == "-61"
-    assert summary[0]["StrongestLatitude"] == "40.1234567" and summary[0]["StrongestTime"] == "2026-11-18 11:06:40"
+    assert summary[0]["StrongestLatitude"] == "25.1234567" and summary[0]["StrongestTime"] == "2026-11-18 11:06:40"
 
 
 def test_no_fix_means_no_rows_and_no_file(tmp_path):
@@ -104,7 +105,7 @@ def test_exact_strongest_and_weakest_sighting_reach_the_wigle_log(tmp_path):
     signal = [int(r[6]) for r in rows]
     assert max(signal) == -50 and min(signal) == -95 and all(len(r) == 14 for r in rows)
     strongest = next(r for r in rows if r[6] == "-50")
-    assert strongest[3] == "2026-11-18 11:07:10" and strongest[7] == "40.1234567" and strongest[10] == "4.5"
+    assert strongest[3] == "2026-11-18 11:07:10" and strongest[7] == "25.1234567" and strongest[10] == "4.5"
     assert len(rows) == drive.rows == len(set(map(tuple, rows)))
     summary = next(csv.DictReader((tmp_path / "logs" / "quartermaster_20261118-110640.summary.csv").open()))
     assert (summary["StrongestRSSI"], summary["WeakestRSSI"], summary["Sightings"]) == ("-50", "-95", "76")
@@ -181,3 +182,24 @@ def test_fleet_adds_and_drops_adapters_live():
     assert [s["interface"] for s in fleet.status()] == ["wlan0"]
     fleet.stop()
     assert fleet.status() == []
+
+
+def test_an_all_day_drive_makes_room_in_memory_and_still_summarises_every_device(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "MAX_TRACKED", 10)
+    clock = [NOW]
+    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0])
+    drive.start()
+    heard = networks(40)
+    drive._wifi_sink(heard[:30], ADAPTERS[0])
+    clock[0] += 600
+    drive._wifi_sink(heard[25:], ADAPTERS[0])
+    drive._tidy()
+    assert len(drive.tracker.devices) == 15 and drive.status()["wifi"] == 40     # the 25 left behind are let go
+    clock[0] += 600
+    drive._wifi_sink(heard[:1], ADAPTERS[0])                                     # heard again: logged as new
+    drive.stop()
+    assert drive.rows == len(rows_of(drive.log_path)) == 41
+    summary = list(csv.DictReader(drive.log_path.with_name(drive.log_path.name.replace("wigle", "summary")).open()))
+    assert [row["MAC"] for row in summary] == [net["bssid"].lower() for net in heard + heard[:1]]
+    assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == []

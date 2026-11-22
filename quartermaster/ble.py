@@ -1,5 +1,6 @@
 """Bluetooth scanning through BlueZ over D-Bus. It never connects to or pairs with a device."""
 
+from . import faults
 from .wifi import ScanUnavailable
 
 
@@ -71,19 +72,26 @@ class BleScanner:
             device = interfaces.get("org.bluez.Device1")
             if not device or not str(path).startswith(str(self.adapter_path)) or "RSSI" not in device:
                 continue
-            manufacturer = {int(k): bytes(v) for k, v in device.get("ManufacturerData", {}).items()}
-            service_data = {str(k): bytes(v) for k, v in device.get("ServiceData", {}).items()}
-            uuids = [str(u) for u in device.get("UUIDs", [])]
-            name = str(device.get("Name", "")) if "Name" in device else ""
-            seen.append({"address": str(device.get("Address", "")).upper(),
-                         "address_type": 0 if str(device.get("AddressType", "random")) == "public" else 1,
-                         "rssi": int(device["RSSI"]), "name": name, "uuids": uuids,
-                         "manufacturer": manufacturer, "service_data": service_data,
-                         "tx_power": int(device["TxPower"]) if "TxPower" in device else None,
-                         "appearance": int(device["Appearance"]) if "Appearance" in device else None,
-                         "classic": "Class" in device and str(device.get("AddressType", "")) == "public"
-                         and not device.get("ManufacturerData") and not device.get("ServiceData")})
+            try:
+                seen.append(self._record(device))
+            except Exception:
+                faults.note("Reading a Bluetooth device")
         return seen
+
+    @staticmethod
+    def _record(device):
+        manufacturer = {int(k): bytes(v) for k, v in device.get("ManufacturerData", {}).items()}
+        service_data = {str(k): bytes(v) for k, v in device.get("ServiceData", {}).items()}
+        uuids = [str(u) for u in device.get("UUIDs", [])]
+        name = str(device.get("Name", "")) if "Name" in device else ""
+        return {"address": str(device.get("Address", "")).upper(),
+                "address_type": 0 if str(device.get("AddressType", "random")) == "public" else 1,
+                "rssi": int(device["RSSI"]), "name": name, "uuids": uuids,
+                "manufacturer": manufacturer, "service_data": service_data,
+                "tx_power": int(device["TxPower"]) if "TxPower" in device else None,
+                "appearance": int(device["Appearance"]) if "Appearance" in device else None,
+                "classic": "Class" in device and str(device.get("AddressType", "")) == "public"
+                and not device.get("ManufacturerData") and not device.get("ServiceData")}
 
     def close(self):
         if self.started and self.adapter is not None:

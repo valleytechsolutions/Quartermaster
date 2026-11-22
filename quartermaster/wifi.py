@@ -13,6 +13,8 @@ import subprocess
 import threading
 import time
 
+from . import faults
+
 
 class ScanUnavailable(RuntimeError):
     pass
@@ -38,6 +40,20 @@ def band_of(freq):
     return "2.4" if freq < 3000 else ("5" if freq < 5925 else "6")
 
 
+def _word(text, index):
+    words = text.split()
+    return words[index] if -len(words) <= index < len(words) else ""
+
+
+def _number(text, low, high):
+    """A number within bounds, else None. Scan output carries text straight off the air: "inf" is a number too."""
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if low <= value <= high else None
+
+
 def _unescape(text):
     """iw prints non-printable SSID bytes as \\xNN and a backslash as \\\\."""
     raw = bytearray()
@@ -55,7 +71,7 @@ def _unescape(text):
                 raw.append(0x5C)
                 i += 2
                 continue
-        raw.extend(text[i].encode("utf-8"))
+        raw.extend(text[i].encode("utf-8", "replace"))
         i += 1
     return raw.decode("utf-8", "replace")
 
@@ -71,7 +87,8 @@ def capabilities(net):
         for want in ("GCMP-256", "CCMP-256", "GCMP", "CCMP", "TKIP"):
             if want in names:
                 return want
-        return names[0] if names else "CCMP"
+        named = [n for n in names if re.fullmatch(r"[A-Za-z0-9-]{2,16}", n)]
+        return named[0] if named else "CCMP"
 
     wpa, rsn = net.get("wpa"), net.get("rsn")
     if wpa:
@@ -121,8 +138,8 @@ def security_label(net):
 def parse_iw_scan(text):
     """Networks from `iw dev <if> scan` or `scan dump`, with everything WiGLE wants."""
     networks, current, block = [], None, None
-    for line in text.splitlines():
-        match = re.match(r"^BSS ([0-9a-fA-F:]{17})", line)
+    for line in text.split("\n"):
+        match = re.match(r"BSS ((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", line)
         if match:
             current = {"bssid": match.group(1).upper(), "ssid": "", "rssi": None, "channel": None,
                        "frequency": None, "privacy": False, "ibss": False, "wps": False, "wpa": None,
@@ -130,7 +147,9 @@ def parse_iw_scan(text):
             networks.append(current)
             block = None
             continue
-        if current is None:
+        if line.startswith("BSS "):
+            current = None
+        if current is None or not line.startswith(("\t", " ")):
             continue
         stripped = line.strip()
         indent = len(line) - len(line.lstrip("\t "))
@@ -149,17 +168,15 @@ def parse_iw_scan(text):
         if not stripped.startswith("* "):
             block = None
         if stripped.startswith("freq:"):
-            try:
-                current["frequency"] = int(float(stripped.split()[1]))
-            except (IndexError, ValueError):
-                pass
+            value = _number(_word(stripped, 1), 1, 99999)
+            if value is not None:
+                current["frequency"] = int(value)
         elif stripped.startswith("signal:"):
-            try:
-                current["rssi"] = float(stripped.split()[1])
-            except (IndexError, ValueError):
-                pass
+            value = _number(_word(stripped, 1), -200, 100)
+            if value is not None:
+                current["rssi"] = value
         elif stripped.startswith("last seen:"):
-            match = re.search(r"(\d+) ms ago", stripped)
+            match = re.search(r"\b([0-9]{1,12}) ms ago", stripped)
             if match:
                 current["last_seen_ms"] = int(match.group(1))
         elif stripped.startswith("SSID:"):
@@ -168,16 +185,10 @@ def parse_iw_scan(text):
                 ssid = ""
             current["ssid"] = ssid[:32]
             current["hidden"] = ssid == ""
-        elif stripped.startswith("DS Parameter set: channel"):
-            try:
-                current["channel"] = int(stripped.rsplit(" ", 1)[1])
-            except ValueError:
-                pass
-        elif stripped.startswith("* primary channel:") and current["channel"] is None:
-            try:
-                current["channel"] = int(stripped.rsplit(" ", 1)[1])
-            except ValueError:
-                pass
+        elif stripped.startswith(("DS Parameter set: channel", "* primary channel:")):
+            value = _number(_word(stripped, -1), 1, 233)
+            if value is not None and (current["channel"] is None or stripped.startswith("DS")):
+                current["channel"] = int(value)
         elif stripped.startswith("RSN:"):
             block = current["rsn"] = {"pairwise": [], "auth": []}
         elif stripped.startswith("WPA:"):
@@ -214,7 +225,7 @@ class AdapterScanner:
         self.sweep_timeout = 12.0
 
     def _run(self, args, timeout=20):
-        return self.runner(args, capture_output=True, text=True, timeout=timeout, check=False)
+        return self.runner(args, capture_output=True, text=True, errors="replace", timeout=timeout, check=False)
 
     def scan(self):
         if not shutil.which("iw"):
@@ -312,8 +323,11 @@ class WifiFleet:
                 if not gone.is_set():
                     self.sink(networks, scanner.adapter)
                 gone.wait(self.interval)
-            except (ScanUnavailable, OSError, subprocess.SubprocessError) as exc:
-                scanner.last_error = str(exc)[:80]
+            except Exception as exc:
+                known = isinstance(exc, (ScanUnavailable, OSError, subprocess.SubprocessError))
+                if not known:
+                    faults.note("Wi-Fi scan on %s" % scanner.interface)
+                scanner.last_error = str(exc)[:80] if known else "Scan failed (%s). Trying again." % type(exc).__name__
                 failures += 1
                 # Busy radios recover quickly; an unplugged adapter backs off until it is dropped.
                 gone.wait(min(10.0, 0.5 * failures))

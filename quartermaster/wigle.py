@@ -13,6 +13,7 @@ from pathlib import Path
 import time
 
 from . import APP_NAME, __version__
+from .names import one_line
 
 COLUMNS = ("MAC", "SSID", "AuthMode", "FirstSeen", "Channel", "Frequency", "RSSI", "CurrentLatitude",
            "CurrentLongitude", "AltitudeMeters", "AccuracyMeters", "RCOIs", "MfgrId", "Type")
@@ -28,7 +29,7 @@ def pre_header(os_version=""):
 
 
 def _text(value):
-    return "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in str(value or ""))
+    return one_line(value or "")
 
 
 def accuracy_m(fix):

@@ -28,7 +28,7 @@ def main(argv=None):
             print("gps   %(path)s  %(label)s" % port)
         return 0
 
-    from . import wigle
+    from . import faults, wigle
     from .engine import DEFAULT_ROOT
     from .gnss import GPS
     from .power import Rails
@@ -36,6 +36,7 @@ def main(argv=None):
     from .ui.display import FramebufferDisplay
     from .ui.keys import EvdevInput
 
+    faults.path = DEFAULT_ROOT / "errors.log"
     cfg = config.load()
     try:
         display = FramebufferDisplay()

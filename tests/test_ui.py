@@ -1,7 +1,6 @@
 import http.client
 import time
 
-from PIL import ImageDraw
 import pytest
 
 from quartermaster import accounts, config, radios, uploads
@@ -13,19 +12,6 @@ from quartermaster.ui.keys import EvdevInput, ScriptedInput
 from tests.fakes import ADAPTERS, FIX, NO_FIX, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent
 from tests.test_core import NOW
 from tests.test_uploads import KEYS
-
-
-@pytest.fixture
-def drawn(monkeypatch):
-    """Every string a screen draws, so a test can read the screen."""
-    texts = []
-    original = ImageDraw.ImageDraw.text
-
-    def record(self, xy, text, *args, **kwargs):
-        texts.append(str(text))
-        return original(self, xy, text, *args, **kwargs)
-    monkeypatch.setattr(ImageDraw.ImageDraw, "text", record)
-    return texts
 
 
 def make_app(tmp_path, fix=FIX, hw=None, splash=False, keys=None, **settings):
@@ -81,13 +67,6 @@ def settle(app):
     while any(state == "busy" for state, _ in app.tests.values()) and time.monotonic() < deadline:
         time.sleep(0.01)
     app.step(0)
-
-
-@pytest.fixture(autouse=True)
-def free_radios():
-    yield
-    radios.release("wardrive")
-    radios.release("recon")
 
 
 def test_menu_opens_every_screen_and_quits(tmp_path, drawn):

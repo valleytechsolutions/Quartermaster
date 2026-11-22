@@ -16,7 +16,7 @@ import time
 import urllib.parse
 import uuid
 
-from . import __version__, accounts as keys, wigle
+from . import __version__, accounts as keys, faults, wigle
 
 ENDPOINTS = {"wigle": "https://api.wigle.net", "wdgwars": "https://wdgwars.pl", "wardrift": "https://wardrift.net"}
 SERVICES = tuple(ENDPOINTS)
@@ -346,7 +346,11 @@ class Uploader:
             if not manual and not self.cfg.get("auto_upload", True):
                 delay = IDLE_CHECK
                 continue
-            retry = self.run_pass()
+            try:
+                retry = self.run_pass()
+            except Exception:
+                faults.note("Uploads")
+                retry = True
             self.failures = self.failures + 1 if retry else 0
             delay = BACKOFF[min(self.failures, len(BACKOFF)) - 1] if retry else IDLE_CHECK
             self.next_try = self.clock() + delay if retry else None

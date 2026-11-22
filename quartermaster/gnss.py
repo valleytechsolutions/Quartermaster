@@ -12,6 +12,8 @@ import socket
 import threading
 import time
 
+from . import faults
+
 UART_BAUDS = (115200, 9600, 38400, 460800)
 STALE_SECONDS = 10
 WAKE_SECONDS = 1.5
@@ -142,18 +144,26 @@ class GPS:
     def run(self, stopped):
         try:
             while not stopped.is_set():
-                if not self.power or self.mode in ("off", "gpsd") or _USB_PORT.search(self.mode):
-                    self.unpower()
-                if self.mode == "off":
-                    stopped.wait(2)
-                    continue
-                if self.mode in ("auto", "gpsd") and self._gpsd(stopped):
-                    continue
-                if self.mode != "gpsd" and not stopped.is_set():
-                    self._serial(stopped)
+                try:
+                    if self._search(stopped):
+                        continue
+                except Exception:
+                    faults.note("GPS")
                 stopped.wait(2)
         finally:
             self.unpower()
+
+    def _search(self, stopped):
+        """One round of looking for a receiver. True when a gpsd session just ended and is worth trying again."""
+        if not self.power or self.mode in ("off", "gpsd") or _USB_PORT.search(self.mode):
+            self.unpower()
+        if self.mode == "off":
+            return False
+        if self.mode in ("auto", "gpsd") and self._gpsd(stopped):
+            return True
+        if self.mode != "gpsd" and not stopped.is_set():
+            self._serial(stopped)
+        return False
 
     def unpower(self):
         if self.rails is not None:

@@ -8,7 +8,7 @@ import re
 import time
 
 from .. import __version__, accounts, config, qr, recon, uploads, wigle
-from ..tracker import WIFI
+from ..tracker import BLE, BT, WIFI
 from . import icons, splash
 from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN,
                   LINE, MUTED, RED, SURFACE, SURFACE_2, TEXT, W, clock, font, image, rssi_color)
@@ -253,6 +253,7 @@ class Wardrive(Screen):
     refresh = 0.25
     NEXT = {"all": "wifi", "wifi": "ble", "ble": "all"}
     LABEL = {"all": "All", "wifi": "Wi-Fi", "ble": "Bluetooth"}
+    KINDS = {"all": None, "wifi": (WIFI,), "ble": (BLE, BT)}
 
     def __init__(self, app):
         self.filter = app.cfg.get("live_list", "all")
@@ -293,7 +294,7 @@ class Wardrive(Screen):
             c.text((x + 6, y + 2), label, font("ui", 8), MUTED)
             text = "{:,}".format(value)
             size = 30 if len(text) <= 5 else 24 if len(text) <= 6 else 19
-            c.draw.text((x + 6, y + 41), text, font=font("display", size), fill=color, anchor="ls")
+            c.put((x + 6, y + 41), text, font("display", size), color, "ls")
         y += 46
         x = 4
         for band in ("2.4", "5", "6"):
@@ -305,9 +306,8 @@ class Wardrive(Screen):
         if warning:
             c.text((5, y - 1), warning[0], font("ui", 9), warning[1], width=W - 10)
             y += 12
-        devices = [d for d in drive.tracker.recent(40)
-                   if self.filter == "all" or (d.kind == WIFI) == (self.filter == "wifi")]
-        for device in devices[:(CONTENT_BOTTOM - y) // 13]:
+        devices = drive.tracker.recent((CONTENT_BOTTOM - y) // 13, self.KINDS[self.filter])
+        for device in devices:
             wifi = device.kind == WIFI
             c.tag(4, y + 1, (device.band or "?") if wifi else "BT", BAND_COLOR.get(device.band, GOLD) if wifi else CYAN,
                   21)

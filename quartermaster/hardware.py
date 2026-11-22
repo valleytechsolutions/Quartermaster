@@ -147,7 +147,8 @@ def wifi_adapters(sys_net=SYS_NET, runner=subprocess.run):
         info = {"bands": [], "monitor": False}
         if phy and shutil.which("iw"):
             try:
-                result = runner(["iw", "phy", phy, "info"], capture_output=True, text=True, timeout=5, check=False)
+                result = runner(["iw", "phy", phy, "info"], capture_output=True, text=True, errors="replace", timeout=5,
+                                check=False)
                 if result.returncode == 0:
                     info = parse_iw_phy(result.stdout)
             except (OSError, subprocess.SubprocessError):

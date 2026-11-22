@@ -6,7 +6,7 @@ import time
 
 from PIL import Image
 
-from .. import accounts, config, hardware, uploads, wigle
+from .. import accounts, config, faults, hardware, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..recon_engine import Recon
 from ..setup_server import SetupServer
@@ -15,6 +15,7 @@ from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, S
                   image)
 
 STALL_SECONDS = 10
+FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
 REC_FILL = (70, 12, 14)
 
 
@@ -52,7 +53,10 @@ class HardwareWatch:
 
     def _loop(self):
         while not self._stop.wait(self.interval):
-            self.refresh()
+            try:
+                self.refresh()
+            except Exception:
+                faults.note("Hardware check")
 
     def stop(self):
         self._stop.set()
@@ -87,6 +91,7 @@ class App:
         self._upload, self._upload_at = None, None
         self._accounts, self._accounts_stamp = None, None
         self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
+        self._faults = []
 
     @property
     def screen(self):
@@ -463,13 +468,29 @@ class App:
         drawn = 0.0
         try:
             while self.running:
-                self.step(0.02 if isinstance(self.screen, screens.Splash) else 0.05)
-                now = time.monotonic()
-                if self.dirty or now - drawn >= self.screen.refresh:
-                    self.display.show(self.compose())
-                    drawn, self.dirty = now, False
+                try:
+                    self.step(0.02 if isinstance(self.screen, screens.Splash) else 0.05)
+                    now = time.monotonic()
+                    if self.dirty or now - drawn >= self.screen.refresh:
+                        self.display.show(self.compose())
+                        drawn, self.dirty = now, False
+                except Exception:
+                    self.recover()
         finally:
             self.shutdown()
+
+    def recover(self):
+        """A screen failed: go back to the menu. Scanning runs in its own threads and carries on.
+
+        A screen that keeps failing ends the app instead, so that it can be started again.
+        """
+        faults.note("Screen %s" % type(self.screen).__name__)
+        now = time.monotonic()
+        self._faults = [at for at in self._faults if now - at < FAULT_WINDOW] + [now]
+        if len(self._faults) >= FAULT_LIMIT:
+            raise
+        self.home()
+        self.toast("That screen hit a problem. Back at the menu.", AMBER, 5)
 
     def shutdown(self):
         if self.wardriving:

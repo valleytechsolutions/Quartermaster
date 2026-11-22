@@ -54,7 +54,7 @@ def find_keyboards():
     """Input devices whose key bitmap includes letters, from /proc/bus/input/devices."""
     paths = []
     try:
-        blocks = Path("/proc/bus/input/devices").read_text().split("\n\n")
+        blocks = Path("/proc/bus/input/devices").read_text(errors="replace").split("\n\n")
     except OSError:
         return paths
     for block in blocks:
@@ -91,7 +91,12 @@ class EvdevInput:
         for fd in ready:
             try:
                 data = os.read(fd, EVENT.size * 32)
-            except (BlockingIOError, OSError):
+            except BlockingIOError:
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                self._drop(fd)
                 continue
             for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
                 _, _, kind, code, value = EVENT.unpack_from(data, offset)
@@ -122,12 +127,17 @@ class EvdevInput:
             return Key(name, " " if name == "SPACE" else "", repeat)
         return None
 
+    def _drop(self, fd):
+        """An unplugged keyboard stays readable for ever: without this the app would spin on it."""
+        self.devices.remove(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
     def close(self):
-        for fd in self.devices:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        for fd in list(self.devices):
+            self._drop(fd)
 
 
 class ScriptedInput:

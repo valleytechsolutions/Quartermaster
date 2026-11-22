@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 
-from . import hardware, radios, wigle
+from . import faults, hardware, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .tracker import BLE, BT, WIFI, Tracker
@@ -17,6 +17,7 @@ MIN_FREE_BYTES = 32 * 1024 * 1024
 # Every upload site takes a file this size: Wardrift stops at 10 MiB, WDGWars at 15 MB.
 ROTATE_BYTES = 8 * 1024 * 1024
 EXTREME_IDLE_SECONDS = 120
+MAX_TRACKED = 100_000       # devices kept in memory, about 1 KB each: the CardputerZero has 512 MB
 DEFAULT_ROOT = Path(os.environ.get("QUARTERMASTER_HOME", str(Path.home() / "quartermaster")))
 BANDS = {"2.4": {"2.4"}, "5": {"5"}, "6": {"6"}, "5+6": {"5", "6"}}
 SUMMARY_COLUMNS = ("MAC", "Type", "Name", "Security", "Channel", "FrequencyMHz", "Band", "FirstSeen", "LastSeen",
@@ -38,6 +39,11 @@ def gps_epoch(fix, fallback):
 
 def _utc(epoch):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch)) if epoch else ""
+
+
+def _summary_row(d):
+    return [d.mac.lower(), d.kind, wigle._text(d.name), d.security, d.channel or "", d.frequency or "", d.band,
+            _utc(d.first_seen), _utc(d.last_seen), d.sightings, d.rows, *_extreme(d.best), *_extreme(d.worst)]
 
 
 def _record(device):
@@ -97,6 +103,8 @@ class Wardrive:
         if self.state == "running":
             return
         self.logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for leftover in self.logs.glob(".*.summary.csv*"):
+            leftover.unlink(missing_ok=True)
         if shutil.disk_usage(self.logs).free < MIN_FREE_BYTES:
             raise RuntimeError("Storage is almost full (under 32 MB free)")
         self._hotplug = self.adapters is None
@@ -124,14 +132,26 @@ class Wardrive:
         ticks = 0
         while not self._stop.wait(4.0):
             ticks += 1
-            if self._hotplug and hasattr(self.fleet, "refresh"):
-                try:
-                    self.adapters = hardware.wifi_adapters()
-                    self.fleet.refresh(self._chosen_adapters())
-                except OSError:
-                    pass
-            if ticks % 15 == 0:
-                self._flush_extremes(gps_epoch(self.gps.snapshot(), self.clock()) - EXTREME_IDLE_SECONDS)
+            try:
+                self._follow_adapters()
+                if ticks % 15 == 0:
+                    self._tidy()
+            except Exception:
+                faults.note("Wardrive upkeep")
+
+    def _tidy(self):
+        """Write the extremes of devices left behind and, on a very long drive, make room in memory."""
+        idle = gps_epoch(self.gps.snapshot(), self.clock()) - EXTREME_IDLE_SECONDS
+        self._flush_extremes(idle)
+        self._set_aside(self.tracker.forget(MAX_TRACKED, idle))
+
+    def _follow_adapters(self):
+        if self._hotplug and hasattr(self.fleet, "refresh"):
+            try:
+                self.adapters = hardware.wifi_adapters()
+                self.fleet.refresh(self._chosen_adapters())
+            except OSError:
+                pass
 
     def _chosen_adapters(self):
         mode = self.cfg.get("wifi_adapters", "all")
@@ -202,19 +222,25 @@ class Wardrive:
         _, now, fix = self._position()
         min_rssi = self.cfg.get("min_rssi", -100)
         for net in networks:
-            if net["rssi"] < min_rssi or (self._bands and net["band"] not in self._bands):
-                continue
-            if not net["ssid"] and not self.cfg.get("log_hidden", True):
-                continue
-            ignored = net["bssid"] in self.ignore_macs or net["ssid"] in self.ignore_names
-            device, _, reason = self.tracker.observe(
-                WIFI, net["bssid"], net["rssi"], now, fix, name=net["ssid"], security=net["security"],
-                capabilities=net["capabilities"], channel=net["channel"], frequency=net["frequency"],
-                band=net["band"], ignored=ignored)
-            if reason:
-                self._log(WIFI, _record(device), net["rssi"], fix, now)
-            elif fix is None:
-                self.skipped_no_fix += 1
+            try:
+                self._wifi_seen(net, now, fix, min_rssi)
+            except Exception:
+                faults.note("Logging a Wi-Fi network")
+
+    def _wifi_seen(self, net, now, fix, min_rssi):
+        if net["rssi"] < min_rssi or (self._bands and net["band"] not in self._bands):
+            return
+        if not net["ssid"] and not self.cfg.get("log_hidden", True):
+            return
+        ignored = net["bssid"] in self.ignore_macs or net["ssid"] in self.ignore_names
+        device, _, reason = self.tracker.observe(
+            WIFI, net["bssid"], net["rssi"], now, fix, name=net["ssid"], security=net["security"],
+            capabilities=net["capabilities"], channel=net["channel"], frequency=net["frequency"],
+            band=net["band"], ignored=ignored)
+        if reason:
+            self._log(WIFI, _record(device), net["rssi"], fix, now)
+        elif fix is None:
+            self.skipped_no_fix += 1
 
     def _ble_loop(self):
         interval = self.cfg.get("ble_interval", 1.0)
@@ -223,33 +249,47 @@ class Wardrive:
             try:
                 seen = self.ble.scan()
                 self.ble_error = ""
+                self._ble_sink(seen, last_rssi)
             except ScanUnavailable as exc:
                 self.ble_error = str(exc)
                 self._stop.wait(5)
                 continue
-            _, now, fix = self._position()
-            include_random = self.cfg.get("ble_random", True)
-            min_rssi = self.cfg.get("min_rssi", -100)
-            for item in seen:
-                mac = item["address"]
-                # BlueZ keeps a device listed for a while; only a changed RSSI is a new sighting.
-                if not mac or last_rssi.get(mac) == item["rssi"]:
-                    continue
-                last_rssi[mac] = item["rssi"]
-                if item["rssi"] < min_rssi or (item.get("address_type", 1) != 0 and not include_random):
-                    continue
-                kind = BT if item.get("classic") else BLE
-                manufacturer = item.get("manufacturer") or {}
-                name = item.get("name") or ""
-                device, _, reason = self.tracker.observe(
-                    kind, mac, item["rssi"], now, fix, name=name, extra=min(manufacturer) if manufacturer else None,
-                    capabilities="Misc [BT]" if kind == BT else "Misc [LE]",
-                    ignored=mac in self.ignore_macs or (name and name in self.ignore_names))
-                if reason:
-                    self._log(kind, _record(device), item["rssi"], fix, now)
+            except Exception:
+                faults.note("Bluetooth scan")
+                self.ble_error = "Bluetooth scan failed. Trying again."
+                self._stop.wait(5)
+                continue
             if len(last_rssi) > 20000:
                 last_rssi.clear()
             self._stop.wait(interval)
+
+    def _ble_sink(self, seen, last_rssi):
+        _, now, fix = self._position()
+        include_random = self.cfg.get("ble_random", True)
+        min_rssi = self.cfg.get("min_rssi", -100)
+        for item in seen:
+            try:
+                self._ble_seen(item, last_rssi, now, fix, include_random, min_rssi)
+            except Exception:
+                faults.note("Logging a Bluetooth device")
+
+    def _ble_seen(self, item, last_rssi, now, fix, include_random, min_rssi):
+        mac = item["address"]
+        # BlueZ keeps a device listed for a while; only a changed RSSI is a new sighting.
+        if not is_mac(mac) or last_rssi.get(mac) == item["rssi"]:
+            return
+        last_rssi[mac] = item["rssi"]
+        if item["rssi"] < min_rssi or (item.get("address_type", 1) != 0 and not include_random):
+            return
+        kind = BT if item.get("classic") else BLE
+        manufacturer = item.get("manufacturer") or {}
+        name = (item.get("name") or "")[:248]
+        device, _, reason = self.tracker.observe(
+            kind, mac, item["rssi"], now, fix, name=name, extra=min(manufacturer) if manufacturer else None,
+            capabilities="Misc [BT]" if kind == BT else "Misc [LE]",
+            ignored=mac in self.ignore_macs or (name and name in self.ignore_names))
+        if reason:
+            self._log(kind, _record(device), item["rssi"], fix, now)
 
     def status(self):
         fix = self.gps.snapshot()
@@ -263,26 +303,40 @@ class Wardrive:
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
 
+    def _summary_path(self):
+        return self.log_path.with_name(self.log_path.name.replace(".wigle.csv", ".summary.csv"))
+
+    def _set_aside(self, devices):
+        """Summary lines of devices dropped from memory wait in a file until the wardrive ends."""
+        devices = [d for d in devices if not d.ignored]
+        if not devices or self.log_path is None:
+            return
+        try:
+            path = self._summary_path()
+            fd = os.open(str(path.with_name("." + path.name + ".part")), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8", newline="") as out:
+                csv.writer(out, lineterminator="\n").writerows(_summary_row(d) for d in devices)
+        except OSError:
+            pass
+
     def _write_summary(self):
         """A spreadsheet next to the log: one line per device with its strongest and weakest sighting."""
         if self.log_path is None:
             return None
-        path = self.log_path.with_name(self.log_path.name.replace(".wigle.csv", ".summary.csv"))
-        tmp = path.with_name("." + path.name)
+        path = self._summary_path()
+        tmp, aside = path.with_name("." + path.name), path.with_name("." + path.name + ".part")
         try:
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
                 writer = csv.writer(out, lineterminator="\n")
                 writer.writerow(SUMMARY_COLUMNS)
-                for d in sorted(self.tracker.recent(limit=10 ** 9), key=lambda d: d.first_seen):
-                    if d.ignored:
-                        continue
-                    best, worst = d.best or (), d.worst or ()
-                    writer.writerow([d.mac.lower(), d.kind, wigle._text(d.name), d.security, d.channel or "",
-                                     d.frequency or "", d.band, _utc(d.first_seen), _utc(d.last_seen), d.sightings,
-                                     d.rows, *_extreme(best), *_extreme(worst)])
+                if aside.exists():
+                    with open(aside, encoding="utf-8", newline="") as earlier:
+                        shutil.copyfileobj(earlier, out)
+                writer.writerows(_summary_row(d) for d in self.tracker.found() if not d.ignored)
             os.replace(tmp, path)
-        except OSError:
+            aside.unlink(missing_ok=True)
+        except (OSError, ValueError):
             return None
         return path
 

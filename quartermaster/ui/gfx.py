@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..names import one_line
+
 W, H = 320, 170
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 
@@ -61,6 +63,28 @@ def image(name, size=None):
     return result
 
 
+@lru_cache(maxsize=8192)
+def _length(f, text):
+    return f.getlength(text, "L")
+
+
+@lru_cache(maxsize=1024)
+def _stamp(f, text, anchor, fx, fy):
+    """The text as a mask, and where its corner goes from the drawing point.
+
+    Drawing glyphs is by far the slowest part of a frame and most strings are the same on the
+    next frame, so each is drawn once and pasted from then on.
+    """
+    left, top, right, bottom = f.getbbox(text, anchor=anchor)
+    ox, oy = 1 - min(left, 0), 1 - min(top, 0)
+    mask = Image.new("L", (ox + max(right, 0) + 2, oy + max(bottom, 0) + 2))
+    ImageDraw.Draw(mask).text((ox + fx, oy + fy), text, font=f, fill=255, anchor=anchor)
+    box = mask.getbbox()
+    if box is None:
+        return None
+    return mask.crop(box), box[0] - ox, box[1] - oy
+
+
 class Canvas:
     """A PIL image with the handful of primitives the screens need."""
 
@@ -69,10 +93,23 @@ class Canvas:
         self.draw = ImageDraw.Draw(self.image)
 
     def text_width(self, text, f):
-        return self.draw.textlength(text, font=f)
+        return _length(f, one_line(text))
+
+    def put(self, xy, text, f, fill=TEXT, anchor="la"):
+        """Draw the text exactly as given, at the anchor."""
+        text = one_line(text)
+        x, y = xy
+        fx, fy = math.modf(x)[0], math.modf(y)[0]
+        if fx < 0 or fy < 0 or not isinstance(f, ImageFont.FreeTypeFont):
+            self.draw.text(xy, text, font=f, fill=fill, anchor=anchor)
+            return
+        stamp = _stamp(f, text, anchor, fx, fy)
+        if stamp:
+            mask, dx, dy = stamp
+            self.draw.bitmap((int(x) + dx, int(y) + dy), mask, fill)
 
     def fit(self, text, width, f):
-        text = str(text)
+        text = one_line(text)
         if self.text_width(text, f) <= width:
             return text
         lo, hi = 0, len(text)
@@ -87,14 +124,14 @@ class Canvas:
     def text(self, xy, text, f, fill=TEXT, width=None, anchor="la"):
         if width is not None:
             text = self.fit(text, width, f)
-        self.draw.text(xy, str(text), font=f, fill=fill, anchor=anchor)
-        return self.text_width(str(text), f)
+        self.put(xy, text, f, fill, anchor)
+        return self.text_width(text, f)
 
     def text_right(self, x, y, text, f, fill=TEXT):
-        self.draw.text((x, y), str(text), font=f, fill=fill, anchor="ra")
+        self.put((x, y), text, f, fill, "ra")
 
     def text_center(self, x, y, text, f, fill=TEXT):
-        self.draw.text((x, y), str(text), font=f, fill=fill, anchor="ma")
+        self.put((x, y), text, f, fill, "ma")
 
     def wrap(self, text, width, f):
         lines = []
@@ -136,22 +173,22 @@ class Canvas:
         w = int(self.text_width(text, f)) + pad * 2
         h = height or (f.size + 4)
         self.rect((x, y, x + w, y + h), fill=bg, radius=h // 2)
-        self.draw.text((x + pad, y + h / 2), text, font=f, fill=fg, anchor="lm")
+        self.put((x + pad, y + h / 2), text, f, fg, "lm")
         return w
 
     def tag(self, x, y, text, color, width=19):
         self.rect((x, y, x + width, y + 11), fill=color, radius=3)
-        self.draw.text((x + width / 2 + 0.5, y + 6), text, font=font("monob", 9), fill=BG, anchor="mm")
+        self.put((x + width / 2 + 0.5, y + 6), text, font("monob", 9), BG, "mm")
         return width + 2
 
     def keycap(self, x, y, key, label):
         f = font("monob", 8)
         w = int(self.text_width(key, f)) + 6
         self.rect((x, y, x + w, y + 10), fill=SURFACE_2, outline=LINE, radius=2)
-        self.draw.text((x + w / 2, y + 5), key, font=f, fill=TEXT, anchor="mm")
+        self.put((x + w / 2, y + 5), key, f, TEXT, "mm")
         x += w + 3
         t = font("ui", 9)
-        self.draw.text((x, y + 5), label, font=t, fill=MUTED, anchor="lm")
+        self.put((x, y + 5), label, t, MUTED, "lm")
         return w + 3 + int(self.text_width(label, t)) + 8
 
     def progress(self, box, fraction, fg=GOLD, bg=SURFACE_2):

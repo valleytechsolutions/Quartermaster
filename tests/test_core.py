@@ -7,7 +7,7 @@ import types
 from quartermaster import gnss, hardware, wigle
 from quartermaster.gnss import GPS, nmea_fix
 from quartermaster.power import Rails
-from quartermaster.tracker import Tracker, WIFI
+from quartermaster.tracker import BLE, Tracker, WIFI
 from quartermaster.wifi import parse_iw_scan
 
 SCAN = """BSS aa:bb:cc:dd:ee:01(on wlan1)
@@ -62,7 +62,7 @@ PHY = """Wiphy phy1
 \tsoftware interface modes (can always be added):
 """
 
-FIX = {"valid": True, "latitude": 40.1234567, "longitude": -75.7654321, "altMSL": 101.26, "hdop": 0.9,
+FIX = {"valid": True, "latitude": 25.1234567, "longitude": -77.7654321, "altMSL": 101.26, "hdop": 0.9,
        "age_seconds": 0.4}
 NOW = 1795000000
 
@@ -89,7 +89,7 @@ def test_tracker_dedup_strongest_weakest():
     assert new and why == "new"
     assert t.observe(WIFI, "AA", -69, NOW + 1, fix)[1:] == (False, None)
     assert t.observe(WIFI, "AA", -50, NOW + 2, fix)[2] == "stronger"
-    far = dict(fix, latitude=40.1244567)
+    far = dict(fix, latitude=25.1244567)
     assert t.observe(WIFI, "AA", -90, NOW + 3, far, name="")[2] == "weaker"
     assert t.observe(WIFI, "AA", -80, NOW + 40, fix)[2] == "moved"
     assert d.best[0] == -50 and d.worst[0] == -90 and d.worst[1] == far["latitude"] and d.name == "x"
@@ -124,6 +124,19 @@ def test_extremes_wait_until_a_device_is_left_behind():
     assert [(d.mac, p[0]) for d, p in t.take_extremes()] == [("BB", -73)]
 
 
+def test_recent_devices_come_newest_first_however_many_there_are():
+    tracker = Tracker()
+    macs = ["AA:BB:CC:00:%02X:%02X" % (i >> 8, i & 255) for i in range(1000)]
+    for i, mac in enumerate(macs):
+        tracker.observe(WIFI if i % 2 else BLE, mac, -60, NOW + i // 10, FIX)
+    tracker.observe(WIFI, macs[3], -50, NOW + 500, FIX)
+    assert [d.mac for d in tracker.recent(3)] == [macs[3], macs[990], macs[991]]
+    assert [d.mac for d in tracker.recent(2, (BLE,))] == [macs[990], macs[992]]
+    assert [d.mac for d in tracker.found()] == macs
+    assert tracker.forget(2000, NOW + 600) == [] and len(tracker.forget(900, NOW + 50)) == 280
+    assert tracker.summary()["wifi"] == 500 and macs[3] in [d.mac for d in tracker.found()]
+
+
 def test_ignored_devices_are_counted_but_never_logged():
     t = Tracker()
     d, new, why = t.observe(WIFI, "AA", -60, NOW, dict(FIX), name="Home", ignored=True)
@@ -148,7 +161,7 @@ def test_wigle_file_is_spec_exact(tmp_path):
     assert lines[1] == ",".join(wigle.COLUMNS)
     rows = list(csv.reader(io.StringIO("\n".join(lines[2:]))))
     assert rows[0] == ["aa:bb:cc:dd:ee:01", 'Black Pearl, "Guest"', "[WPA2-PSK-CCMP][RSN-SAE-CCMP][WPS][ESS]",
-                       "2026-11-18 11:06:40", "6", "2437", "-61", "40.1234567", "-75.7654321", "101.3", "4.5",
+                       "2026-11-18 11:06:40", "6", "2437", "-61", "25.1234567", "-77.7654321", "101.3", "4.5",
                        "", "", "WIFI"]
     assert rows[1][1] == "bad name" and rows[1][12] == "76" and rows[1][13] == "BLE"
     assert len(rows) == 2 and all(len(r) == 14 for r in rows) and path.name.startswith("quartermaster_")

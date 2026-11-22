@@ -20,10 +20,10 @@ def distance_m(a, b):
 class Device:
     __slots__ = ("kind", "mac", "name", "security", "capabilities", "channel", "frequency", "band", "first_seen",
                  "last_seen", "sightings", "rssi", "best", "worst", "logged_best", "logged_worst", "logged_at",
-                 "logged_pos", "rows", "extra", "ignored")
+                 "logged_pos", "rows", "extra", "ignored", "order")
 
-    def __init__(self, kind, mac, now):
-        self.kind, self.mac = kind, mac
+    def __init__(self, kind, mac, now, order=0):
+        self.kind, self.mac, self.order = kind, mac, order
         self.name = self.security = self.capabilities = self.band = ""
         self.channel = self.frequency = None
         self.first_seen = self.last_seen = now
@@ -44,7 +44,8 @@ class Tracker:
         self.relog_meters = relog_meters
         self.rssi_step = rssi_step
         self.accuracy = accuracy or (lambda fix: None)
-        self.devices = {}
+        self.devices = {}                  # kept in order of last sighting, oldest first
+        self.made = 0
         self.lock = threading.Lock()
         self.counts = {WIFI: 0, BLE: 0, BT: 0}
         self.bands = {"2.4": 0, "5": 0, "6": 0}
@@ -58,10 +59,11 @@ class Tracker:
         It is None when the sighting adds nothing, or when there is no usable fix."""
         key = (kind, mac)
         with self.lock:
-            device = self.devices.get(key)
+            device = self.devices.pop(key, None)
             new = device is None
             if new:
-                device = self.devices[key] = Device(kind, mac, now)
+                device = Device(kind, mac, now, self.made)
+                self.made += 1
                 self.counts[kind] = self.counts.get(kind, 0) + 1
                 band = fields.get("band")
                 if kind == WIFI and band in self.bands:
@@ -69,6 +71,7 @@ class Tracker:
                 if kind == WIFI:
                     label = fields.get("security") or "OPEN"
                     self.security[label] = self.security.get(label, 0) + 1
+            self.devices[key] = device
             device.last_seen = now
             device.sightings += 1
             self.sightings += 1
@@ -133,11 +136,44 @@ class Tracker:
         out.sort(key=lambda item: item[1][3])
         return out
 
-    def recent(self, limit=50, kind=None):
+    def recent(self, limit=50, kinds=None):
+        """The devices heard last, newest first, and those heard in the same moment in the order they were found.
+
+        After hours of driving there are far too many devices to walk them all for every frame."""
+        found = []
         with self.lock:
-            items = [d for d in self.devices.values() if kind is None or d.kind == kind]
-        items.sort(key=lambda d: d.last_seen, reverse=True)
-        return items[:limit]
+            for device in reversed(self.devices.values()):
+                if len(found) >= limit and device.last_seen != found[-1].last_seen:
+                    break
+                if kinds is None or device.kind in kinds:
+                    found.append(device)
+        found.sort(key=lambda d: (-d.last_seen, d.order))
+        return found[:limit]
+
+    def found(self):
+        """Every device, in the order it was first heard."""
+        with self.lock:
+            return sorted(self.devices.values(), key=lambda d: d.order)
+
+    def forget(self, limit, idle_before):
+        """On a very long drive, free memory: past `limit` devices, drop the ones unheard for longest.
+
+        Only devices unheard since idle_before with nothing left to log go. They are returned, and one
+        heard again later simply counts as new.
+        """
+        gone = []
+        with self.lock:
+            spare = len(self.devices) - limit
+            if spare <= 0:
+                return gone
+            for key, device in self.devices.items():
+                if len(gone) >= spare + limit // 5 or device.last_seen > idle_before:
+                    break
+                if device.best is None or device.ignored or (device.best[0] <= device.logged_best
+                                                             and device.worst[0] >= device.logged_worst):
+                    gone.append(key)
+            gone = [self.devices.pop(key) for key in gone]
+        return gone
 
     def summary(self):
         with self.lock:
