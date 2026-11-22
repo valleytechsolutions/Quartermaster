@@ -84,6 +84,32 @@ def test_caps_lock_switches_letters_only():
     assert typed_as(board, (30,), False) == "a"
 
 
+def test_a_shift_or_caps_lock_that_was_on_before_the_start_is_seen(monkeypatch):
+    def bits(*numbers):
+        return sum(1 << number for number in numbers).to_bytes(96, "little")
+
+    answers = {keys.KEYS_DOWN: bits(SHIFT), keys.LIGHTS_ON: bits()}
+    monkeypatch.setattr(keys.fcntl, "ioctl", lambda fd, request, buffer: answers[request])
+    board = EvdevInput(paths=["/dev/null"])
+    assert board.shift and not board.caps and typed_as(board, (30,), False) == "A"
+    board.translate(SHIFT, 0)
+    assert typed_as(board, (30,), False) == "a"
+    board.close()
+    answers.update({keys.KEYS_DOWN: bits(30, 54), keys.LIGHTS_ON: bits(0, keys.CAPS_LIGHT)})
+    board = EvdevInput(paths=["/nonexistent", "/dev/null"])
+    assert board.shift and board.caps and typed_as(board, (30, 2), False) == "a!"
+    board.close()
+    monkeypatch.setattr(keys, "is_built_in", lambda path: True)
+    monkeypatch.setattr(keys, "built_in_symbols", lambda: {54: ")"})
+    board = EvdevInput(paths=["/dev/null"])
+    assert not board.shift and board.caps
+    board.close()
+    monkeypatch.undo()
+    board = EvdevInput(paths=["/dev/null"])
+    assert not board.shift and not board.caps and keys.state(next(iter(board.devices)), keys.KEYS_DOWN) == 0
+    board.close()
+
+
 def test_modifier_and_media_keys_of_the_built_in_keyboard_type_nothing():
     board = EvdevInput(paths=["/nonexistent"])
     for code in (KEY_CD, KEY_DVD, 29, 56, 59, 68, 87, 99, 113, 114, 115, 138, 163, 164, 165, 224, 225, 0, 78):
@@ -161,6 +187,42 @@ def test_a_key_with_dashes_and_underscores_is_typed_on_the_built_in_keyboard(dev
     assert accounts.load(tmp_path / "accounts.json")["wardrift_key"] == "wdk_live-8f3cZ.%"
     settle(app)
     assert isinstance(app.screen, screens.Keys) and app.tests["wardrift"][1] == "Signed in to wardrift"
+
+
+def hold(code, repeats=3):
+    return [(code, 1)] + [(code, 2)] * repeats + [(code, 0)]
+
+
+def test_a_held_key_repeats_only_where_repeating_helps(device, tmp_path):
+    app = device
+    app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)
+    app.send(hold(CODE["k"]), *[tap(108)] * 4, hold(ENTER))
+    assert isinstance(app.screen, screens.TextInput) and app.screen.title == "Wardrift API key"
+    app.send(hold(CODE["w"], 2), tap(TAB), hold(ENTER))
+    assert app.screen.value == "www-" and app.screen.text_mode
+    app.send(hold(BACKSPACE, 2), hold(TAB))
+    assert app.screen.value == "w" and not app.screen.text_mode
+    app.send(hold(106, 2), hold(CODE["c"], 1), hold(ESC))
+    assert app.screen.cell == 5 and app.screen.text_mode and app.screen.value == "w"
+    app.send(hold(ESC))
+    assert isinstance(app.screen, screens.Keys) and accounts.load(tmp_path / "accounts.json")["wardrift_key"] == ""
+    app.send(hold(103, 2), hold(ENTER))
+    assert isinstance(app.screen, screens.TextInput) and app.screen.title != "Wardrift API key"
+    app.send(hold(ESC), hold(ESC), hold(CODE["w"]))
+    assert app.wardriving and isinstance(app.screen, screens.Wardrive)
+    app.send(hold(57), hold(ENTER))
+    assert isinstance(app.screen, screens.Confirm) and app.wardriving
+
+
+def test_an_early_driver_sent_the_right_shift_code_for_a_symbol(tmp_path):
+    keymap = tmp_path / "keymap.map"
+    keymap.write_text("keycode 54 = parenright\nkeycode 42 = minus\n")
+    board = EvdevInput(paths=["/nonexistent"])
+    board.symbols = keys.built_in_symbols(keymap)
+    assert typed_as(board, (54, 30), True) == ")a" and board.translate(54, 0, True) is None
+    assert board.translate(54, 1, False) is None and typed_as(board, (30,), False) == "A"
+    board.translate(54, 0, False)
+    assert 42 not in board.symbols and board.translate(SHIFT, 1, True) is None and typed_as(board, (30,), True) == "A"
 
 
 def test_keys_pressed_faster_than_the_screen_is_read_keep_their_meaning(device, tmp_path):

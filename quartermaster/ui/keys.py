@@ -6,6 +6,7 @@ read as a US layout. Screens that are not reading text also take F, X, Z and C a
 arrows printed on them, without Fn.
 """
 
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,8 @@ EVENT = struct.Struct("llHHi")
 EV_KEY = 1
 SHIFTS = (42, 54)
 CAPS_LOCK = 58
+# linux/input.h: EVIOCGKEY and EVIOCGLED for 96 bytes, and LED_CAPSL
+KEYS_DOWN, LIGHTS_ON, CAPS_LIGHT = 0x80604518, 0x80604519, 1
 INTERNAL = "/dev/input/cardputer-zero-internal"
 KEYMAP = "/usr/share/keymaps/tca8418_keypad_m5stack_keymap.map"
 
@@ -104,14 +107,17 @@ def find_keyboards():
 
 
 def built_in_symbols(keymap=KEYMAP):
-    """BUILT_IN_SYMBOLS, corrected by the keymap file the system installs with the keyboard driver."""
+    """BUILT_IN_SYMBOLS, corrected by the keymap file the system installs with the keyboard driver.
+
+    An early driver sent the code of a right Shift key for ")". The left one is the keyboard's own Shift.
+    """
     symbols = dict(BUILT_IN_SYMBOLS)
     try:
         text = Path(keymap).read_text(errors="replace")
     except OSError:
         return symbols
     for code, keysym in re.findall(r"^[ \t]*keycode[ \t]+(\d{1,3})[ \t]*=[ \t]*(\w+)", text, re.MULTILINE):
-        if keysym in KEYSYMS and not CHARS.get(int(code), "!")[0].isalnum():
+        if keysym in KEYSYMS and int(code) != SHIFTS[0] and not CHARS.get(int(code), "!")[0].isalnum():
             symbols[int(code)] = KEYSYMS[keysym]
     return symbols
 
@@ -128,16 +134,32 @@ def is_built_in(path, sysfs="/sys/class/input"):
     return name.startswith("tca8418")
 
 
+def state(fd, request):
+    """The keys held down or the lights lit on a keyboard right now, one bit each.
+
+    What happened before a keyboard was opened is never reported: a Shift that was locked in the
+    launcher, or a Caps Lock that was already on.
+    """
+    try:
+        return int.from_bytes(fcntl.ioctl(fd, request, bytes(96)), "little")
+    except OSError:
+        return 0
+
+
 class EvdevInput:
     def __init__(self, paths=None):
         self.devices = {}
-        for path in paths or find_keyboards():
-            try:
-                self.devices[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = is_built_in(path)
-            except OSError:
-                continue
         self.shift = self.caps = False
         self.symbols = built_in_symbols()
+        for path in paths or find_keyboards():
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            built_in = self.devices[fd] = is_built_in(path)
+            down = state(fd, KEYS_DOWN)
+            self.shift |= any(down >> code & 1 for code in SHIFTS if not (built_in and code in self.symbols))
+            self.caps |= bool(state(fd, LIGHTS_ON) >> CAPS_LIGHT & 1)
 
     def poll(self, timeout):
         """Return a list of Keys pressed within `timeout` seconds."""
@@ -166,7 +188,7 @@ class EvdevInput:
         return keys
 
     def translate(self, code, value, built_in=False):
-        if code in SHIFTS:
+        if code in SHIFTS and not (built_in and code in self.symbols):
             self.shift = value != 0
             return None
         if value == 0:

@@ -7,6 +7,7 @@ from quartermaster.wifi import band_of, channel_of
 FIX = {"valid": True, "latitude": 25.07805, "longitude": -77.34312, "satellites": 14, "hdop": 0.8, "age_seconds": 0.3,
        "source": "CP210x USB GPS (/dev/ttyUSB0)", "altMSL": 96.0, "status": "fix"}
 NO_FIX = {"valid": False, "source": "none", "status": "no_fix", "age_seconds": None}
+BATTERY = {"percent": 87, "charging": False}
 ADAPTERS = [
     {"interface": "wlan1", "phy": "phy1", "driver": "mt7921u", "external": True, "usb_id": "0e8d:7961",
      "label": "MT7921AU tri-band (ALFA AWUS036AXM)", "bands": ["2.4", "5", "6"], "band_label": "tri-band",
@@ -59,8 +60,9 @@ class Display:
 
 
 class Hardware:
-    def __init__(self, adapters=ADAPTERS, stalled=(), addresses=("192.168.1.50",)):
+    def __init__(self, adapters=ADAPTERS, stalled=(), addresses=("192.168.1.50",), battery=BATTERY):
         self.adapters = list(adapters)
+        self.battery = battery
         self.stalled = list(stalled)
         self.bluetooth = [{"name": "hci0", "external": False, "label": "Built-in Bluetooth"}]
         self.gps_ports = [{"path": "/dev/ttyUSB0", "label": "CP210x USB GPS", "kind": "usb", "likely": True},

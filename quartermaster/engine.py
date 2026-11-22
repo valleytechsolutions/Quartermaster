@@ -334,6 +334,8 @@ class Wardrive:
                     with open(aside, encoding="utf-8", newline="") as earlier:
                         shutil.copyfileobj(earlier, out)
                 writer.writerows(_summary_row(d) for d in self.tracker.found() if not d.ignored)
+                out.flush()
+                os.fsync(out.fileno())
             os.replace(tmp, path)
             aside.unlink(missing_ok=True)
         except (OSError, ValueError):

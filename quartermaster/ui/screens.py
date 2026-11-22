@@ -1027,6 +1027,7 @@ class Tips(Details):
                  "fix, so WiGLE accepts every one.", MUTED),
             ("", "Each device is listed once. Its strongest and weakest sightings are always written, which is "
                  "the closest and the farthest point you heard it from.", MUTED),
+            ("", "Before the battery is empty, a running wardrive is stopped and saved by itself.", MUTED),
             ("", "Uploads", GOLD),
             ("", "Add your keys once under Keys. Finished logs are then sent to WiGLE, WDGWars and Wardrift "
                  "whenever the Cardputer is online.", MUTED),

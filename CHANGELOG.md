@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3
+
+- The battery level is at the top of every screen, with a bolt while it charges. It turns amber at 20 % and red at 10 %.
+- A notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is stopped and saved, because the system's own low battery warning waits while an app is open.
+- The summary of a wardrive is on disk the moment the wardrive stops, so losing power right after cannot empty it.
+- A key held down on a USB keyboard repeats only where that helps: moving through a list, typing and deleting.
+- A Shift that was locked, or a Caps Lock that was on, before Quartermaster was opened is followed from the first letter.
+
 ## 1.0.2
 
 - Sym now types the symbol printed on each key of the CardputerZero keyboard. Before, a dash, an underscore and most other symbols could not be typed, so some upload keys could only be entered from a phone.
