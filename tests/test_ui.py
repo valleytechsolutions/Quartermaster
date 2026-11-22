@@ -137,6 +137,15 @@ def test_ok_right_after_deleting_the_last_log_of_the_list_opens_the_one_left(tmp
     assert isinstance(app.screen, screens.LogDetail) and [app.screen.entry] == app.log_files()
 
 
+def test_remove_right_after_removing_the_last_ignored_network_takes_the_one_left(tmp_path):
+    app = make_app(tmp_path, ignore=["Home WiFi", "Phone hotspot"])
+    app.push(screens.IgnoreList())
+    press(app, "DOWN", "D", "Y", "D")
+    assert isinstance(app.screen, screens.Confirm) and app.screen.detail == "Home WiFi will be logged again."
+    press(app, "Y", "D", "DOWN")
+    assert isinstance(app.screen, screens.IgnoreList) and app.cfg["ignore"] == []
+
+
 def test_the_logs_list_keeps_its_place_as_logs_go_and_keeps_the_one_being_recorded(tmp_path):
     app = make_app(tmp_path)
     for _ in range(4):

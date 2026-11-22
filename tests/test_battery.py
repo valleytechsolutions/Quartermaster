@@ -2,10 +2,12 @@ import contextlib
 from pathlib import Path
 import time
 
+import pytest
+
 from quartermaster import power
 from quartermaster.ui import app as app_module, gfx, screens
 from quartermaster.ui.gfx import AMBER, GREEN, MUTED, RED, TEXT, W, Canvas, font
-from tests.fakes import ADAPTERS, NO_FIX, Hardware, networks, on_a_card
+from tests.fakes import ADAPTERS, FIX, NO_FIX, Hardware, networks, on_a_card
 from tests.test_ui import KEYS, make_app, press, screen_text
 
 
@@ -291,7 +293,7 @@ def bar_text(app, drawn, monkeypatch):
     return text, bool(bolts)
 
 
-def test_where_room_is_short_the_bolt_goes_first_then_the_number_and_never_the_title(tmp_path, drawn, monkeypatch):
+def test_where_room_is_short_the_bolt_and_the_number_make_way_and_never_the_title(tmp_path, drawn, monkeypatch):
     app = make_app(tmp_path, keys=KEYS)
     press(app, "W", "ESC")
     assert isinstance(app.screen, screens.Home) and app.wardriving
@@ -305,9 +307,17 @@ def test_where_room_is_short_the_bolt_goes_first_then_the_number_and_never_the_t
     assert "QUARTERMASTER" in text and "100%" in text and bolt
     text, bolt = state("QUARTERMASTER", 7, 100, True)
     assert "QUARTERMASTER" in text and "100%" in text and "7" in text and "GPS 14" in text and not bolt
+    canvas, title = Canvas(), font("bold", 11)
+    widest = int(canvas.text_width("100%", font("monob", 9))) + 3
+
+    def room():
+        others = sum(width + 8 for width, _ in app.indicators(canvas))
+        return W - 29 - others - canvas.text_width("QUARTERMASTER", title)
     app.gps.fix = dict(app.gps.fix, satellites=9)
     text, bolt = state("QUARTERMASTER", 7, 100, True)
-    assert "GPS 9" in text and "100%" in text and not bolt
+    assert 60 < room() < 70 and "GPS 9" in text and "100%" in text and bolt == (room() >= 41 + widest)
+    text, bolt = state("QUARTERMASTER", 150, 100, False)
+    assert 50 < room() < 57 and "QUARTERMASTER" in text and ("100%" in text) == (room() >= 30 + widest)
     app.gps.fix = dict(app.gps.fix, satellites=14)
     for level in (100, 99, 9):
         text, bolt = state("QUARTERMASTER", 15, level, False)
@@ -316,7 +326,6 @@ def test_where_room_is_short_the_bolt_goes_first_then_the_number_and_never_the_t
         assert "QUARTERMASTER" in text and "%d%%" % level not in text and bolt
         text, bolt = state("IGNORED NETWORKS", 150, level, True)
         assert "IGNORED NETWORKS" in text and "%d%%" % level not in text and not bolt
-    canvas, title = Canvas(), font("bold", 11)
     text, bolt = state("IGNORED NETWORKS AND MORE", 150, 100, True)
     shortened = [line for line in text if line.endswith("…")]
     assert len(shortened) == 1 and shortened[0].startswith("IGNORED NETW") and "100%" not in text and not bolt
@@ -326,6 +335,45 @@ def test_where_room_is_short_the_bolt_goes_first_then_the_number_and_never_the_t
     app.screen.title = "IGNORED NETWORKS AND MORE AND MORE"
     text = screen_text(app, drawn).split("\n")
     assert [line for line in text if line.endswith("…")][0].startswith("IGNORED NETWORKS A")
+
+
+def marks(app, monkeypatch):
+    """The words and the icons of the status bar, in the order they are drawn."""
+    words, icons, put = [], [], gfx.Canvas.put
+
+    def record(canvas, xy, text, *args, **kwargs):
+        if xy[1] < gfx.STATUS_H:
+            words.append(text)
+        return put(canvas, xy, text, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(gfx.Canvas, "put", record)
+        patch.setattr(app_module.icons, "draw", lambda canvas, name, x, y, size, color:
+                      icons.append(name) if y < gfx.STATUS_H else None)
+        app.compose()
+    return words, icons
+
+
+def test_the_marks_beside_the_battery_show_what_is_going_on_and_no_more(tmp_path, monkeypatch):
+    app = make_app(tmp_path)
+    press(app, "A")
+
+    def bar(waiting=0, uploading=False, keys=0, **fix):
+        app.gps.fix = fix
+        app.upload_status = lambda: {"uploading": uploading, "waiting": waiting, "keys": keys, "files": []}
+        return marks(app, monkeypatch)
+    assert bar(source="none") == (["87%", "NO GPS", "ABOUT"], [])
+    assert bar(source="usb") == (["87%", "GPS --", "ABOUT"], [])
+    assert bar(3, valid=True, satellites=0) == (["87%", "GPS OK", "ABOUT"], [])
+    assert bar(3, keys=1, valid=True, satellites=11) == (["87%", "GPS 11", "3", "ABOUT"], ["cloud"])
+    assert bar(uploading=True, valid=True) == (["87%", "GPS OK", "0", "ABOUT"], ["cloud"])
+    app.gps.fix = dict(FIX)
+    press(app, "ESC", "R", "SPACE")
+    assert bar(**FIX) == (["87%", "GPS 14", "", "RECON"], ["eye"])
+    press(app, "ESC", "W", "ENTER")
+    app.hw.battery = dict(app.hw.battery, charging=True)
+    words, icons = bar(**FIX)
+    assert words[:2] + words[3:] == ["87%", "GPS 14", "WARDRIVE"] and words[2].startswith("00:00:0")
+    assert icons == ["bolt"]
 
 
 def discharge(app, level, charging=False):
@@ -416,7 +464,7 @@ def test_the_wait_before_closing_starts_again_when_the_level_comes_back_up(tmp_p
     assert discharge(app, 3) == "Battery almost empty. Wardrive saved. Closing now."
 
 
-def test_a_charger_that_comes_and_goes_cannot_keep_an_empty_battery_going(tmp_path, later):
+def test_a_charger_that_comes_and_goes_does_not_put_off_the_save(tmp_path, later):
     app = make_app(tmp_path, keys=KEYS)
     press(app, "W")
     assert discharge(app, 2) == "Battery at 2%. Plug in soon."
@@ -503,6 +551,24 @@ def test_the_wait_before_closing_counts_only_an_empty_battery_off_the_charger(tm
     later(30)
     assert discharge(late, 2, charging=True) == "" and late.wardriving and late._closing is None
     assert discharge(late, 2) == "Battery almost empty. Wardrive saved. Closing now."
+
+
+def test_a_save_that_fails_does_not_keep_quartermaster_open_on_an_empty_battery(tmp_path, later, monkeypatch):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+
+    def broken():
+        raise RuntimeError("The save failed")
+    monkeypatch.setattr(app.drive, "stop", broken)
+    assert discharge(app, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    with pytest.raises(RuntimeError):
+        discharge(app, 3)
+    later(9)
+    assert discharge(app, 3) == "" and app.running
+    later(1.5)
+    app.step(0)
+    assert not app.running
 
 
 def test_the_closing_notice_stays_for_ten_seconds_after_a_slow_save(tmp_path, later, monkeypatch):

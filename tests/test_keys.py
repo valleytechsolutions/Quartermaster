@@ -292,6 +292,20 @@ def test_a_held_key_repeats_only_where_repeating_helps(device, tmp_path):
     assert isinstance(app.screen, screens.Confirm) and app.wardriving
 
 
+def test_a_held_arrow_changes_a_choice_once_and_does_not_run_on(device):
+    app = device
+    app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)
+    app.send(tap(CODE["s"]), hold(106, 2))
+    assert isinstance(app.screen, screens.Settings) and app.cfg["wifi_adapters"] == "external"
+    app.send(tap(ESC), tap(CODE["w"]), hold(106, 4), hold(105, 3))
+    assert app.wardriving and app.screen.filter == "ble"
+    for arrow, repeats in ((105, 1), (106, 2), (103, 3), (108, 1)):
+        app.send(tap(ENTER), hold(arrow, repeats))
+        assert isinstance(app.screen, screens.Confirm) and app.screen.choice == 0
+        app.send(tap(ENTER))
+        assert isinstance(app.screen, screens.Wardrive) and app.wardriving
+
+
 def test_a_held_key_stays_with_the_screen_it_was_pressed_on(device):
     app = device
     app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)

@@ -233,10 +233,11 @@ def test_the_log_and_the_summary_are_on_disk_under_their_names_when_the_wardrive
     real, synced = os.fsync, []
 
     def fsync(fd):
-        folder = os.path.samestat(os.fstat(fd), os.stat(tmp_path / "logs"))
-        assert folder or stat.S_ISREG(os.fstat(fd).st_mode)
-        synced.append(("folder" if folder else os.fstat(fd).st_size,
-                       sorted(path.name for path in (tmp_path / "logs").iterdir())))
+        if os.readlink("/proc/self/fd/%d" % fd).startswith(str(tmp_path)):
+            folder = os.path.samestat(os.fstat(fd), os.stat(tmp_path / "logs"))
+            assert folder or stat.S_ISREG(os.fstat(fd).st_mode)
+            synced.append(("folder" if folder else os.fstat(fd).st_size,
+                           sorted(path.name for path in (tmp_path / "logs").iterdir())))
         return real(fd)
     monkeypatch.setattr(os, "fsync", fsync)
     drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,

@@ -447,8 +447,9 @@ class App:
     def gauge(self, c, battery, room):
         """The battery: green with a bolt while it charges, amber from 20 % down and red from 10 %.
 
-        `room` is what the title and the other indicators leave. Where that is too little, the bolt goes first
-        and then the number. The number is judged as "100%", so that it does not come and go with the level.
+        `room` is what the title and the other indicators leave. Where that is too little for both, the number
+        stays and the bolt goes. Where the number does not fit either, the bolt comes back alone for as long as
+        it fits. The number is judged as "100%", so that it does not come and go with the level.
         """
         level, charging = battery["percent"], battery["charging"]
         color = GREEN if charging else RED if level <= 10 else AMBER if level <= 20 else TEXT
@@ -502,8 +503,9 @@ class App:
         """Say so as the battery runs down. Almost empty, save what is running and close.
 
         The system's own low battery warning and safe power-off wait for as long as an app is open.
-        A weak charger comes and goes with the load, so one reading of it settles nothing: the wait
-        before closing ends only when the charger has held for as long as the wait itself.
+        A weak charger comes and goes with the load, so before the save one reading of it settles nothing:
+        that wait ends only when the charger has held for as long as the wait itself. After the save one
+        reading calls the close off, as it does for the system's own countdown.
         """
         battery, now = self.hw.battery, time.monotonic()
         charging = bool(battery) and battery["charging"]

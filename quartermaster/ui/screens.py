@@ -330,7 +330,8 @@ class Wardrive(Screen):
         if key in ("ENTER", "S"):
             app.ask_stop_wardrive()
         elif key.name in ("TAB", "LEFT", "RIGHT"):
-            self.filter = self.NEXT[self.filter]
+            if not key.repeat:
+                self.filter = self.NEXT[self.filter]
         else:
             return super().handle(key, app)
         return True
@@ -920,6 +921,8 @@ class Settings(Screen, ListMixin):
         name, label, choices, _ = self.items[self.index]
         if key.name not in ("ENTER", "LEFT", "RIGHT", "SPACE"):
             return super().handle(key, app)
+        if key.repeat:
+            return True
         if name == "ignore":
             app.push(IgnoreList())
         elif name == "recon_categories":
@@ -967,6 +970,7 @@ class IgnoreList(Screen, ListMixin):
 
     def handle(self, key, app):
         entries = list(app.cfg.get("ignore", []))
+        self.clamp(len(entries), self.VISIBLE)
         if self.move(key, len(entries), self.VISIBLE):
             return True
         if key == "A":
@@ -1107,7 +1111,8 @@ class Confirm(Modal):
 
     def handle(self, key, app):
         if key.name in ("LEFT", "RIGHT", "TAB", "UP", "DOWN"):
-            self.choice = 1 - self.choice
+            if not key.repeat:
+                self.choice = 1 - self.choice
         elif key == "ENTER":
             app.pop()
             if self.choice == 1:

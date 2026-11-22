@@ -102,8 +102,8 @@ The same command updates it. To remove it: `sudo apt remove quartermaster`. Your
 
 1. Plug in your GPS, and any Wi-Fi adapters you have.
 2. Open Quartermaster and press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
-3. Press **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
-4. Press **OK** to stop. The log is saved and, if you have added keys, sent.
+3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
+4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
 
 Rows are only written while the GPS has a fix. Without one, the screen tells you and keeps counting.
 
@@ -117,9 +117,9 @@ Each site gives you a key on its own website. Quartermaster never asks for your 
 | [WDGWars](https://wdgwars.pl) | Profile, then **Generate API key**. |
 | [Wardrift](https://wardrift.net) | Dashboard, then **API Keys**. |
 
-**From your phone or PC (easiest).** Press **K**, then **OK** on the first row. Scan the QR code, or open the address on the screen in a browser, and enter the PIN. Paste your keys and press Save. The page also lets you download logs and paste a list of networks to leave out. It only exists while that screen is open, on your own network, and it never shows a saved key.
+**From your phone or PC (easiest).** From the menu, press **K**, then **OK** on the first row. Scan the QR code, or open the address on the screen in a browser, and enter the PIN. Paste your keys and press Save. The page also lets you download logs and paste a list of networks to leave out. It only exists while that screen is open, on your own network, and it never shows a saved key in full, only its last four characters.
 
-**On the Cardputer.** Press **K**, pick a key, press **OK** and type it. Press **T** to test it. A symbol is typed with **Sym** and the key it is printed on, or picked from the list that **Tab** opens.
+**On the Cardputer.** From the menu, press **K**, pick a key, press **OK** and type it. Press **T** to test it. A symbol is typed with **Sym** and the key it is printed on, or picked from the list that **Tab** opens.
 
 Use any one site, or all three. Keys are stored on the device in a file only your user can read.
 
@@ -146,7 +146,7 @@ Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is
 | **OK** (Enter) | Open or confirm |
 | **Esc** | Back |
 | **Space** | Start or stop a wardrive from the menu |
-| **W R L U H S K A** | Jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
+| **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
 | **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
 | **Sym**, then a key | In a text box: the symbol printed on that key |
 
