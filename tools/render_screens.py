@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render every screen with sample data. Run: python3 tools/render_screens.py [--out screenshots]"""
+"""Render every screen with sample data: python3 tools/render_screens.py [--out screenshots] [--scale 1]"""
 
 import argparse
 from pathlib import Path
@@ -91,7 +91,7 @@ def press(app, *names):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(ROOT / "screenshots"))
-    parser.add_argument("--scale", type=int, default=2)
+    parser.add_argument("--scale", type=int, default=1)
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -117,6 +117,7 @@ def main():
     while app.drive.tracker.summary()["ble"] < len(BLUETOOTH) and time.monotonic() < deadline:
         time.sleep(0.02)
     app.drive.tracker.counts["BLE"] = 187
+    app.drive.rows = 1263
     app.drive._started = time.monotonic() - 1574
     shot("wardrive")
     press(app, "ENTER")

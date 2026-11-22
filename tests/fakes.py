@@ -4,7 +4,7 @@ import random
 
 from quartermaster.wifi import band_of, channel_of
 
-FIX = {"valid": True, "latitude": 40.03712, "longitude": -75.34218, "satellites": 14, "hdop": 0.8, "age_seconds": 0.3,
+FIX = {"valid": True, "latitude": 25.07805, "longitude": -77.34312, "satellites": 14, "hdop": 0.8, "age_seconds": 0.3,
        "source": "CP210x USB GPS (/dev/ttyUSB0)", "altMSL": 96.0, "status": "fix"}
 NO_FIX = {"valid": False, "source": "none", "status": "no_fix", "age_seconds": None}
 ADAPTERS = [

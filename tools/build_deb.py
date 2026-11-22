@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Build the APPLaunch .deb for the CardputerZero store (pure Python app, Architecture: all).
+"""Build the CardputerZero package: python3 tools/build_deb.py [--out build]
 
-Layout follows CardputerZero/AppBuilder's packaging convention. Run from
-the repo root:  python3 tools/build_deb.py [--out build]
-Then publish with M5Stack's czdev:  czdev publish --deb build/quartermaster_<ver>_all.deb
+The layout follows the CardputerZero AppBuilder convention, so the result installs with apt
+and publishes to the store with: czdev publish --deb build/quartermaster_<version>_all.deb
 """
 
 import argparse
@@ -17,9 +16,10 @@ import tempfile
 HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
-DEPENDS = "python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw"
-# Scans are triggered through NetworkManager when the app has no network capability of its own.
+DEPENDS = "python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, ca-certificates"
+# NetworkManager starts each Wi-Fi sweep for an app that may not start one itself. aplay sounds the Recon alert.
 RECOMMENDS = "network-manager, bluez"
+SUGGESTS = "alsa-utils"
 
 
 def build(out):
@@ -55,10 +55,10 @@ def build(out):
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
         (control / "control").write_text(
             "Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: %s\nInstalled-Size: %d\n"
-            "Depends: %s\nRecommends: %s\nSection: APPLaunch\nPriority: optional\n"
+            "Depends: %s\nRecommends: %s\nSuggests: %s\nSection: APPLaunch\nPriority: optional\n"
             "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
             "Description: %s\n Wi-Fi and Bluetooth wardriver for the M5Stack CardputerZero.\n"
-            % (pkg, version, MAINTAINER, size, DEPENDS, RECOMMENDS, manifest["description"]))
+            % (pkg, version, MAINTAINER, size, DEPENDS, RECOMMENDS, SUGGESTS, manifest["description"]))
         shutil.copy2(HERE / "packaging" / "postinst", control / "postinst")
         (control / "postinst").chmod(0o755)
         for path in stage.rglob("*"):

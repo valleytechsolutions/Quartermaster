@@ -173,7 +173,7 @@ class Home(Screen):
             if app.wardriving:
                 return "REC " + clock(app.drive.elapsed()), RED
             radios = len(app.hw.adapters)
-            return (plural(radios, "radio") if radios else "Bluetooth only"), MUTED
+            return (plural(radios, "radio") if radios else "BLE only"), MUTED
         if label == "Recon":
             if app.recon_running:
                 summary = app.recon.summary()
