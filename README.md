@@ -186,7 +186,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.0.0,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.0.1,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 A device gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends. A log is split at 8 MB so that every site accepts it.
@@ -204,6 +204,8 @@ A match is broadcast evidence. It is not proof that a device is recording, who o
 - Quartermaster only scans. It never joins a network and never pairs with a Bluetooth device.
 - Record only what is legal where you are, and respect the terms of the sites you upload to.
 - The phone setup page uses plain HTTP on your local network, protected by a PIN that changes every time. Open it on a network you trust.
+- Network and device names are whatever their owners made them. Quartermaster treats everything it hears as untrusted, and a broken broadcast cannot stop a wardrive.
+- If something does go wrong, the reason is written to `~/quartermaster/errors.log`. Attach that file when you report a problem.
 
 ## Build it yourself
 

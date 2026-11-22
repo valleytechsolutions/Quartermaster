@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## 1.0.1
 
 The first release.
 
@@ -13,3 +13,5 @@ The first release.
 - Recon mode for surveillance and tracking devices, with evidence grades, alerts, a follow check and a signal finder.
 - Hardware screen that warns when a USB adapter is plugged in but not starting.
 - Settings for scanning, logging, GPS, uploads, Recon and the screen, and a list of networks that are never logged.
+- Built to keep going: names and broadcasts are treated as untrusted, a scan or screen that fails is tried again, and the reason is noted in `~/quartermaster/errors.log`.
+- Made for long drives: the screen stays quick however many devices a day of driving collects, and memory use has a ceiling.
