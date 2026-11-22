@@ -8,7 +8,7 @@ import shutil
 import threading
 import time
 
-from . import hardware, wigle
+from . import hardware, radios, wigle
 from .ble import BleScanner
 from .tracker import BLE, BT, WIFI, Tracker
 from .wifi import ScanUnavailable, WifiFleet
@@ -98,6 +98,7 @@ class Wardrive:
         chosen = self._chosen_adapters()
         if not chosen and not self.cfg.get("ble", True):
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
+        radios.claim("wardrive")
         self._stop.clear()
         self.started_at = self.clock()
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
@@ -153,6 +154,7 @@ class Wardrive:
                 self.writer.close()
                 self.writer = None
         self.state = "stopped"
+        radios.release("wardrive")
         self._write_summary()
 
     # -- logging ---------------------------------------------------------

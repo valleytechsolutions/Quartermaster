@@ -49,7 +49,7 @@ USB_ADAPTERS = {
     "0bda:b812": "RTL8812BU dual-band",
     "0bda:c811": "RTL8811CU dual-band",
     "0bda:8832": "RTL8832AU Wi-Fi 6 (ALFA AWUS036AX)",
-    "0bda:885a": "RTL8852AU Wi-Fi 6 (ALFA AWUS036AXM)",
+    "0bda:885a": "RTL8852AU Wi-Fi 6",
     "0bda:8187": "RTL8187 2.4 GHz (ALFA AWUS036H)",
 }
 
@@ -185,6 +185,57 @@ def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
         if path and all(c["path"] != path for c in found):
             found.insert(0, {"path": path, "kind": "custom", "usb_id": "", "label": "Custom port", "likely": True})
     return found
+
+
+WIFI_PRODUCT = re.compile(r"802\.11|wlan|wi-?fi|wireless (lan|adapter|network)", re.I)
+
+
+def stalled_usb_adapters(sys_usb=Path("/sys/bus/usb/devices")):
+    """USB Wi-Fi adapters that are plugged in but have no network interface.
+
+    That is what a driver that failed to start looks like: the adapter is on the bus,
+    powered and recognised, yet Linux never created wlanN for it."""
+    stalled = []
+    try:
+        nodes = sorted(Path(sys_usb).iterdir())
+    except OSError:
+        return stalled
+    for node in nodes:
+        if not (node / "idVendor").is_file():
+            continue
+        usb_id = "%s:%s" % (_read(node / "idVendor").lower(), _read(node / "idProduct").lower())
+        product = " ".join(x for x in (_read(node / "manufacturer"), _read(node / "product")) if x)
+        if usb_id not in USB_ADAPTERS and not WIFI_PRODUCT.search(product):
+            continue
+        if any(node.glob("*/net/*")) or any(node.glob("*/ieee80211/*")):
+            continue
+        stalled.append({"usb_id": usb_id, "label": USB_ADAPTERS.get(usb_id) or product or "USB Wi-Fi adapter",
+                        "port": node.name})
+    return stalled
+
+
+def local_addresses(runner=subprocess.run):
+    """IPv4 addresses other devices on the network can reach, Wi-Fi first."""
+    found = []
+    try:
+        result = runner(["ip", "-4", "-o", "addr", "show", "scope", "global"], capture_output=True, text=True,
+                        timeout=5, check=False)
+        for line in result.stdout.splitlines() if result.returncode == 0 else ():
+            match = re.match(r"\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/", line)
+            if match and not match.group(1).startswith(("docker", "veth", "br-", "tun", "tailscale")):
+                found.append((match.group(1), match.group(2)))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not found:
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 9))
+                found.append(("", probe.getsockname()[0]))
+        except OSError:
+            pass
+    found.sort(key=lambda item: not item[0].startswith("wl"))
+    return [address for _, address in found if not address.startswith("127.")]
 
 
 def bluetooth_adapters(sys_bt=Path("/sys/class/bluetooth")):
