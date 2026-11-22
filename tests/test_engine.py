@@ -562,7 +562,7 @@ def test_a_part_left_without_a_row_goes_at_once_and_the_summary_is_named_after_a
         "quartermaster_20261118-110810.summary.csv", "quartermaster_20261118-110810.wigle.csv"]
 
 
-def test_a_part_without_a_row_that_cannot_be_removed_stays_listed(tmp_path, monkeypatch, later):
+def test_a_part_without_a_row_that_cannot_be_removed_is_no_longer_listed(tmp_path, monkeypatch, later):
     drive, heard = quiet_drive(tmp_path), networks(2)
     drive._wifi_sink(heard[:1], ADAPTERS[0])
     first = drive.log_path
@@ -575,7 +575,13 @@ def test_a_part_without_a_row_that_cannot_be_removed_stays_listed(tmp_path, monk
     later(5)
     drive._sync()
     assert drive.failed == "Cannot write the log: Input/output error" and drive.rows == 0
-    assert drive.log_paths == [first] and first.exists() and drive.status()["files"] == 1
+    assert drive.log_paths == [] and first.exists() and drive.status()["files"] == 0
+    assert drive.log_path is None and drive.status()["log"] == ""
+    drive.gps.fix = dict(FIX, utc="2026-11-18T11:08:10Z")
+    drive._wifi_sink(networks(3)[2:], ADAPTERS[0])
+    drive.stop()
+    assert drive.log_paths == [drive.log_path] and drive.log_path != first and len(whole(drive.log_path)) == 1
+    assert len(summary_of(drive.log_path)) == 3
 
 
 def test_a_card_with_room_for_a_header_and_no_more_leaves_no_file_per_row_heard(tmp_path, monkeypatch, later):
@@ -733,7 +739,7 @@ def test_a_summary_that_cannot_be_written_is_said_and_leaves_nothing_hidden(tmp_
 
 def test_a_summary_fails_without_stopping_the_stop(tmp_path, monkeypatch):
     drive, aside = long_drive(tmp_path / "torn", monkeypatch)
-    aside.write_bytes(b"\xff\xfe")
+    aside.write_bytes(b"\xff\xfe\n")
     drive.stop()
     assert drive.failed.startswith("Cannot write the summary: 'utf-8'") and drive.state == "stopped"
     assert [path.name for path in (tmp_path / "torn" / "logs").iterdir()] == [drive.log_path.name]
@@ -823,3 +829,33 @@ def test_a_folder_that_cannot_be_put_on_disk_does_not_stop_the_log(tmp_path, mon
         assert (drive.error, drive.failed) == ("", "") and len(whole(drive.log_path)) == 3
         assert drive.log_path.with_name(drive.log_path.name.replace("wigle", "summary")).exists()
         assert len(os.listdir("/proc/self/fd")) == open_before
+
+
+def test_a_part_stays_the_active_log_until_it_has_been_repaired(tmp_path, later):
+    drive, heard = quiet_drive(tmp_path), networks(2)
+    drive._wifi_sink(heard[:1], ADAPTERS[0])
+    first, seen = drive.log_path, []
+    on_a_card(drive.writer, room=0, error=OSError(5, "Input/output error"))
+    drive._wifi_sink(heard[1:], ADAPTERS[0])
+    abandon = drive.writer.abandon
+
+    def watched(exc):
+        seen.append(drive.active_log())
+        lost = abandon(exc)
+        seen.append(drive.active_log())
+        return lost
+    drive.writer.abandon = watched
+    later(5)
+    drive._sync()
+    assert seen == [first, first] and drive.active_log() is None and drive.writer is None
+
+
+def test_a_half_written_summary_line_set_aside_does_not_join_the_next(tmp_path, monkeypatch):
+    drive, aside = long_drive(tmp_path, monkeypatch)
+    with open(aside, "ab") as part:
+        part.write(b"AA:BB:CC:00:00:01,half a li")
+    drive._set_aside(drive.tracker.found()[:1])
+    drive.stop()
+    rows = summary_of(drive.log_path)
+    assert len(rows) == 31 and all(None not in row and None not in row.values() for row in rows)
+    assert not any(row[engine.SUMMARY_COLUMNS[0]].startswith("AA:BB:CC") for row in rows)

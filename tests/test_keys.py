@@ -235,6 +235,7 @@ def device(tmp_path):
         for _ in range(len(strokes) + 2):
             app.step(0)
     app.send = send
+    app.keyboard_write = write
     yield app
     app.keyboard.close()
     os.close(write)
@@ -399,3 +400,9 @@ def test_every_symbol_can_be_picked_from_a_list(tmp_path, drawn):
     assert box.value == "ab-c__;~" and box.text_mode
     press(app, "ESC")
     assert isinstance(app.screen, screens.Keys) and accounts.load(tmp_path / "accounts.json")["wardrift_key"] == ""
+
+
+def test_keys_waiting_to_be_read_can_be_forgotten(device):
+    os.write(device.keyboard_write, b"".join(event(keys.EV_KEY, code, value) for code, value in tap(30) + tap(48)))
+    device.keyboard.flush()
+    assert device.keyboard.poll(0) == []

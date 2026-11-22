@@ -229,3 +229,11 @@ def test_accounts_file_is_private_and_takes_the_encoded_wigle_string(tmp_path):
     assert accounts.ready(accounts.load(path)) == ["wigle", "wdgwars"]
     assert accounts.masked("0123456789abcdef") == "••••cdef" and accounts.masked("") == ""
     assert accounts.split_encoded("not base64!") is None and accounts.split_encoded("AIDabcdef0123456789") is None
+
+
+def test_a_log_started_while_the_folder_is_listed_is_not_sent(site, tmp_path):
+    finished = make_log(tmp_path / "logs", "quartermaster_20261118-110640.wigle.csv")
+    started = make_log(tmp_path / "logs", "quartermaster_20261118-120000.wigle.csv")
+    answers = iter([None, started])
+    up = uploader(tmp_path, site, active=lambda: next(answers, started))
+    assert up.logs() == [finished]
