@@ -74,7 +74,7 @@ class Wardrive:
         self.logs = self.root / "logs"
         self.clock = clock
         self.state = "idle"
-        self.error = ""
+        self.error = self.failed = ""
         self.adapters = adapters
         self.ble = ble
         self.fleet_class = fleet
@@ -119,7 +119,10 @@ class Wardrive:
             return
         self.logs.mkdir(parents=True, exist_ok=True, mode=0o700)
         for leftover in self.logs.glob(".*.summary.csv*"):
-            leftover.unlink(missing_ok=True)
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
         if shutil.disk_usage(self.logs).free < MIN_FREE_BYTES:
             raise RuntimeError("Storage is almost full (under 32 MB free)")
         self._hotplug = self.adapters is None
@@ -162,7 +165,17 @@ class Wardrive:
                 if self.writer is not None:
                     self.writer.sync()
             except OSError as exc:
-                self.error = "Cannot write the log: %s" % (exc.strerror or exc)
+                self._refused(exc)
+
+    def _refused(self, exc):
+        """The log took no more. Its file is given up, the next row starts a new one, and the summary will say so.
+
+        Call this with the lock held.
+        """
+        self.error = self.failed = "Cannot write the log: %s" % (exc.strerror or exc)
+        if self.writer is not None:
+            self.rows -= self.writer.abandon()
+            self.writer = None
 
     def _tidy(self):
         """Write the extremes of devices left behind and, on a very long drive, make room in memory."""
@@ -202,16 +215,21 @@ class Wardrive:
             self.ble.close()
         self._flush_extremes()
         with self._lock:
-            if self.writer is not None:
-                self.writer.close()
-                self.writer = None
-        self._stopped = time.monotonic()
-        self.state = "stopped"
+            try:
+                if self.writer is not None:
+                    self.writer.close()
+                    self.writer = None
+            except OSError as exc:
+                self._refused(exc)
+            self._stopped = time.monotonic()
+            self.state = "stopped"
         radios.release("wardrive")
         self._write_summary()
 
     def _append(self, row, epoch):
         with self._lock:
+            if self.state != "running":
+                return False
             try:
                 if self.writer is not None and self.writer.size >= ROTATE_BYTES:
                     self.writer.close()
@@ -226,7 +244,7 @@ class Wardrive:
                 self.error = ""
                 return True
             except OSError as exc:
-                self.error = "Cannot write the log: %s" % (exc.strerror or exc)
+                self._refused(exc)
                 return False
 
     def _log(self, kind, record, rssi, fix, epoch):
@@ -325,7 +343,7 @@ class Wardrive:
                        log=str(self.log_path) if self.log_path else "", skipped_no_fix=self.skipped_no_fix,
                        elapsed=self.elapsed(),
                        adapters=self.fleet.status() if self.fleet else [], ble_error=self.ble_error,
-                       error=self.error, gps=fix,
+                       error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
 
@@ -342,8 +360,8 @@ class Wardrive:
             fd = os.open(str(path.with_name("." + path.name + ".part")), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8", newline="") as out:
                 csv.writer(out, lineterminator="\n").writerows(_summary_row(d) for d in devices)
-        except OSError:
-            pass
+        except OSError as exc:
+            self.failed = self.failed or "Cannot write the summary: %s" % (exc.strerror or exc)
 
     def _write_summary(self):
         """A spreadsheet next to the log: one line per device with its strongest and weakest sighting."""
@@ -365,7 +383,12 @@ class Wardrive:
             os.replace(tmp, path)
             aside.unlink(missing_ok=True)
             _settle(path.parent)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            self.failed = self.failed or "Cannot write the summary: %s" % (getattr(exc, "strerror", None) or exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
             return None
         return path
 

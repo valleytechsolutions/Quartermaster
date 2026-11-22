@@ -57,17 +57,20 @@ class HardwareWatch:
         return hardware.local_addresses()
 
     def start(self):
-        self.refresh()
+        self._check()
         if self._thread is None:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="hardware")
             self._thread.start()
 
     def _loop(self):
         while not self._stop.wait(self.interval):
-            try:
-                self.refresh()
-            except Exception:
-                faults.note("Hardware check")
+            self._check()
+
+    def _check(self):
+        try:
+            self.refresh()
+        except Exception:
+            faults.note("Hardware check")
 
     def stop(self):
         self._stop.set()
@@ -104,7 +107,7 @@ class App:
         self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
         self._faults = []
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
-        self._pressed_on = None
+        self._pressed = None
 
     @property
     def screen(self):
@@ -295,8 +298,11 @@ class App:
         drive = self.wardrive_factory(self.cfg, self.gps)
         try:
             drive.start()
-        except (RuntimeError, OSError) as exc:
+        except RuntimeError as exc:
             self.toast(str(exc) or "The wardrive could not start", RED, 5)
+            return False
+        except OSError as exc:
+            self.toast("The logs folder cannot be used: %s" % (exc.strerror or exc), RED, 5)
             return False
         self.drive = drive
         self.stale()
@@ -519,17 +525,14 @@ class App:
                 self._empty_since = now
             elif now - self._empty_since >= EMPTY_SECONDS:
                 return self.close_soon()
-        elif self._empty_since is not None:
-            if self._charger_since is None:
-                self._charger_since = now
-            elif now - self._charger_since >= EMPTY_SECONDS:
-                self._empty_since = None
-        if charging:
-            return
+        elif self._charger_since is None:
+            self._charger_since = now
+        elif now - self._charger_since >= EMPTY_SECONDS:
+            self._empty_since = None
         step = VERY_LOW if level <= VERY_LOW else LOW if level <= LOW else 101
-        if self._battery_step is None or level >= LOW + 5:
+        if self._battery_step is None or level >= LOW + 5 and not charging:
             self._battery_step = step
-        elif step < self._battery_step:
+        elif step < self._battery_step and not charging:
             self._battery_step = step
             self.toast("Battery at %d%%. Plug in %s." % (level, "soon" if step == VERY_LOW else "to keep going"),
                        RED if step == VERY_LOW else AMBER, 5)
@@ -540,7 +543,7 @@ class App:
         drive = self.drive if self.wardriving else None
         self.stop_wardrive()
         self.stop_recon()
-        saved = drive is not None and drive.log_path is not None and not drive.error
+        saved = drive is not None and drive.log_path is not None and not drive.failed
         self._closing = time.monotonic() + CLOSING_SECONDS
         self.toast("Battery almost empty. %s" % ("Wardrive saved. Closing now." if saved else "Closing now."), RED,
                    CLOSING_SECONDS)
@@ -566,8 +569,8 @@ class App:
             if not self.screen.text_mode:
                 key = navigation(key)
             if not key.repeat:
-                self._pressed_on = self.screen
-            elif self.screen is not self._pressed_on or \
+                self._pressed = (self.screen, key.name)
+            elif (self.screen, key.name) != self._pressed or \
                     (key.name not in REPEATING and not (self.screen.text_mode and key.char)):
                 continue
             if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \

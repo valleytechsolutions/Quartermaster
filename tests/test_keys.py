@@ -72,6 +72,13 @@ def test_other_keyboards_are_read_as_a_us_layout():
     assert [board.translate(code, 1) for code in (70, 71, 94, 183, 212)] == [None] * 5
 
 
+def test_a_shift_key_held_down_stays_shift_while_it_repeats():
+    board = EvdevInput(paths=["/nonexistent"])
+    assert board.translate(SHIFT, 1) is None and board.translate(SHIFT, 2) is None
+    assert typed_as(board, (30, 2), False) == "A!"
+    assert board.translate(SHIFT, 0) is None and typed_as(board, (30, 2), False) == "a1"
+
+
 def test_caps_lock_switches_letters_only():
     board = EvdevInput(paths=["/nonexistent"])
     assert board.translate(58, 1) is None and board.translate(58, 0) is None
@@ -106,6 +113,10 @@ def test_a_shift_or_caps_lock_that_was_on_before_the_start_is_seen(monkeypatch):
     monkeypatch.setattr(keys, "built_in_symbols", lambda: {54: ")"})
     board = EvdevInput(paths=["/dev/null"])
     assert not board.shift and board.caps
+    board.close()
+    answers.update({keys.KEYS_DOWN: bits(SHIFT, 54), keys.LIGHTS_ON: bits(0, 2)})
+    board = EvdevInput(paths=["/dev/null"])
+    assert board.shift and not board.caps
     board.close()
     monkeypatch.undo()
     board = EvdevInput(paths=["/dev/null"])
@@ -311,6 +322,19 @@ def test_a_held_key_moves_by_exactly_as_many_rows_as_it_repeats(device):
     assert app.screen.top == app.screen.VISIBLE
     app.send(tap(ESC), tap(ESC), tap(CODE["r"]), hold(57, 3))
     assert isinstance(app.screen, recon_screens.Recon) and app.recon_running
+
+
+def test_only_the_key_pressed_last_repeats(device):
+    app = device
+    app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)
+    app.send([(106, 2)] * 3)
+    assert isinstance(app.screen, screens.Home) and app.screen.index == 0
+    app.send(hold(106, 2), hold(105, 1))
+    assert app.screen.index == 1
+    app.send(tap(CODE["k"]), [(108, 1)], tap(103), [(108, 2)] * 3)
+    assert isinstance(app.screen, screens.Keys) and app.screen.index == 0
+    app.send([(108, 0)], hold(108, 2))
+    assert app.screen.index == 3
 
 
 def test_an_early_driver_sent_the_right_shift_code_for_a_symbol(tmp_path):

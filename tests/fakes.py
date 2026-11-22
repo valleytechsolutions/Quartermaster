@@ -1,5 +1,7 @@
 """Stand-ins for the hardware, shared by the tests and the screenshot renderer."""
 
+import io
+import os
 import random
 
 from quartermaster.wifi import band_of, channel_of
@@ -34,6 +36,40 @@ def networks(count=412, seed=7):
                       "channel": channel_of(freq), "band": band_of(freq), "security": security,
                       "capabilities": capabilities})
     return found
+
+
+class Card(io.RawIOBase):
+    """The file of a log on a card that takes a number of bytes more, refuses, and has room again after that."""
+
+    def __init__(self, path, room, error, then):
+        self.fd, self.room, self.error, self.then = os.open(path, os.O_WRONLY | os.O_APPEND), room, error, then
+
+    def writable(self):
+        return True
+
+    def fileno(self):
+        return self.fd
+
+    def write(self, data):
+        if not self.room:
+            self.room, self.then = self.then, 0
+            raise self.error
+        taken = os.write(self.fd, bytes(data[:self.room]))
+        self.room -= taken
+        return taken
+
+    def close(self):
+        if not self.closed:
+            os.close(self.fd)
+        super().close()
+
+
+def on_a_card(writer, room, error=None, then=0):
+    """From now on the log is on a card with room for `room` bytes and, once it has refused, for `then` more."""
+    card = Card(writer.path, room, error or OSError(28, "No space left on device"), then)
+    before = writer.file
+    writer.file = io.TextIOWrapper(io.BufferedWriter(card), encoding="utf-8", newline="")
+    before.close()
 
 
 class Gps:

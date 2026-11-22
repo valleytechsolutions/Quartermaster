@@ -339,7 +339,7 @@ class Wardrive(Screen):
 class Summary(Screen):
     def __init__(self, status):
         self.s = status
-        self.title = "WARDRIVE SAVED" if status["log"] else "WARDRIVE ENDED"
+        self.title = "WARDRIVE SAVED" if status["log"] and not status["failed"] else "WARDRIVE ENDED"
 
     def hints(self, app):
         return [("Esc", "Menu"), ("L", "Logs"), ("U", "Uploads"), ("W", "New wardrive")]
@@ -351,14 +351,16 @@ class Summary(Screen):
                 ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
                 ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
                 ("Saved as", (s["log"].rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
-                 if s["log"] else "Nothing: GPS never had a fix")]
+                 if s["log"] else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
         for i, (label, value) in enumerate(rows):
             y = TOP + i * 17
             c.text((8, y), label, font("ui", 10), MUTED)
             c.text_right(W - 8, y, value, font("bold", 10), TEXT if i < 5 or s["log"] else AMBER)
             c.line((8, y + 14, W - 8, y + 14))
         status = app.upload_status()
-        if not s["log"]:
+        if s["failed"]:
+            text, color = s["failed"], RED
+        elif not s["log"]:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
         elif not status["keys"]:
             text, color = "Press K to add your upload keys.", AMBER
@@ -525,10 +527,11 @@ class Logs(Screen, ListMixin):
 
     def handle(self, key, app):
         files = app.log_files()
+        self.clamp(len(files), self.VISIBLE)
         if self.move(key, len(files), self.VISIBLE):
             return True
         if key == "ENTER" and files:
-            app.push(LogDetail(files[min(self.index, len(files) - 1)]))
+            app.push(LogDetail(files[self.index]))
         elif key == "U":
             app.upload_now()
         else:
@@ -910,9 +913,8 @@ class Settings(Screen, ListMixin):
             c.text((10, TOP + self.VISIBLE * 15 + 3 + i * 11), line, font("ui", 9), color)
 
     def handle(self, key, app):
-        before = self.index
         if self.move(key, len(self.items), self.VISIBLE):
-            self.skip_headers(1 if self.index >= before or key.name == "PAGEDOWN" else -1)
+            self.skip_headers(-1 if key.name == "UP" else 1)
             self.clamp(len(self.items), self.VISIBLE)
             return True
         name, label, choices, _ = self.items[self.index]

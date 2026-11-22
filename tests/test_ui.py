@@ -1,4 +1,7 @@
 import http.client
+import os
+from pathlib import Path
+import shutil
 import time
 
 import pytest
@@ -9,7 +12,8 @@ from quartermaster.recon_engine import Recon
 from quartermaster.ui import recon_screens, screens
 from quartermaster.ui.app import App
 from quartermaster.ui.keys import ScriptedInput
-from tests.fakes import ADAPTERS, FIX, NO_FIX, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent
+from tests.fakes import (ADAPTERS, FIX, NO_FIX, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent, networks,
+                         on_a_card)
 from tests.test_core import NOW
 from tests.test_uploads import KEYS
 
@@ -133,6 +137,88 @@ def test_ok_right_after_deleting_the_last_log_of_the_list_opens_the_one_left(tmp
     assert isinstance(app.screen, screens.LogDetail) and [app.screen.entry] == app.log_files()
 
 
+def test_the_logs_list_keeps_its_place_as_logs_go_and_keeps_the_one_being_recorded(tmp_path):
+    app = make_app(tmp_path)
+    for _ in range(4):
+        press(app, "W", "ESC", "SPACE", "ENTER", "ESC")
+    first, second, third, fourth = app.log_files()
+    press(app, "L", "DOWN", "ENTER")
+    assert isinstance(app.screen, screens.LogDetail) and app.screen.entry == second
+    press(app, "ESC", "DOWN", "DOWN", "ENTER", "D", "RIGHT", "ENTER")
+    assert isinstance(app.screen, screens.Logs) and (app.screen.index, app.log_files()) == (2, [first, second, third])
+    press(app, "ENTER", "D", "RIGHT", "ENTER", "UP", "ENTER")
+    assert isinstance(app.screen, screens.LogDetail) and app.screen.entry == first and len(app.log_files()) == 2
+    press(app, "D", "RIGHT", "ENTER", "ENTER")
+    assert isinstance(app.screen, screens.LogDetail) and [app.screen.entry] == app.log_files() == [second]
+    press(app, "D", "RIGHT", "ENTER", "ENTER", "DOWN", "PAGEUP")
+    assert isinstance(app.screen, screens.Logs) and app.log_files() == []
+    press(app, "ESC", "W", "ESC", "L", "ENTER", "D")
+    assert isinstance(app.screen, screens.LogDetail) and app.screen.entry["path"] == app.active_log()
+    assert app.toast_text == "Stop the wardrive before deleting its log" and app.active_log().exists()
+
+
+def test_a_card_that_takes_no_more_is_said_while_the_wardrive_runs_and_when_it_ends(tmp_path, drawn, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    on_a_card(app.drive.writer, room=0)
+    app.drive._wifi_sink(networks(420)[412:], ADAPTERS[0])
+    assert "Cannot write" not in screen_text(app, drawn)
+    later(5)
+    app.drive._sync()
+    assert "Cannot write the log: No space left on device" in screen_text(app, drawn)
+    press(app, "ENTER", "ENTER")
+    text = screen_text(app, drawn)
+    assert isinstance(app.screen, screens.Summary) and "WARDRIVE ENDED" in text and "WARDRIVE SAVED" not in text
+    assert "Cannot write the log: No space left on device" in text and "20261118-110640" in drawn
+    assert "Uploading to" not in text and "Nothing" not in text and "420" in drawn and "412" in drawn
+    assert app.drive.rows == 412 == len(app.drive.log_path.read_text().splitlines()) - 2
+
+
+def test_a_wardrive_that_could_never_start_its_log_ends_with_the_reason(tmp_path, drawn, monkeypatch):
+    real, logs = os.fsync, str(tmp_path / "logs")
+
+    def full(fd):
+        if os.readlink("/proc/self/fd/%d" % fd).startswith(logs):
+            raise OSError(28, "No space left on device")
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", full)
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Cannot write the log: No space left on device" in text and app.drive.rows == 0
+    press(app, "ENTER", "ENTER")
+    text = screen_text(app, drawn)
+    assert "WARDRIVE ENDED" in text and "Nothing" in drawn and "GPS" not in text.replace("GPS 14", "")
+    assert "Cannot write the log: No space left on device" in text and list((tmp_path / "logs").iterdir()) == []
+
+
+def test_a_logs_folder_that_cannot_be_used_is_said_and_no_wardrive_starts(tmp_path, monkeypatch):
+    app = make_app(tmp_path)
+
+    def broken(path):
+        raise OSError(5, "Input/output error")
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "disk_usage", broken)
+        press(app, "W")
+    assert app.toast_text == "The logs folder cannot be used: Input/output error" and not app.wardriving
+    assert isinstance(app.screen, screens.Home) and app.drive is None and radios.owner() is None
+    leftover = tmp_path / "logs" / ".quartermaster_20261117-090000.summary.csv.part"
+    others = [leftover.with_name(".quartermaster_20261116-080000.summary.csv" + end) for end in ("", ".part")]
+    for path in [leftover] + others:
+        path.write_text("")
+    real = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == leftover:
+            raise OSError(30, "Read-only file system")
+        return real(self, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", unlink)
+        press(app, "W")
+    assert app.wardriving and isinstance(app.screen, screens.Wardrive)
+    assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == [leftover.name]
+
+
 def test_wardrive_without_gps_says_why_nothing_is_logged(tmp_path, drawn):
     stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
     app = make_app(tmp_path, fix=NO_FIX, hw=Hardware(stalled=stalled))
@@ -213,6 +299,48 @@ def test_settings_are_saved_and_locked_while_scanning(tmp_path, drawn):
     typed(app, "Black Pearl")
     press(app, "ENTER")
     assert app.drive.ignore_names == {"Black Pearl"}         # the ignore list applies to a running wardrive at once
+
+
+def test_every_list_stops_at_its_ends_for_a_page_and_goes_round_for_a_row(tmp_path):
+    app = make_app(tmp_path)
+    press(app, "S")
+    settings = app.screen
+    rows = [i for i, item in enumerate(settings.items) if item[0] is not None]
+    assert settings.index == rows[0] and len(rows) < len(settings.items) > 2 * settings.VISIBLE
+    press(app, "PAGEUP")
+    assert settings.index == rows[0]
+    press(app, "PAGEDOWN", "PAGEUP", "PAGEUP", "PAGEUP")
+    assert settings.index == rows[0]
+    for start in rows:
+        for key, page in (("PAGEDOWN", settings.VISIBLE), ("PAGEUP", -settings.VISIBLE)):
+            settings.index = start
+            press(app, key)
+            landed = max(0, min(len(settings.items) - 1, start + page))
+            assert settings.index == (landed if landed in rows else landed + 1), (start, key)
+    press(app, *["PAGEUP"] * len(rows))
+    seen = []
+    for _ in rows:
+        press(app, "UP")
+        seen.append(settings.index)
+    assert seen == rows[::-1]
+    press(app, *["PAGEDOWN"] * len(rows))
+    assert settings.index == rows[-1]
+    seen = []
+    for _ in rows:
+        press(app, "DOWN")
+        seen.append(settings.index)
+    assert seen == rows
+    press(app, "ESC", "K", "PAGEUP")
+    last = len(accounts.FIELDS)
+    assert isinstance(app.screen, screens.Keys) and app.screen.index == 0
+    press(app, "PAGEDOWN")
+    assert app.screen.index == min(last, app.screen.VISIBLE)
+    press(app, "PAGEDOWN", "PAGEDOWN")
+    assert app.screen.index == last
+    press(app, "DOWN")
+    assert app.screen.index == 0
+    press(app, "UP")
+    assert app.screen.index == last
 
 
 def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn):

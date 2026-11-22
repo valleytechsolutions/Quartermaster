@@ -7,6 +7,7 @@ a log as made by Quartermaster: WiGLE, WDGWars and Wardrift all read it.
 """
 
 import csv
+import errno
 import io
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ COLUMNS = ("MAC", "SSID", "AuthMode", "FirstSeen", "Channel", "Frequency", "RSSI
 FIX_MAX_AGE = 5.0
 MIN_EPOCH = 1704067200  # 2024-01-01: an unset clock must never reach a log
 LOG_GLOB = "quartermaster_*.wigle.csv"
+SYNC_SECONDS = 5.0
 
 
 def pre_header(os_version=""):
@@ -108,24 +110,44 @@ def prune_empty(directory):
     return removed
 
 
+def trim(path, window=65536):
+    """Cut off a last line that has no end. A file that cannot be changed stays as it is."""
+    try:
+        with open(path, "rb+") as kept:
+            start = max(0, kept.seek(0, os.SEEK_END) - window)
+            kept.seek(start)
+            tail = kept.read()
+            whole = tail.rfind(b"\n") + 1
+            if whole or not start:
+                kept.truncate(start + whole)
+    except OSError:
+        pass
+
+
 class WigleWriter:
-    def __init__(self, path, os_version="", sync_every=5.0):
+    def __init__(self, path, os_version="", sync_every=SYNC_SECONDS):
         self.path = Path(path)
         self.size = self.path.stat().st_size if self.path.exists() else 0
         fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self.file = os.fdopen(fd, "a", encoding="utf-8", newline="")
         self.rows = 0
         self.sync_every = sync_every
-        self._synced = time.monotonic()
+        self._synced, self._waiting = time.monotonic(), False
         if self.size == 0:
-            self._emit(pre_header(os_version))
-            self._emit(COLUMNS)
-            self.sync(force=True)
+            try:
+                self._emit(pre_header(os_version))
+                self._emit(COLUMNS)
+                self.sync(force=True)
+            except OSError:
+                self.abandon()
+                self.path.unlink()
+                raise
 
     def _emit(self, row):
         line = io.StringIO()
         csv.writer(line, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerow(row)
         text = line.getvalue()
+        self._waiting = True
         self.file.write(text)
         self.size += len(text.encode("utf-8"))
 
@@ -156,22 +178,35 @@ class WigleWriter:
 
     def write_row(self, row):
         self._emit(row)
-        self.rows += 1
         self.sync()
+        self.rows += 1
 
     def sync(self, force=False):
+        """Put the rows that wait in memory on disk, every few seconds at most. An error means they are not there."""
         now = time.monotonic()
-        if force or now - self._synced >= self.sync_every:
+        if self._waiting and (force or now - self._synced >= self.sync_every):
             self.file.flush()
             try:
                 os.fsync(self.file.fileno())
-            except OSError:
-                pass
-            self._synced = now
+            except OSError as exc:
+                # A file system that cannot do this at all has still taken the rows.
+                if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+                    raise
+            self._synced, self._waiting = now, False
 
     def close(self):
+        """Close the file whatever happens. An error means that the last rows are not on disk."""
         try:
             self.sync(force=True)
+        finally:
             self.file.close()
-        except (OSError, ValueError):
+
+    def abandon(self):
+        """Give up a file that refused a write. A row that is only half there goes. Returns how many rows are lost."""
+        try:
+            self.file.close()
+        except OSError:
             pass
+        trim(self.path)
+        kept = data_rows(self.path)
+        return 0 if kept is None else self.rows - kept

@@ -5,7 +5,7 @@ import time
 from quartermaster import power
 from quartermaster.ui import app as app_module, gfx, screens
 from quartermaster.ui.gfx import AMBER, GREEN, MUTED, RED, TEXT, W, Canvas, font
-from tests.fakes import NO_FIX, Hardware
+from tests.fakes import ADAPTERS, NO_FIX, Hardware, networks, on_a_card
 from tests.test_ui import KEYS, make_app, press, screen_text
 
 
@@ -100,11 +100,16 @@ def test_a_missed_read_of_the_first_battery_does_not_show_the_second(tmp_path, m
     assert power.battery(tmp_path) == {"percent": 2, "charging": False}
 
 
-def test_the_battery_of_a_wireless_keyboard_is_not_the_devices_own(tmp_path):
-    supply(tmp_path, "hidpp_battery_0", type="Battery\n", scope="Device\n", capacity="12\n", status="Discharging\n")
+def test_the_battery_of_a_wireless_keyboard_is_not_the_devices_own(tmp_path, monkeypatch):
+    mouse = supply(tmp_path, "hidpp_battery_0", type="Battery\n", scope="Device\n", capacity="12\n",
+                   status="Discharging\n")
     assert power.battery(tmp_path) is None
+    mains = supply(tmp_path, "ac", type="Mains\n", online="1\n")
     supply(tmp_path, "zz-gauge", type="Battery\n", capacity="64\n", status="Discharging\n")
     assert power.battery(tmp_path) == {"percent": 64, "charging": False}
+    for path in (mouse / "capacity", mouse / "status", mouse / "present", mains / "type", mains / "capacity"):
+        with unreadable(monkeypatch, path, OSError(5, "Input/output error")):
+            assert power.battery(tmp_path) == {"percent": 64, "charging": False}, path
     supply(tmp_path, "bq27220-0", type="Battery\n", scope="System\n", capacity="81\n", status="Charging\n")
     assert power.battery(tmp_path) == {"percent": 81, "charging": True}
 
@@ -157,6 +162,51 @@ def test_the_hardware_watch_reads_at_the_start_and_then_keeps_reading(monkeypatc
         time.sleep(0.01)
     watch.stop()
     assert len(reads) >= 4
+
+
+def test_a_check_that_fails_is_noted_and_the_next_one_still_runs(monkeypatch, noted):
+    reads = []
+
+    def read():
+        reads.append(len(reads))
+        if len(reads) in (1, 3):
+            raise ValueError("no gauge")
+        return {"percent": 50, "charging": False}
+    monkeypatch.setattr(power, "battery", read)
+    quiet_hardware(monkeypatch)
+    assert app_module.HardwareWatch().interval == 5
+    watch = app_module.HardwareWatch(interval=0.01)
+    watch.start()
+    assert reads == [0] or watch.battery
+    deadline = time.monotonic() + 5
+    while len(reads) < 5 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    watch.stop()
+    watch._thread.join(5)
+    assert len(reads) >= 5 and watch.battery == {"percent": 50, "charging": False} and not watch._thread.is_alive()
+    assert noted.read_text().count("Hardware check") == 1 and "ValueError: no gauge" in noted.read_text()
+
+
+def test_the_watch_runs_for_as_long_as_the_app_and_recon_stops_with_it(tmp_path):
+    class Watched(Hardware):
+        started = stopped = 0
+
+        def start(self):
+            self.started += 1
+
+        def stop(self):
+            self.stopped += 1
+    app = make_app(tmp_path, keys=KEYS, hw=Watched())
+    press(app, "R", "SPACE")
+    assert app.recon_running and (app.hw.started, app.hw.stopped) == (0, 0)
+    seen = []
+
+    def show(image):
+        seen.append((app.hw.started, app.hw.stopped, app.recon_running))
+        app.quit()
+    app.display.show = show
+    app.run()
+    assert seen == [(1, 0, True)] and (app.hw.started, app.hw.stopped) == (1, 1) and not app.recon_running
 
 
 def bar(app):
@@ -322,6 +372,16 @@ def test_a_battery_that_is_already_low_at_the_start_shows_in_the_gauge_only(tmp_
     assert discharge(splash, 60) == "" and discharge(splash, 5) == "" and isinstance(splash.screen, screens.Splash)
 
 
+def test_the_first_reading_is_the_only_one_that_is_never_announced(tmp_path):
+    app = make_app(tmp_path, keys=KEYS, hw=Hardware(battery={"percent": 22, "charging": True}))
+    assert discharge(app, 22, charging=True) == "" and discharge(app, 19, charging=True) == ""
+    assert discharge(app, 19) == "Battery at 19%. Plug in to keep going."
+    low = make_app(tmp_path / "low", keys=KEYS, hw=Hardware(battery={"percent": 11, "charging": True}))
+    assert discharge(low, 11, charging=True) == "" and discharge(low, 10) == "Battery at 10%. Plug in soon."
+    assert discharge(low, 30, charging=True) == "" and discharge(low, 9) == ""
+    assert discharge(low, 30) == "" and discharge(low, 9) == "Battery at 9%. Plug in soon."
+
+
 def test_almost_empty_a_wardrive_is_saved_and_quartermaster_closes(tmp_path, later):
     app = make_app(tmp_path, keys=KEYS)
     press(app, "W")
@@ -408,7 +468,64 @@ def test_the_notice_says_saved_only_when_a_log_was_saved(tmp_path, later):
     assert list((tmp_path / "logs").iterdir()) == []
     failing = make_app(tmp_path / "failing", keys=KEYS)
     press(failing, "W")
-    failing.drive.error = "Cannot write the log: No space left on device"
-    assert discharge(failing, 3) == "Battery at 3%. Plug in soon."
+    on_a_card(failing.drive.writer, room=0)
+    failing.drive._wifi_sink(networks(420)[412:], ADAPTERS[0])
+    assert failing.drive.failed == "" and discharge(failing, 3) == "Battery at 3%. Plug in soon."
     later(15.5)
     assert discharge(failing, 3) == "Battery almost empty. Closing now." and not failing.wardriving
+    assert failing.drive.failed == "Cannot write the log: No space left on device"
+
+
+def test_the_wait_before_closing_counts_only_an_empty_battery_off_the_charger(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert discharge(app, 2, charging=True) == ""
+    later(60)
+    assert discharge(app, 2, charging=True) == "" and discharge(app, 2) == "Battery at 2%. Plug in soon."
+    later(14)
+    assert discharge(app, 2) == "" and app.wardriving
+    app.hw.battery = None
+    app.step(0)
+    later(1.5)
+    app.step(0)
+    assert app.wardriving and app._closing is None
+    assert discharge(app, 2) == "Battery almost empty. Wardrive saved. Closing now."
+    level = make_app(tmp_path / "level", keys=KEYS)
+    press(level, "W")
+    assert discharge(level, 3) == "Battery at 3%. Plug in soon."
+    later(10)
+    assert discharge(level, 4, charging=True) == ""
+    later(10)
+    assert discharge(level, 3) == "" and level.wardriving
+    late = make_app(tmp_path / "late", keys=KEYS)
+    press(late, "W")
+    assert discharge(late, 2) == "Battery at 2%. Plug in soon."
+    later(30)
+    assert discharge(late, 2, charging=True) == "" and late.wardriving and late._closing is None
+    assert discharge(late, 2) == "Battery almost empty. Wardrive saved. Closing now."
+
+
+def test_the_closing_notice_stays_for_ten_seconds_after_a_slow_save(tmp_path, later, monkeypatch):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    stop = app.drive.stop
+
+    def slow():
+        later(7)
+        stop()
+    monkeypatch.setattr(app.drive, "stop", slow)
+    assert discharge(app, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(app, 3) == "Battery almost empty. Wardrive saved. Closing now."
+    assert 9 < app.toast_until - time.monotonic() <= 10
+    later(9)
+    assert discharge(app, 3) == "" and app.running
+    later(1.5)
+    app.step(0)
+    assert not app.running
+    earlier = make_app(tmp_path / "earlier", keys=KEYS)
+    press(earlier, "W", "ESC", "SPACE", "ENTER")
+    assert not earlier.wardriving and earlier.drive.log_path.exists()
+    assert discharge(earlier, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(earlier, 3) == "Battery almost empty. Closing now."
