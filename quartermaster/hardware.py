@@ -30,7 +30,7 @@ DRIVER_CHIPSETS = {
 
 # USB vendor:product -> retail name, for adapters wardrivers actually carry.
 USB_ADAPTERS = {
-    "0e8d:7961": "MT7921AU tri-band (ALFA AWUS036AXML / Comfast CF-951AX)",
+    "0e8d:7961": "MT7921AU tri-band (ALFA AWUS036AXML / AXM)",
     "0e8d:7925": "MT7925 tri-band Wi-Fi 7",
     "3574:6211": "Netgear A8000 (MT7921AU tri-band)",
     "0846:9060": "Netgear A8000 (MT7921AU tri-band)",
@@ -176,7 +176,10 @@ def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
     found.sort(key=lambda item: not item["likely"])
     # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's UARTs.
     for path, label in (("/dev/ttyS0", "Cap / Grove UART"), ("/dev/ttyAMA0", "Grove UART"), ("/dev/serial0", "Pi UART")):
-        if (Path(dev) / Path(path).name).exists() and all(c["path"] != path for c in found):
+        node = Path(dev) / Path(path).name
+        # /dev/serial0 is usually a link to one of the others: list each real port once.
+        real = str(node.resolve()) if node.is_symlink() else path
+        if node.exists() and all(c["path"] not in (path, real) for c in found):
             found.append({"path": path, "kind": "uart", "usb_id": "", "label": label, "likely": True})
     for path in extra:
         if path and all(c["path"] != path for c in found):
