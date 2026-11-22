@@ -1,4 +1,7 @@
 import csv
+import os
+import stat
+import time
 
 from quartermaster import engine
 from quartermaster.engine import Wardrive
@@ -203,3 +206,50 @@ def test_an_all_day_drive_makes_room_in_memory_and_still_summarises_every_device
     summary = list(csv.DictReader(drive.log_path.with_name(drive.log_path.name.replace("wigle", "summary")).open()))
     assert [row["MAC"] for row in summary] == [net["bssid"].lower() for net in heard + heard[:1]]
     assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == []
+
+
+def test_the_log_and_the_summary_are_on_disk_under_their_names_when_the_wardrive_stops(tmp_path, monkeypatch):
+    real, synced = os.fsync, []
+
+    def fsync(fd):
+        folder = stat.S_ISDIR(os.fstat(fd).st_mode)
+        synced.append(("folder" if folder else os.fstat(fd).st_size,
+                       sorted(path.name for path in (tmp_path / "logs").iterdir())))
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", fsync)
+    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
+                     clock=lambda: NOW)
+    drive.start()
+    log, summary = "quartermaster_20261118-110640.wigle.csv", "quartermaster_20261118-110640.summary.csv"
+    header = len("\n".join(drive.log_path.read_text().splitlines()[:2])) + 1
+    assert synced == [(header, [log]), ("folder", [log])]
+    drive.stop()
+    sizes = [(tmp_path / "logs" / name).stat().st_size for name in (log, summary)]
+    assert sizes[0] > header and sizes[1] > 0
+    assert synced[2:] == [(sizes[0], [log]), (sizes[1], ["." + summary, log]), ("folder", [summary, log])]
+
+
+def test_the_last_rows_reach_the_disk_without_waiting_for_the_next_row(tmp_path, monkeypatch, later):
+    monkeypatch.setattr(engine, "UPKEEP_SECONDS", 0.01)
+    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: NOW)
+    drive.start()
+    drive._wifi_sink(networks(30), ADAPTERS[0])
+    time.sleep(0.1)
+    assert drive.rows == 30 and len(rows_of(drive.log_path)) < 30
+    later(5)
+    deadline = time.monotonic() + 5
+    while len(rows_of(drive.log_path)) < 30 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(rows_of(drive.log_path)) == 30 and drive.error == ""
+
+    def full(force=False):
+        raise OSError(28, "No space left on device")
+    with monkeypatch.context() as patch:
+        patch.setattr(drive.writer, "sync", full)
+        deadline = time.monotonic() + 5
+        while not drive.error and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert drive.error == "Cannot write the log: No space left on device"
+    drive.stop()
+    assert len(rows_of(drive.log_path)) == 30

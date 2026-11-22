@@ -1,7 +1,11 @@
+import contextlib
+from pathlib import Path
+import time
+
 from quartermaster import power
 from quartermaster.ui import app as app_module, gfx, screens
 from quartermaster.ui.gfx import AMBER, GREEN, MUTED, RED, TEXT, W, Canvas, font
-from tests.fakes import Hardware
+from tests.fakes import NO_FIX, Hardware
 from tests.test_ui import KEYS, make_app, press, screen_text
 
 
@@ -14,9 +18,10 @@ def supply(root, name, **files):
 
 
 def test_the_battery_is_read_the_way_the_system_reports_it(tmp_path):
-    gauge = supply(tmp_path, "bq27220-0", type="Battery\n", capacity="81\n", status="Charging\n", present="1\n")
+    gauge = supply(tmp_path, "bq27220-0", type="Battery\n", capacity="81\n", status="Charging\n", present="1\n",
+                   charge_now="1051000\n", charge_full="1685000\n", current_now="135000\n")
     assert power.battery(tmp_path) == {"percent": 81, "charging": True}
-    for status in ("Discharging", "Not charging", "Unknown", "charging", ""):
+    for status in ("Discharging", "Not charging", "Full", "Unknown", "charging", ""):
         (gauge / "status").write_text(status + "\n")
         assert power.battery(tmp_path) == {"percent": 81, "charging": False}
     (gauge / "status").unlink()
@@ -50,6 +55,51 @@ def test_a_battery_that_cannot_be_read_is_no_battery(tmp_path):
     assert power.battery(tmp_path) == {"percent": 81, "charging": False}
 
 
+@contextlib.contextmanager
+def unreadable(monkeypatch, path, error):
+    """A read of this file fails, in one of the ways a read of the fuel gauge can."""
+    real = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            raise error
+        return real(self, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", read_text)
+        yield
+
+
+def test_a_reading_with_a_part_that_could_not_be_read_is_no_reading(tmp_path, monkeypatch):
+    gauge = supply(tmp_path, "bq27220-0", type="Battery\n", capacity="15\n", status="Charging\n", present="1\n")
+    again = TypeError("can't concat NoneType to bytes")
+    for file in ("capacity", "status", "present"):
+        for error in (OSError(5, "Input/output error"), OSError(121, "Remote I/O error"), again):
+            with unreadable(monkeypatch, gauge / file, error):
+                assert power.battery(tmp_path) is None, (file, error)
+            assert power.battery(tmp_path) == {"percent": 15, "charging": True}
+    (gauge / "status").unlink()
+    (gauge / "status").mkdir()
+    assert power.battery(tmp_path) is None
+    (gauge / "status").rmdir()
+    with unreadable(monkeypatch, gauge / "type", again):
+        assert power.battery(tmp_path) is None
+    with unreadable(monkeypatch, gauge / "scope", again):
+        assert power.battery(tmp_path) == {"percent": 15, "charging": False}
+
+
+def test_a_missed_read_of_the_first_battery_does_not_show_the_second(tmp_path, monkeypatch):
+    first = supply(tmp_path, "BAT0", type="Battery\n", capacity="60\n", status="Discharging\n", present="1\n")
+    supply(tmp_path, "BAT1", type="Battery\n", capacity="2\n", status="Discharging\n", present="1\n")
+    assert power.battery(tmp_path) == {"percent": 60, "charging": False}
+    with unreadable(monkeypatch, first / "capacity", OSError(5, "Input/output error")):
+        assert power.battery(tmp_path) is None
+    (first / "present").write_text("0\n")
+    assert power.battery(tmp_path) == {"percent": 2, "charging": False}
+    (first / "present").write_text("1\n")
+    (first / "capacity").unlink()
+    assert power.battery(tmp_path) == {"percent": 2, "charging": False}
+
+
 def test_the_battery_of_a_wireless_keyboard_is_not_the_devices_own(tmp_path):
     supply(tmp_path, "hidpp_battery_0", type="Battery\n", scope="Device\n", capacity="12\n", status="Discharging\n")
     assert power.battery(tmp_path) is None
@@ -59,11 +109,15 @@ def test_the_battery_of_a_wireless_keyboard_is_not_the_devices_own(tmp_path):
     assert power.battery(tmp_path) == {"percent": 81, "charging": True}
 
 
-def test_the_hardware_watch_keeps_the_battery_level_fresh(monkeypatch):
-    levels = iter([None, {"percent": 50, "charging": False}, None, {"percent": 49, "charging": True}, None])
-    monkeypatch.setattr(power, "battery", lambda: next(levels))
+def quiet_hardware(monkeypatch):
     for name in ("wifi_adapters", "bluetooth_adapters", "gps_candidates", "stalled_usb_adapters"):
         monkeypatch.setattr(app_module.hardware, name, lambda: [])
+
+
+def test_the_hardware_watch_keeps_the_battery_level_fresh(monkeypatch, later):
+    levels = iter([None, {"percent": 50, "charging": False}, None, {"percent": 0, "charging": True}, None, None])
+    monkeypatch.setattr(power, "battery", lambda: next(levels))
+    quiet_hardware(monkeypatch)
     watch = app_module.HardwareWatch()
     assert watch.battery is None
     seen = []
@@ -71,8 +125,11 @@ def test_the_hardware_watch_keeps_the_battery_level_fresh(monkeypatch):
         watch.refresh()
         seen.append(watch.battery)
     assert seen == [None, {"percent": 50, "charging": False}, {"percent": 50, "charging": False},
-                    {"percent": 49, "charging": True}]
-    monkeypatch.setattr(app_module, "BATTERY_SILENCE", -1)
+                    {"percent": 0, "charging": True}]
+    later(59)
+    watch.refresh()
+    assert watch.battery == {"percent": 0, "charging": True}
+    later(2)
     watch.refresh()
     assert watch.battery is None
 
@@ -82,6 +139,24 @@ def test_the_hardware_watch_keeps_the_battery_level_fresh(monkeypatch):
     monkeypatch.setattr(power, "battery", lambda: {"percent": 48, "charging": False})
     watch.refresh()
     assert watch.battery == {"percent": 48, "charging": False}
+
+
+def test_the_hardware_watch_reads_at_the_start_and_then_keeps_reading(monkeypatch):
+    reads = []
+
+    def read():
+        reads.append(len(reads))
+        return {"percent": 50, "charging": False}
+    monkeypatch.setattr(power, "battery", read)
+    quiet_hardware(monkeypatch)
+    watch = app_module.HardwareWatch(interval=0.01)
+    watch.start()
+    assert watch.battery == {"percent": 50, "charging": False}
+    deadline = time.monotonic() + 5
+    while len(reads) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    watch.stop()
+    assert len(reads) >= 4
 
 
 def bar(app):
@@ -111,7 +186,7 @@ def test_every_screen_shows_the_battery_at_the_top(tmp_path, drawn):
     assert picture.getpixel((W - 5 - 22, 8)) == MUTED and picture.getpixel((W - 5 - 1, 8)) == MUTED
 
 
-def test_the_gauge_turns_amber_then_red_and_green_while_charging(tmp_path, drawn):
+def test_the_gauge_turns_amber_then_red_and_green_while_charging(tmp_path, drawn, monkeypatch):
     app = make_app(tmp_path)
     for level, color in ((100, TEXT), (21, TEXT), (20, AMBER), (11, AMBER), (10, RED), (1, RED)):
         app.hw.battery = {"percent": level, "charging": False}
@@ -126,10 +201,26 @@ def test_the_gauge_turns_amber_then_red_and_green_while_charging(tmp_path, drawn
     assert fill(picture, 45) == TEXT and fill(picture, 55) == gfx.SURFACE
     app.hw.battery = {"percent": 0, "charging": False}
     assert "0%" in screen_text(app, drawn) and fill(bar(app)[0], 0) == gfx.SURFACE
+    bolts = []
+    monkeypatch.setattr(app_module.icons, "draw", lambda canvas, name, x, y, size, color:
+                        bolts.append(color) if name == "bolt" else None)
+    bar(app)
+    assert bolts == []
     for level in (100, 15, 3):
         app.hw.battery = {"percent": level, "charging": True}
         picture, _ = bar(app)
         assert fill(picture, 0) == GREEN and picture.getpixel((W - 5 - 22, 8)) == GREEN
+        assert bolts.pop() == GREEN and bolts == []
+
+
+def test_the_tips_say_what_happens_when_the_battery_is_almost_empty(tmp_path, drawn):
+    app = make_app(tmp_path)
+    press(app, "A", "T")
+    pages = []
+    for _ in range(4):
+        pages.append(screen_text(app, drawn).replace("\n", " "))
+        press(app, "PAGEDOWN")
+    assert "almost empty, a running wardrive is saved and Quartermaster closes" in " ".join(pages)
 
 
 def test_a_device_without_a_battery_shows_no_gauge(tmp_path, drawn):
@@ -137,36 +228,50 @@ def test_a_device_without_a_battery_shows_no_gauge(tmp_path, drawn):
     text = screen_text(app, drawn)
     assert "%" not in text and "GPS 14" in text
     small = font("monob", 9)
-    assert app.indicators(Canvas(), None)[0][0] == int(Canvas().text_width("GPS 14", small))
+    assert app.indicators(Canvas())[0][0] == int(Canvas().text_width("GPS 14", small))
 
 
-def room(app, canvas, percent=True):
-    """How wide the title may be before it reaches the indicators."""
-    return W - 33 - sum(width + 8 for width, _ in app.indicators(canvas, app.hw.battery, percent))
+def bar_text(app, drawn, monkeypatch):
+    """What the status bar says, and whether it shows the bolt."""
+    bolts = []
+    with monkeypatch.context() as patch:
+        patch.setattr(app_module.icons, "draw", lambda canvas, name, x, y, size, color:
+                      bolts.append(name) if name == "bolt" else None)
+        text = screen_text(app, drawn).split("\n")
+    return text, bool(bolts)
 
 
-def test_the_title_never_runs_into_the_indicators(tmp_path, drawn):
+def test_where_room_is_short_the_bolt_goes_first_then_the_number_and_never_the_title(tmp_path, drawn, monkeypatch):
     app = make_app(tmp_path, keys=KEYS)
-    app.hw.battery = {"percent": 100, "charging": True}
-    press(app, "W")
-    app.upload_status = lambda: {"uploading": False, "waiting": 7, "keys": 2, "files": []}
-    press(app, "ESC")
+    press(app, "W", "ESC")
     assert isinstance(app.screen, screens.Home) and app.wardriving
+
+    def state(title, waiting, level, charging):
+        app.screen.title = title
+        app.upload_status = lambda: {"uploading": False, "waiting": waiting, "keys": 2, "files": []}
+        app.hw.battery = {"percent": level, "charging": charging}
+        return bar_text(app, drawn, monkeypatch)
+    text, bolt = state("QUARTERMASTER", 0, 100, True)
+    assert "QUARTERMASTER" in text and "100%" in text and bolt
+    text, bolt = state("QUARTERMASTER", 7, 100, True)
+    assert "QUARTERMASTER" in text and "100%" in text and "7" in text and "GPS 14" in text and not bolt
+    app.gps.fix = dict(app.gps.fix, satellites=9)
+    text, bolt = state("QUARTERMASTER", 7, 100, True)
+    assert "GPS 9" in text and "100%" in text and not bolt
+    app.gps.fix = dict(app.gps.fix, satellites=14)
+    for level in (100, 99, 9):
+        text, bolt = state("QUARTERMASTER", 15, level, False)
+        assert "QUARTERMASTER" in text and "%d%%" % level in text
+        text, bolt = state("QUARTERMASTER", 150, level, True)
+        assert "QUARTERMASTER" in text and "%d%%" % level not in text and bolt
+        text, bolt = state("IGNORED NETWORKS", 150, level, True)
+        assert "IGNORED NETWORKS" in text and "%d%%" % level not in text and not bolt
     canvas, title = Canvas(), font("bold", 11)
-    width = canvas.text_width("QUARTERMASTER", title)
-    assert room(app, canvas, percent=False) >= width > room(app, canvas)
-    text = screen_text(app, drawn).split("\n")
-    assert "QUARTERMASTER" in text and "100%" not in text and "7" in text and "GPS 14" in text
-    app.screen.title = "IGNORED NETWORKS AND MORE"
-    text = screen_text(app, drawn).split("\n")
+    text, bolt = state("IGNORED NETWORKS AND MORE", 150, 100, True)
     shortened = [line for line in text if line.endswith("…")]
-    assert len(shortened) == 1 and shortened[0].startswith("IGNORED NETW") and "100%" not in text
-    assert canvas.text_width(shortened[0], title) <= room(app, canvas, percent=False)
-    app.hw.battery = {"percent": 100, "charging": False}
-    app.screen.title = "QUARTERMASTER"
-    assert room(app, canvas) >= width
-    text = screen_text(app, drawn).split("\n")
-    assert "QUARTERMASTER" in text and "100%" in text
+    assert len(shortened) == 1 and shortened[0].startswith("IGNORED NETW") and "100%" not in text and not bolt
+    left = W - 5 - sum(width + 8 for width, _ in app.indicators(canvas)) - 22
+    assert left - 4 - 28 - canvas.text_width("…", title) < canvas.text_width(shortened[0], title) <= left - 4 - 28
     app.hw.battery = None
     app.screen.title = "IGNORED NETWORKS AND MORE AND MORE"
     text = screen_text(app, drawn).split("\n")
@@ -184,14 +289,25 @@ def test_a_battery_running_down_is_announced_once_per_level(tmp_path):
     app = make_app(tmp_path, keys=KEYS)
     assert [discharge(app, level) for level in (87, 50, 25, 21)] == [""] * 4
     assert discharge(app, 20) == "Battery at 20%. Plug in to keep going." and app.toast_color == AMBER
-    assert [discharge(app, level) for level in (19, 20, 21, 22, 20, 11)] == [""] * 6
+    assert [discharge(app, level) for level in (19, 20, 21, 22, 24, 20, 11)] == [""] * 7
     assert discharge(app, 10) == "Battery at 10%. Plug in soon." and app.toast_color == RED
-    assert [discharge(app, level) for level in (9, 12, 4)] == [""] * 3
-    assert discharge(app, 9, charging=True) == "" and discharge(app, 15) == "Battery at 15%. Plug in to keep going."
-    assert discharge(app, 25) == "" and discharge(app, 8) == "Battery at 8%. Plug in soon."
+    assert [discharge(app, level) for level in (9, 12, 4, 24, 4)] == [""] * 5
+    assert discharge(app, 25) == "" and discharge(app, 19) == "Battery at 19%. Plug in to keep going."
+    assert discharge(app, 8) == "Battery at 8%. Plug in soon."
     app.hw.battery = None
     app.step(0)
     assert discharge(app, 7) == ""
+
+
+def test_a_charger_that_comes_and_goes_does_not_repeat_the_notice(tmp_path):
+    app = make_app(tmp_path, keys=KEYS)
+    assert discharge(app, 30) == "" and discharge(app, 18) == "Battery at 18%. Plug in to keep going."
+    for _ in range(3):
+        assert discharge(app, 18, charging=True) == "" and discharge(app, 18) == ""
+    assert discharge(app, 9, charging=True) == "" and discharge(app, 9) == "Battery at 9%. Plug in soon."
+    assert discharge(app, 9, charging=True) == "" and discharge(app, 9) == ""
+    assert discharge(app, 60, charging=True) == "" and discharge(app, 60) == ""
+    assert discharge(app, 20) == "Battery at 20%. Plug in to keep going."
 
 
 def test_a_battery_that_is_already_low_at_the_start_shows_in_the_gauge_only(tmp_path, drawn):
@@ -199,29 +315,100 @@ def test_a_battery_that_is_already_low_at_the_start_shows_in_the_gauge_only(tmp_
     app.step(0)
     assert app.toast_text == "" and "15%" in screen_text(app, drawn)
     assert discharge(app, 14) == "" and discharge(app, 10) == "Battery at 10%. Plug in soon."
-    splash = make_app(tmp_path, splash=True, hw=Hardware(battery={"percent": 60, "charging": False}))
-    assert discharge(splash, 5) == "" and isinstance(splash.screen, screens.Splash)
+    plugged = make_app(tmp_path / "plugged", keys=KEYS, hw=Hardware(battery={"percent": 15, "charging": True}))
+    assert discharge(plugged, 15, charging=True) == "" and discharge(plugged, 15) == ""
+    assert discharge(plugged, 10) == "Battery at 10%. Plug in soon."
+    splash = make_app(tmp_path / "splash", splash=True, hw=Hardware(battery={"percent": 60, "charging": False}))
+    assert discharge(splash, 60) == "" and discharge(splash, 5) == "" and isinstance(splash.screen, screens.Splash)
 
 
-def test_a_wardrive_is_saved_before_the_battery_is_empty(tmp_path, drawn, monkeypatch):
+def test_almost_empty_a_wardrive_is_saved_and_quartermaster_closes(tmp_path, later):
     app = make_app(tmp_path, keys=KEYS)
     press(app, "W")
-    assert discharge(app, 5) == "Battery at 5%. Plug in soon." and discharge(app, 4) == ""
+    assert discharge(app, 5) == "Battery at 5%. Plug in soon." and discharge(app, 3) == ""
+    later(14)
+    assert discharge(app, 3) == "" and discharge(app, 0) == "" and app.wardriving and app.running
+    later(1.5)
+    assert discharge(app, 3) == "Battery almost empty. Wardrive saved. Closing now." and app.toast_color == RED
+    assert not app.wardriving and isinstance(app.screen, screens.Summary) and app.running
+    assert len(list((tmp_path / "logs").glob("*.summary.csv"))) == 1
+    later(9)
+    assert [discharge(app, level) for level in (2, 4, 9)] == [""] * 3 and app.running
+    app.hw.battery = None
+    app.step(0)
+    assert app.running
+    later(1.5)
+    app.step(0)
+    assert not app.running
+
+
+def test_the_wait_before_closing_starts_again_when_the_level_comes_back_up(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert discharge(app, 3) == "Battery at 3%. Plug in soon."
+    later(10)
+    assert discharge(app, 4) == ""
+    later(10)
+    assert discharge(app, 3) == ""
+    later(14)
     assert discharge(app, 3) == "" and app.wardriving
-    assert discharge(app, 9) == "" and discharge(app, 0) == "" and discharge(app, 2, charging=True) == ""
-    assert discharge(app, 3) == "Battery at 3%. Plug in soon." and app.wardriving
-    monkeypatch.setattr(app_module, "EMPTY_SECONDS", 0)
-    assert discharge(app, 3) == "Battery almost empty. The wardrive is saved." and app.toast_color == RED
-    assert not app.wardriving and isinstance(app.screen, screens.Summary)
-    log = app.drive.log_path
-    assert log.exists() and log.with_name(log.name.replace(".wigle.csv", ".summary.csv")).stat().st_size > 0
-    assert "WARDRIVE SAVED" in screen_text(app, drawn)
-    press(app, "ESC", "W")
-    assert app.wardriving and discharge(app, 2) == "" and discharge(app, 1) == "" and app.wardriving
-    assert discharge(app, 1, charging=True) == "" and app.wardriving
-    assert discharge(app, 1) == "Battery almost empty. The wardrive is saved." and not app.wardriving
-    idle = make_app(tmp_path / "idle", keys=KEYS)
-    monkeypatch.setattr(app_module, "EMPTY_SECONDS", 15)
-    assert discharge(idle, 40) == "" and discharge(idle, 2) == "Battery at 2%. Plug in soon."
-    monkeypatch.setattr(app_module, "EMPTY_SECONDS", 0)
-    assert discharge(idle, 2) == "Battery almost empty. Plug in now." and discharge(idle, 1) == ""
+    later(1.5)
+    assert discharge(app, 3) == "Battery almost empty. Wardrive saved. Closing now."
+
+
+def test_a_charger_that_comes_and_goes_cannot_keep_an_empty_battery_going(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert discharge(app, 2) == "Battery at 2%. Plug in soon."
+    for seconds, charging in ((5, True), (5, False), (5, True), (5.5, True)):
+        later(seconds)
+        assert discharge(app, 2, charging) == "" and app.wardriving
+    later(0.5)
+    assert discharge(app, 2) == "Battery almost empty. Wardrive saved. Closing now." and not app.wardriving
+
+
+def test_a_charger_that_holds_ends_the_wait_before_closing(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert discharge(app, 2) == "Battery at 2%. Plug in soon."
+    later(5)
+    assert discharge(app, 2, charging=True) == ""
+    later(14)
+    assert discharge(app, 2, charging=True) == ""
+    later(1.5)
+    assert discharge(app, 2, charging=True) == "" and discharge(app, 2) == "" and app.wardriving
+    later(14)
+    assert discharge(app, 2) == "" and app.wardriving
+    later(1.5)
+    assert discharge(app, 2) == "Battery almost empty. Wardrive saved. Closing now."
+
+
+def test_plugging_in_keeps_quartermaster_open(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "R", "SPACE")
+    assert app.recon_running and discharge(app, 2) == "Battery at 2%. Plug in soon."
+    later(15.5)
+    assert discharge(app, 2) == "Battery almost empty. Closing now." and not app.recon_running and app.running
+    later(10.5)
+    assert discharge(app, 2, charging=True) == "Charging. Quartermaster stays open." and app.toast_color == GREEN
+    assert discharge(app, 2, charging=True) == "" and app._closing is None and app.running
+    assert discharge(app, 3) == ""
+    later(15.5)
+    assert discharge(app, 3) == "Battery almost empty. Closing now." and discharge(app, 3) == "" and app.running
+    later(10.5)
+    assert discharge(app, 3) == "" and not app.running
+
+
+def test_the_notice_says_saved_only_when_a_log_was_saved(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS, fix=NO_FIX)
+    press(app, "W")
+    assert app.wardriving and discharge(app, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(app, 3) == "Battery almost empty. Closing now." and not app.wardriving
+    assert list((tmp_path / "logs").iterdir()) == []
+    failing = make_app(tmp_path / "failing", keys=KEYS)
+    press(failing, "W")
+    failing.drive.error = "Cannot write the log: No space left on device"
+    assert discharge(failing, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(failing, 3) == "Battery almost empty. Closing now." and not failing.wardriving

@@ -17,6 +17,7 @@ MIN_FREE_BYTES = 32 * 1024 * 1024
 # Every upload site takes a file this size: Wardrift stops at 10 MiB, WDGWars at 15 MB.
 ROTATE_BYTES = 8 * 1024 * 1024
 EXTREME_IDLE_SECONDS = 120
+UPKEEP_SECONDS = 4.0
 MAX_TRACKED = 100_000       # devices kept in memory, about 1 KB each: the CardputerZero has 512 MB
 DEFAULT_ROOT = Path(os.environ.get("QUARTERMASTER_HOME", str(Path.home() / "quartermaster")))
 BANDS = {"2.4": {"2.4"}, "5": {"5"}, "6": {"6"}, "5+6": {"5", "6"}}
@@ -44,6 +45,20 @@ def _utc(epoch):
 def _summary_row(d):
     return [d.mac.lower(), d.kind, wigle._text(d.name), d.security, d.channel or "", d.frequency or "", d.band,
             _utc(d.first_seen), _utc(d.last_seen), d.sightings, d.rows, *_extreme(d.best), *_extreme(d.worst)]
+
+
+def _settle(folder):
+    """A file's new name lasts through a power cut only once its folder is on disk as well."""
+    try:
+        fd = os.open(str(folder), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _record(device):
@@ -128,16 +143,26 @@ class Wardrive:
             thread.start()
 
     def _housekeeping(self):
-        """Pick up adapters plugged in or pulled out, and write the extremes of devices left behind."""
+        """Put waiting rows on disk, follow adapters plugged in or pulled out, write the extremes of devices left."""
         ticks = 0
-        while not self._stop.wait(4.0):
+        while not self._stop.wait(UPKEEP_SECONDS):
             ticks += 1
             try:
+                self._sync()
                 self._follow_adapters()
                 if ticks % 15 == 0:
                     self._tidy()
             except Exception:
                 faults.note("Wardrive upkeep")
+
+    def _sync(self):
+        """Rows wait in memory for the next one. Where nothing new is heard, that row may never come."""
+        with self._lock:
+            try:
+                if self.writer is not None:
+                    self.writer.sync()
+            except OSError as exc:
+                self.error = "Cannot write the log: %s" % (exc.strerror or exc)
 
     def _tidy(self):
         """Write the extremes of devices left behind and, on a very long drive, make room in memory."""
@@ -195,6 +220,7 @@ class Wardrive:
                     path = wigle.new_log_path(self.logs, epoch)
                     self.writer = wigle.WigleWriter(path, hardware.os_release())
                     self.log_paths.append(path)
+                    _settle(self.logs)
                 self.writer.write_row(row)
                 self.rows += 1
                 self.error = ""
@@ -338,6 +364,7 @@ class Wardrive:
                 os.fsync(out.fileno())
             os.replace(tmp, path)
             aside.unlink(missing_ok=True)
+            _settle(path.parent)
         except (OSError, ValueError):
             return None
         return path

@@ -1,8 +1,10 @@
+import time
+
 import pytest
 
 from quartermaster import faults, radios
 from quartermaster.names import one_line
-from quartermaster.ui import gfx
+from quartermaster.ui import gfx, keys
 
 
 @pytest.fixture
@@ -31,3 +33,20 @@ def free_radios():
     yield
     radios.release("wardrive")
     radios.release("recon")
+
+
+@pytest.fixture(autouse=True)
+def no_installed_keymap(monkeypatch):
+    """The keymap file of the machine the tests run on must not decide their result."""
+    monkeypatch.setattr(keys, "KEYMAP", "/nonexistent")
+
+
+@pytest.fixture
+def later(monkeypatch):
+    """Moves the clock on by a number of seconds, for everything that reads it."""
+    real, ahead = time.monotonic, [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: real() + ahead[0])
+
+    def move(seconds):
+        ahead[0] += seconds
+    return move

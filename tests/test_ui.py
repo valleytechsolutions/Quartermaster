@@ -124,6 +124,15 @@ def test_wardrive_saves_uploads_and_deletes(tmp_path, drawn):
     assert isinstance(app.screen, screens.Logs) and "No wardrives saved yet" in screen_text(app, drawn)
 
 
+def test_ok_right_after_deleting_the_last_log_of_the_list_opens_the_one_left(tmp_path):
+    app = make_app(tmp_path)
+    for _ in range(2):
+        press(app, "W", "ESC", "SPACE", "ENTER", "ESC")
+    assert len(app.log_files()) == 2
+    press(app, "L", "DOWN", "ENTER", "D", "RIGHT", "ENTER", "ENTER")
+    assert isinstance(app.screen, screens.LogDetail) and [app.screen.entry] == app.log_files()
+
+
 def test_wardrive_without_gps_says_why_nothing_is_logged(tmp_path, drawn):
     stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
     app = make_app(tmp_path, fix=NO_FIX, hw=Hardware(stalled=stalled))

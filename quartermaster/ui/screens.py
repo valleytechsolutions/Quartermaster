@@ -528,7 +528,7 @@ class Logs(Screen, ListMixin):
         if self.move(key, len(files), self.VISIBLE):
             return True
         if key == "ENTER" and files:
-            app.push(LogDetail(files[self.index]))
+            app.push(LogDetail(files[min(self.index, len(files) - 1)]))
         elif key == "U":
             app.upload_now()
         else:
@@ -1027,7 +1027,8 @@ class Tips(Details):
                  "fix, so WiGLE accepts every one.", MUTED),
             ("", "Each device is listed once. Its strongest and weakest sightings are always written, which is "
                  "the closest and the farthest point you heard it from.", MUTED),
-            ("", "Before the battery is empty, a running wardrive is stopped and saved by itself.", MUTED),
+            ("", "When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so that "
+                 "the Cardputer can switch off safely.", MUTED),
             ("", "Uploads", GOLD),
             ("", "Add your keys once under Keys. Finished logs are then sent to WiGLE, WDGWars and Wardrift "
                  "whenever the Cardputer is online.", MUTED),

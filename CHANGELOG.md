@@ -1,18 +1,18 @@
 # Changelog
 
-## 1.0.3
+## 1.0.4
 
-- The battery level is at the top of every screen, with a bolt while it charges. It turns amber at 20 % and red at 10 %.
-- A notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is stopped and saved, because the system's own low battery warning waits while an app is open.
-- The summary of a wardrive is on disk the moment the wardrive stops, so losing power right after cannot empty it.
-- A key held down on a USB keyboard repeats only where that helps: moving through a list, typing and deleting.
-- A Shift that was locked, or a Caps Lock that was on, before Quartermaster was opened is followed from the first letter.
-
-## 1.0.2
+The first update since 1.0.1. Versions 1.0.2 and 1.0.3 were test builds.
 
 - Sym now types the symbol printed on each key of the CardputerZero keyboard. Before, a dash, an underscore and most other symbols could not be typed, so some upload keys could only be entered from a phone.
 - Tab in a text box opens a list of every symbol.
-- F, X, Z and C still move while Shift is locked, and Caps Lock on a USB keyboard is followed.
+- The battery level is at the top of every screen, with a bolt while it charges. It turns amber at 20 % and red at 10 %.
+- A notice at 20 % and at 10 %. When the battery is almost empty, Quartermaster saves a running wardrive and closes, so that the Cardputer can switch off safely. The system's own low battery warning waits while an app is open.
+- The summary of a wardrive is on disk the moment the wardrive stops, so losing power right after cannot empty it.
+- In a quiet place the last rows of a log no longer wait in memory until the next device is heard. They are on disk within seconds.
+- F, X, Z and C still move while Shift is locked, and Caps Lock on a USB keyboard is followed. Both count from the first letter, also when they were on before Quartermaster was opened.
+- A key held down on a USB keyboard repeats only where that helps: moving through a list, typing and deleting. It no longer carries over to the next screen.
+- The ` key no longer goes back, and ; . , / no longer move. Use Esc, the arrows, or F, X, Z and C.
 
 ## 1.0.1
 

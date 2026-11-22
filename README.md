@@ -33,7 +33,7 @@ Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermast
 - **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **One at a time.** Recon and a wardrive never run together, so every radio is always doing one job well.
-- **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %, and stops and saves a running wardrive before the battery is empty.
+- **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %. When the battery is almost empty, it saves a running wardrive and closes, so that the Cardputer can switch off safely.
 
 ## Screens
 
@@ -193,7 +193,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.0.3,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.0.4,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 A device gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends. A log is split at 8 MB so that every site accepts it.

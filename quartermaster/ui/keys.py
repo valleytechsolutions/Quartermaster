@@ -106,14 +106,14 @@ def find_keyboards():
     return paths
 
 
-def built_in_symbols(keymap=KEYMAP):
+def built_in_symbols(keymap=None):
     """BUILT_IN_SYMBOLS, corrected by the keymap file the system installs with the keyboard driver.
 
     An early driver sent the code of a right Shift key for ")". The left one is the keyboard's own Shift.
     """
     symbols = dict(BUILT_IN_SYMBOLS)
     try:
-        text = Path(keymap).read_text(errors="replace")
+        text = Path(keymap or KEYMAP).read_text(errors="replace")
     except OSError:
         return symbols
     for code, keysym in re.findall(r"^[ \t]*keycode[ \t]+(\d{1,3})[ \t]*=[ \t]*(\w+)", text, re.MULTILINE):
@@ -135,11 +135,7 @@ def is_built_in(path, sysfs="/sys/class/input"):
 
 
 def state(fd, request):
-    """The keys held down or the lights lit on a keyboard right now, one bit each.
-
-    What happened before a keyboard was opened is never reported: a Shift that was locked in the
-    launcher, or a Caps Lock that was already on.
-    """
+    """The keys held down or the lights lit on a keyboard right now, one bit each."""
     try:
         return int.from_bytes(fcntl.ioctl(fd, request, bytes(96)), "little")
     except OSError:
@@ -149,14 +145,22 @@ def state(fd, request):
 class EvdevInput:
     def __init__(self, paths=None):
         self.devices = {}
-        self.shift = self.caps = False
         self.symbols = built_in_symbols()
         for path in paths or find_keyboards():
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                self.devices[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = is_built_in(path)
             except OSError:
                 continue
-            built_in = self.devices[fd] = is_built_in(path)
+        self.look()
+
+    def look(self):
+        """Take Shift and Caps Lock from the keyboards as they are now.
+
+        What happened before a keyboard was opened is never reported: a Shift that was locked in the
+        launcher, or a Caps Lock that was already on. A keyboard that is unplugged takes its part along.
+        """
+        self.shift = self.caps = False
+        for fd, built_in in self.devices.items():
             down = state(fd, KEYS_DOWN)
             self.shift |= any(down >> code & 1 for code in SHIFTS if not (built_in and code in self.symbols))
             self.caps |= bool(state(fd, LIGHTS_ON) >> CAPS_LIGHT & 1)
@@ -216,6 +220,7 @@ class EvdevInput:
             os.close(fd)
         except OSError:
             pass
+        self.look()
 
     def close(self):
         for fd in list(self.devices):

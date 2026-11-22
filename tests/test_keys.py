@@ -4,7 +4,7 @@ import string
 import pytest
 
 from quartermaster import accounts
-from quartermaster.ui import keys, screens
+from quartermaster.ui import keys, recon_screens, screens
 from quartermaster.ui.keys import EvdevInput, Key, navigation
 from tests.test_ui import make_app, press, screen_text, settle, typed
 
@@ -22,6 +22,7 @@ CODE = {letter: code for code, letter in LETTER.items()}
 CODE.update({digit: 2 + i for i, digit in enumerate("1234567890")})
 SYM = {symbol: code for _, codes, symbols in SYM_LAYER for code, symbol in zip(codes, symbols)}
 ESC, BACKSPACE, TAB, ENTER, SHIFT, KEY_CD, KEY_DVD = 1, 14, 15, 28, 42, 383, 389
+EV_MSC, MSC_SCAN = 4, 4
 
 
 def typed_as(board, codes, built_in):
@@ -84,10 +85,12 @@ def test_caps_lock_switches_letters_only():
     assert typed_as(board, (30,), False) == "a"
 
 
-def test_a_shift_or_caps_lock_that_was_on_before_the_start_is_seen(monkeypatch):
-    def bits(*numbers):
-        return sum(1 << number for number in numbers).to_bytes(96, "little")
+def bits(*numbers):
+    """What the keyboard answers when asked which keys are down or which lights are lit."""
+    return sum(1 << number for number in numbers).to_bytes(96, "little")
 
+
+def test_a_shift_or_caps_lock_that_was_on_before_the_start_is_seen(monkeypatch):
     answers = {keys.KEYS_DOWN: bits(SHIFT), keys.LIGHTS_ON: bits()}
     monkeypatch.setattr(keys.fcntl, "ioctl", lambda fd, request, buffer: answers[request])
     board = EvdevInput(paths=["/dev/null"])
@@ -110,6 +113,49 @@ def test_a_shift_or_caps_lock_that_was_on_before_the_start_is_seen(monkeypatch):
     board.close()
 
 
+def test_an_unplugged_keyboard_takes_its_shift_and_caps_lock_along(monkeypatch):
+    board = EvdevInput(paths=["/dev/null", "/dev/null"])
+    usb, other = list(board.devices)
+    answers = {usb: {keys.KEYS_DOWN: bits(54), keys.LIGHTS_ON: bits(keys.CAPS_LIGHT)}}
+    monkeypatch.setattr(keys.fcntl, "ioctl", lambda fd, request, buffer: answers.get(fd, {}).get(request, bits()))
+    board.translate(58, 1)
+    board.translate(54, 1)
+    assert board.caps and board.shift and typed_as(board, (30, 2), False) == "a!"
+    board._drop(usb)
+    assert not board.caps and not board.shift and typed_as(board, (30, 2), False) == "a1"
+    assert list(board.devices) == [other]
+    answers.clear()
+    answers[other] = {keys.KEYS_DOWN: bits(SHIFT, 30)}
+    board.look()
+    assert board.shift and not board.caps
+    board.close()
+    assert board.devices == {} and not board.shift
+
+
+def test_shift_or_caps_lock_on_any_one_keyboard_counts(monkeypatch):
+    def asked(number):
+        return 2 << 30 | 96 << 16 | ord("E") << 8 | number
+    assert (keys.KEYS_DOWN, keys.LIGHTS_ON, keys.CAPS_LIGHT) == (asked(0x18), asked(0x19), 1)
+    board = EvdevInput(paths=["/dev/null", "/dev/null"])
+    first, second = list(board.devices)
+    answers = {}
+
+    def ioctl(fd, request, buffer):
+        assert len(buffer) == 96
+        return answers.get((fd, request), bits())
+    monkeypatch.setattr(keys.fcntl, "ioctl", ioctl)
+    for holder in (first, second):
+        answers.clear()
+        answers[holder, keys.KEYS_DOWN] = bits(SHIFT)
+        board.look()
+        assert board.shift and not board.caps
+        answers.clear()
+        answers[holder, keys.LIGHTS_ON] = bits(keys.CAPS_LIGHT)
+        board.look()
+        assert board.caps and not board.shift
+    board.close()
+
+
 def test_modifier_and_media_keys_of_the_built_in_keyboard_type_nothing():
     board = EvdevInput(paths=["/nonexistent"])
     for code in (KEY_CD, KEY_DVD, 29, 56, 59, 68, 87, 99, 113, 114, 115, 138, 163, 164, 165, 224, 225, 0, 78):
@@ -127,24 +173,44 @@ def test_f_x_z_c_are_arrows_only_as_navigation():
 
 
 def test_the_built_in_keyboard_is_recognised(tmp_path, monkeypatch):
+    node = tmp_path / "event11"
+    node.write_text("")
+    (tmp_path / "internal").symlink_to(node)
+    monkeypatch.setattr(keys, "INTERNAL", str(tmp_path / "internal"))
     for event, name in (("event3", "tca8418c\n"), ("event5", "tca8418\n"), ("event7", "Logitech USB Keyboard\n")):
         (tmp_path / event / "device").mkdir(parents=True)
         (tmp_path / event / "device" / "name").write_text(name)
     assert keys.is_built_in("/dev/input/event3", tmp_path) and keys.is_built_in("/dev/input/event5", tmp_path)
     assert not keys.is_built_in("/dev/input/event7", tmp_path) and not keys.is_built_in("/dev/input/event9", tmp_path)
-    node = tmp_path / "event11"
+    assert keys.is_built_in(str(node), tmp_path)
+
+
+def test_a_keyboard_is_opened_with_its_kind_and_the_installed_keymap(tmp_path, monkeypatch):
+    node, keymap = tmp_path / "event11", tmp_path / "keymap.map"
     node.write_text("")
+    keymap.write_text("keycode 300 = underscore\n")
     (tmp_path / "internal").symlink_to(node)
     monkeypatch.setattr(keys, "INTERNAL", str(tmp_path / "internal"))
-    assert keys.is_built_in(str(node), tmp_path) and not keys.is_built_in("/dev/input/event7", tmp_path)
-    board = EvdevInput(paths=["/dev/null"])
-    assert list(board.devices.values()) == [False]
+    monkeypatch.setattr(keys, "KEYMAP", str(keymap))
+    board = EvdevInput(paths=[str(node), "/nonexistent", "/dev/null"])
+    assert list(board.devices.values()) == [True, False] and board.symbols[300] == "_" and board.symbols[70] == "_"
     board.close()
+    monkeypatch.setattr(keys, "find_keyboards", lambda: ["/dev/null", str(node)])
+    board = EvdevInput()
+    assert list(board.devices.values()) == [False, True]
+    board.close()
+
+
+def event(kind, code, value):
+    return keys.EVENT.pack(0, 0, kind, code, value)
 
 
 @pytest.fixture
 def device(tmp_path):
-    """An app whose keyboard is a pipe carrying raw input events, as the built-in keyboard sends them."""
+    """An app whose keyboard is a pipe carrying raw input events, as the built-in keyboard sends them.
+
+    Each key comes with its scan code before it and a report mark after it.
+    """
     app = make_app(tmp_path)
     read, write = os.pipe()
     os.set_blocking(read, False)
@@ -153,7 +219,8 @@ def device(tmp_path):
 
     def send(*strokes):
         for stroke in strokes:
-            os.write(write, b"".join(keys.EVENT.pack(0, 0, keys.EV_KEY, code, value) for code, value in stroke))
+            os.write(write, b"".join(event(EV_MSC, MSC_SCAN, code) + event(keys.EV_KEY, code, value) + event(0, 0, 0)
+                                     for code, value in stroke))
         for _ in range(len(strokes) + 2):
             app.step(0)
     app.send = send
@@ -212,6 +279,38 @@ def test_a_held_key_repeats_only_where_repeating_helps(device, tmp_path):
     assert app.wardriving and isinstance(app.screen, screens.Wardrive)
     app.send(hold(57), hold(ENTER))
     assert isinstance(app.screen, screens.Confirm) and app.wardriving
+
+
+def test_a_held_key_stays_with_the_screen_it_was_pressed_on(device):
+    app = device
+    app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)
+    app.send(tap(CODE["a"]), tap(CODE["t"]))
+    assert isinstance(app.screen, screens.Tips)
+    app.send(hold(BACKSPACE, 4))
+    assert isinstance(app.screen, screens.About)
+    app.send(hold(BACKSPACE, 4))
+    assert isinstance(app.screen, screens.Home)
+    app.push(screens.IgnoreList())
+    app.send(hold(CODE["a"], 4))
+    assert isinstance(app.screen, screens.TextInput) and app.screen.value == ""
+    app.send(hold(CODE["a"], 4), hold(BACKSPACE, 1), hold(111, 1), hold(ENTER, 3))
+    assert isinstance(app.screen, screens.IgnoreList) and app.cfg["ignore"] == ["a"]
+
+
+def test_a_held_key_moves_by_exactly_as_many_rows_as_it_repeats(device):
+    app = device
+    app.keyboard.devices = dict.fromkeys(app.keyboard.devices, False)
+    app.send(tap(CODE["k"]), hold(108, 2))
+    assert isinstance(app.screen, screens.Keys) and app.screen.index == 3
+    app.send(hold(103, 1), hold(CODE["x"], 1))
+    assert app.screen.index == 3
+    app.send(tap(ESC), tap(CODE["a"]), tap(CODE["t"]))
+    app.send(hold(109, 2))
+    assert isinstance(app.screen, screens.Tips) and app.screen.top == 3 * app.screen.VISIBLE
+    app.send(hold(104, 1))
+    assert app.screen.top == app.screen.VISIBLE
+    app.send(tap(ESC), tap(ESC), tap(CODE["r"]), hold(57, 3))
+    assert isinstance(app.screen, recon_screens.Recon) and app.recon_running
 
 
 def test_an_early_driver_sent_the_right_shift_code_for_a_symbol(tmp_path):

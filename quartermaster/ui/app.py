@@ -17,9 +17,10 @@ from .keys import navigation
 
 STALL_SECONDS = 10
 FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
-LOW, VERY_LOW, EMPTY, EMPTY_SECONDS = 20, 10, 3, 15
+LOW, VERY_LOW, EMPTY = 20, 10, 3
+EMPTY_SECONDS, CLOSING_SECONDS = 15, 10
 BATTERY_SILENCE = 60
-REPEATING = ("UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "HOME", "END", "BACKSPACE", "DELETE")
+REPEATING = ("UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "BACKSPACE", "DELETE")
 REC_FILL = (70, 12, 14)
 
 
@@ -102,7 +103,8 @@ class App:
         self._accounts, self._accounts_stamp = None, None
         self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
         self._faults = []
-        self._battery_step, self._empty_since = None, None
+        self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
+        self._pressed_on = None
 
     @property
     def screen(self):
@@ -408,20 +410,19 @@ class App:
         c.line((0, STATUS_H, W, STATUS_H), fill=LINE)
         c.paste(image("quartermaster-logo-dark.png", (22, 16)), (3, 1))
         f, battery = font("bold", 11), self.hw.battery
-        parts = self.indicators(c, battery)
-        if battery and W - 33 - sum(width + 8 for width, _ in parts) < c.text_width(screen.title, f):
-            parts = self.indicators(c, battery, percent=False)
+        parts = self.indicators(c)
+        if battery:
+            room = W - 29 - sum(width + 8 for width, _ in parts) - c.text_width(screen.title, f)
+            parts.insert(0, self.gauge(c, battery, room))
         right = W - 5
         for width, paint in parts:
             paint(right)
             right -= width + 8
-        c.text((28, 3), screen.title, f, GOLD, width=max(0, right - 28))
+        c.text((28, 3), screen.title, f, GOLD, width=max(0, right - 24))
 
-    def indicators(self, c, battery, percent=True):
-        """What the status bar shows beside the title, from the right edge inwards: (width, paint at that edge)."""
+    def indicators(self, c):
+        """What the status bar shows left of the battery, from the right inwards: (width, paint at that edge)."""
         parts = []
-        if battery:
-            parts.append(self.gauge(c, battery, percent))
         fix = self.gps.snapshot()
         label = "GPS %s" % (fix.get("satellites") or "OK") if fix.get("valid") else \
             ("NO GPS" if fix.get("source", "none") == "none" else "GPS --")
@@ -437,21 +438,27 @@ class App:
             parts.append(self.recording(c, clock(self.drive.elapsed())))
         return parts
 
-    def gauge(self, c, battery, percent):
-        """The battery: green with a bolt while it charges, amber from 20 % down and red from 10 %."""
+    def gauge(self, c, battery, room):
+        """The battery: green with a bolt while it charges, amber from 20 % down and red from 10 %.
+
+        `room` is what the title and the other indicators leave. Where that is too little, the bolt goes first
+        and then the number. The number is judged as "100%", so that it does not come and go with the level.
+        """
         level, charging = battery["percent"], battery["charging"]
         color = GREEN if charging else RED if level <= 10 else AMBER if level <= 20 else TEXT
         small = font("monob", 9)
-        reading = "%d%%" % level if percent else ""
+        widest = int(c.text_width("100%", small)) + 3
+        reading = "%d%%" % level if room >= 30 + widest else ""
+        bolt = charging and room >= 41 + (widest if reading else 0)
         text = int(c.text_width(reading, small)) + 3 if reading else 0
 
         def paint(right):
             c.battery(right - 22, 4, level, color, MUTED if color == TEXT else color)
             if reading:
                 c.text_right(right - 25, 4, reading, small, color)
-            if charging:
+            if bolt:
                 icons.draw(c, "bolt", right - 33 - text, 3, 11, color)
-        return 22 + text + (11 if charging else 0), paint
+        return 22 + text + (11 if bolt else 0), paint
 
     def counted(self, c, icon, text, color):
         """A number or a word, with an icon before it."""
@@ -486,36 +493,57 @@ class App:
             x += c.keycap(x, y + 3, key, label)
 
     def watch_battery(self):
-        """Say so as the battery runs down, and save a wardrive before it is empty.
+        """Say so as the battery runs down. Almost empty, save what is running and close.
 
-        The system's own low battery warning and power-off wait while an app is open.
+        The system's own low battery warning and safe power-off wait for as long as an app is open.
+        A weak charger comes and goes with the load, so one reading of it settles nothing: the wait
+        before closing ends only when the charger has held for as long as the wait itself.
         """
-        battery = self.hw.battery
+        battery, now = self.hw.battery, time.monotonic()
+        charging = bool(battery) and battery["charging"]
+        if self._closing is not None:
+            if charging:
+                self._empty_since = self._closing = None
+                self.toast("Charging. Quartermaster stays open.", GREEN, 5)
+            elif now >= self._closing:
+                self.quit()
+            return
         if not battery:
             return
-        level, now = battery["percent"], time.monotonic()
-        if battery["charging"] or level >= LOW + 5:
-            self._battery_step, self._empty_since = 101, None
-            return
+        level = battery["percent"]
         if level > EMPTY:
             self._empty_since = None
-        elif self._empty_since is None:
-            self._empty_since = now
-        empty = level <= EMPTY and now - self._empty_since >= EMPTY_SECONDS
-        step = EMPTY if empty else VERY_LOW if level <= VERY_LOW else LOW if level <= LOW else 101
-        if self._battery_step is None or step >= self._battery_step:
-            self._battery_step = step if self._battery_step is None else self._battery_step
+        elif not charging:
+            self._charger_since = None
+            if self._empty_since is None:
+                self._empty_since = now
+            elif now - self._empty_since >= EMPTY_SECONDS:
+                return self.close_soon()
+        elif self._empty_since is not None:
+            if self._charger_since is None:
+                self._charger_since = now
+            elif now - self._charger_since >= EMPTY_SECONDS:
+                self._empty_since = None
+        if charging:
             return
-        self._battery_step = step
-        if step == EMPTY and self.wardriving:
-            self.stop_wardrive()
-            self.toast("Battery almost empty. The wardrive is saved.", RED, 8)
-        elif step == EMPTY:
-            self.toast("Battery almost empty. Plug in now.", RED, 8)
-        elif step == VERY_LOW:
-            self.toast("Battery at %d%%. Plug in soon." % level, RED, 5)
-        else:
-            self.toast("Battery at %d%%. Plug in to keep going." % level, AMBER, 5)
+        step = VERY_LOW if level <= VERY_LOW else LOW if level <= LOW else 101
+        if self._battery_step is None or level >= LOW + 5:
+            self._battery_step = step
+        elif step < self._battery_step:
+            self._battery_step = step
+            self.toast("Battery at %d%%. Plug in %s." % (level, "soon" if step == VERY_LOW else "to keep going"),
+                       RED if step == VERY_LOW else AMBER, 5)
+
+    def close_soon(self):
+        """Save, say so, and after a moment leave the screen to the system."""
+        self._closing = time.monotonic() + CLOSING_SECONDS
+        drive = self.drive if self.wardriving else None
+        self.stop_wardrive()
+        self.stop_recon()
+        saved = drive is not None and drive.log_path is not None and not drive.error
+        self._closing = time.monotonic() + CLOSING_SECONDS
+        self.toast("Battery almost empty. %s" % ("Wardrive saved. Closing now." if saved else "Closing now."), RED,
+                   CLOSING_SECONDS)
 
     def booted(self):
         if self.cfg.get("auto_start"):
@@ -537,7 +565,10 @@ class App:
         for key in self.keyboard.poll(timeout):
             if not self.screen.text_mode:
                 key = navigation(key)
-            if key.repeat and key.name not in REPEATING and not (self.screen.text_mode and key.char):
+            if not key.repeat:
+                self._pressed_on = self.screen
+            elif self.screen is not self._pressed_on or \
+                    (key.name not in REPEATING and not (self.screen.text_mode and key.char)):
                 continue
             if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \
                     and recon_screens.fresh_alert(self):
