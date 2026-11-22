@@ -1,0 +1,284 @@
+"""Wi-Fi scanning on every adapter at once.
+
+Each adapter gets its own thread and scans all the bands it supports, so a
+tri-band adapter covers 2.4, 5 and 6 GHz in one sweep while the built-in radio
+keeps sweeping 2.4/5 GHz beside it. Scans are passive-friendly: results come
+from `iw` (true dBm, full security details), with NetworkManager as the
+fallback. Nothing here connects to or probes any network by name.
+"""
+
+import re
+import shutil
+import subprocess
+import threading
+import time
+
+
+class ScanUnavailable(RuntimeError):
+    pass
+
+
+def channel_of(freq):
+    if not freq:
+        return None
+    if 2412 <= freq <= 2472:
+        return (freq - 2407) // 5
+    if freq == 2484:
+        return 14
+    if 5000 <= freq <= 5900:
+        return (freq - 5000) // 5
+    if 5955 <= freq <= 7115:
+        return (freq - 5950) // 5
+    return None
+
+
+def band_of(freq):
+    if not freq:
+        return ""
+    return "2.4" if freq < 3000 else ("5" if freq < 5925 else "6")
+
+
+def _unescape(text):
+    """iw prints non-printable SSID bytes as \\xNN and a backslash as \\\\."""
+    raw = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            if text[i + 1] == "x" and i + 3 < len(text):
+                try:
+                    raw.append(int(text[i + 2:i + 4], 16))
+                    i += 4
+                    continue
+                except ValueError:
+                    pass
+            elif text[i + 1] == "\\":
+                raw.append(0x5C)
+                i += 2
+                continue
+        raw.extend(text[i].encode("utf-8"))
+        i += 1
+    return raw.decode("utf-8", "replace")
+
+
+def capabilities(net):
+    """The capability string WiGLE expects (Android style), e.g. [WPA2-PSK-CCMP][RSN-SAE-CCMP][ESS]."""
+    parts = []
+
+    def cipher(names):
+        names = [n for n in names if n]
+        if "CCMP" in names and "TKIP" in names:
+            return "CCMP+TKIP"
+        for want in ("GCMP-256", "CCMP-256", "GCMP", "CCMP", "TKIP"):
+            if want in names:
+                return want
+        return names[0] if names else "CCMP"
+
+    wpa, rsn = net.get("wpa"), net.get("rsn")
+    if wpa:
+        for suite in wpa.get("auth") or ["PSK"]:
+            kind = "EAP" if suite.startswith(("IEEE 802.1X", "802.1X", "EAP")) else "PSK"
+            parts.append("[WPA-%s-%s]" % (kind, cipher(wpa.get("pairwise", []))))
+    if rsn:
+        ciph = cipher(rsn.get("pairwise", []))
+        for suite in rsn.get("auth") or ["PSK"]:
+            upper = suite.upper()
+            if "SAE" in upper:
+                parts.append("[RSN-SAE-%s]" % ciph)
+            elif "OWE" in upper:
+                parts.append("[RSN-OWE-%s]" % ciph)
+            elif "802.1X" in upper or "EAP" in upper or "SUITE-B" in upper or "SUITE B" in upper:
+                parts.append("[WPA2-EAP-%s]" % ciph)
+            elif "PSK" in upper:
+                parts.append("[WPA2-PSK-%s]" % ciph)
+            else:
+                parts.append("[RSN-%s-%s]" % (re.sub(r"[^A-Z0-9.]+", "_", upper)[:16], ciph))
+    if not wpa and not rsn and net.get("privacy"):
+        parts.append("[WEP]")
+    if net.get("wps"):
+        parts.append("[WPS]")
+    parts.append("[IBSS]" if net.get("ibss") else "[ESS]")
+    return "".join(dict.fromkeys(parts))
+
+
+def security_label(net):
+    """Short label for the live screen."""
+    caps = net.get("capabilities") or capabilities(net)
+    if "SAE" in caps:
+        return "WPA3" if "PSK" not in caps else "WPA2/3"
+    if "OWE" in caps:
+        return "OWE"
+    if "EAP" in caps:
+        return "EAP"
+    if "WPA2" in caps:
+        return "WPA2"
+    if "WPA-" in caps:
+        return "WPA"
+    if "WEP" in caps:
+        return "WEP"
+    return "OPEN"
+
+
+def parse_iw_scan(text):
+    """Networks from `iw dev <if> scan` or `scan dump`, with everything WiGLE wants."""
+    networks, current, block = [], None, None
+    for line in text.splitlines():
+        match = re.match(r"^BSS ([0-9a-fA-F:]{17})", line)
+        if match:
+            current = {"bssid": match.group(1).upper(), "ssid": "", "rssi": None, "channel": None,
+                       "frequency": None, "privacy": False, "ibss": False, "wps": False, "wpa": None,
+                       "rsn": None, "last_seen_ms": None, "hidden": False}
+            networks.append(current)
+            block = None
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip("\t "))
+        if stripped.startswith("* ") and block is not None and indent >= 2:
+            key, _, value = stripped[2:].partition(":")
+            key, values = key.strip().lower(), value.split()
+            if key == "pairwise ciphers":
+                block["pairwise"] = values
+            elif key == "group cipher":
+                block["group"] = values
+            elif key == "authentication suites":
+                # "IEEE 802.1X" is one suite printed as two words.
+                suites = re.findall(r"IEEE 802\.1X(?:/\S+)?|\S+", value.strip())
+                block["auth"] = suites
+            continue
+        if not stripped.startswith("* "):
+            block = None
+        if stripped.startswith("freq:"):
+            try:
+                current["frequency"] = int(float(stripped.split()[1]))
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("signal:"):
+            try:
+                current["rssi"] = float(stripped.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif stripped.startswith("last seen:"):
+            match = re.search(r"(\d+) ms ago", stripped)
+            if match:
+                current["last_seen_ms"] = int(match.group(1))
+        elif stripped.startswith("SSID:"):
+            ssid = _unescape(line.split("SSID:", 1)[1].strip())
+            if ssid.strip("\x00") == "":
+                ssid = ""
+            current["ssid"] = ssid[:32]
+            current["hidden"] = ssid == ""
+        elif stripped.startswith("DS Parameter set: channel"):
+            try:
+                current["channel"] = int(stripped.rsplit(" ", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("* primary channel:") and current["channel"] is None:
+            try:
+                current["channel"] = int(stripped.rsplit(" ", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("RSN:"):
+            block = current["rsn"] = {"pairwise": [], "auth": []}
+        elif stripped.startswith("WPA:"):
+            block = current["wpa"] = {"pairwise": [], "auth": []}
+        elif stripped.startswith("WPS:"):
+            current["wps"] = True
+        elif stripped.startswith("capability:"):
+            current["privacy"] = "Privacy" in stripped
+            current["ibss"] = "IBSS" in stripped
+    for net in networks:
+        # The frequency is authoritative; the DS channel can be wrong on 5/6 GHz.
+        net["channel"] = channel_of(net["frequency"]) or net["channel"]
+        net["band"] = band_of(net["frequency"])
+        net["capabilities"] = capabilities(net)
+        net["security"] = security_label(net)
+    return networks
+
+
+class AdapterScanner:
+    """Scans one interface. `scan()` returns only what was heard in this sweep."""
+
+    def __init__(self, adapter, runner=subprocess.run, clock=time.monotonic):
+        self.adapter = adapter
+        self.interface = adapter["interface"]
+        self.runner = runner
+        self.clock = clock
+        self.method = None
+        self.last_error = ""
+        self.sweeps = 0
+        self.last_sweep_seconds = None
+
+    def _run(self, args, timeout=20):
+        return self.runner(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+    def scan(self, fresh_ms=None):
+        if not shutil.which("iw"):
+            raise ScanUnavailable("The iw tool is missing")
+        started = self.clock()
+        # A direct trigger gives fresh results and returns when the sweep ends. It needs
+        # CAP_NET_ADMIN, so without it NetworkManager triggers the sweep instead.
+        result = self._run(["iw", "dev", self.interface, "scan"])
+        if result.returncode == 0 and "BSS " in result.stdout:
+            self.method = "iw"
+        else:
+            if shutil.which("nmcli"):
+                self._run(["nmcli", "device", "wifi", "rescan", "ifname", self.interface], timeout=10)
+            result = self._run(["iw", "dev", self.interface, "scan", "dump"])
+            if result.returncode != 0:
+                self.last_error = (result.stderr or "scan failed").strip().splitlines()[-1][:80]
+                raise ScanUnavailable("%s: %s" % (self.interface, self.last_error))
+            self.method = "nm+iw"
+        elapsed = self.clock() - started
+        self.sweeps += 1
+        self.last_sweep_seconds = elapsed
+        limit = fresh_ms if fresh_ms is not None else int(max(elapsed, 1.0) * 1000) + 4000
+        networks = [n for n in parse_iw_scan(result.stdout)
+                    if n["rssi"] is not None and (n["last_seen_ms"] is None or n["last_seen_ms"] <= limit)]
+        for net in networks:
+            net["interface"] = self.interface
+        return networks
+
+
+class WifiFleet:
+    """One scan thread per adapter; results are pushed to `sink(networks, adapter)`."""
+
+    def __init__(self, adapters, sink, interval=0.0, scanner=AdapterScanner):
+        self.scanners = [scanner(a) for a in adapters]
+        self.sink = sink
+        self.interval = interval
+        self.stopped = threading.Event()
+        self.threads = []
+
+    def start(self):
+        for scanner in self.scanners:
+            thread = threading.Thread(target=self._loop, args=(scanner,), daemon=True,
+                                      name="wifi-" + scanner.interface)
+            thread.start()
+            self.threads.append(thread)
+
+    def _loop(self, scanner):
+        failures = 0
+        while not self.stopped.is_set():
+            try:
+                networks = scanner.scan()
+                failures = 0
+                self.sink(networks, scanner.adapter)
+                self.stopped.wait(self.interval)
+            except (ScanUnavailable, OSError, subprocess.SubprocessError) as exc:
+                scanner.last_error = str(exc)[:80]
+                failures += 1
+                # Busy radios recover quickly; an unplugged adapter backs off.
+                self.stopped.wait(min(10.0, 0.5 * failures))
+
+    def stop(self):
+        self.stopped.set()
+        for thread in self.threads:
+            thread.join(timeout=25)
+        self.threads = []
+
+    def status(self):
+        return [{"interface": s.interface, "method": s.method, "sweeps": s.sweeps,
+                 "sweep_seconds": s.last_sweep_seconds, "error": s.last_error,
+                 "label": s.adapter.get("label", ""), "bands": s.adapter.get("bands", [])}
+                for s in self.scanners]
