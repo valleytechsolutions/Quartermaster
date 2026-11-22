@@ -94,6 +94,39 @@ def test_tracker_dedup_strongest_weakest():
     assert t.observe(WIFI, "BB", -60, NOW, {"valid": False})[2] is None
 
 
+def test_slow_signal_changes_still_log_both_extremes():
+    t = Tracker(relog_seconds=30, relog_meters=25, rssi_step=4)
+    logged = []
+    for i, rssi in enumerate(list(range(-80, -49)) + list(range(-51, -96, -1))):
+        d, _, why = t.observe(WIFI, "AA", rssi, NOW + i, dict(FIX))
+        if why:
+            logged.append(rssi)
+    assert logged[:4] == [-80, -76, -72, -68] and -52 in logged and -84 in logged
+    assert d.best[0] == -50 and d.worst[0] == -95
+    # Whatever the steps skipped is handed out exactly once, to be written at the end.
+    extremes = [(point[0], point[3]) for _, point in t.take_extremes()]
+    assert extremes == [(-50, NOW + 30), (-95, NOW + 75)]
+    assert t.take_extremes() == []
+    assert max(logged + [-50]) == d.best[0] and min(logged + [-95]) == d.worst[0]
+
+
+def test_extremes_wait_until_a_device_is_left_behind():
+    t = Tracker(rssi_step=4)
+    t.observe(WIFI, "AA", -70, NOW, dict(FIX))
+    t.observe(WIFI, "AA", -68, NOW + 1, dict(FIX))
+    t.observe(WIFI, "BB", -70, NOW + 100, dict(FIX))
+    t.observe(WIFI, "BB", -73, NOW + 101, dict(FIX))
+    assert [(d.mac, p[0]) for d, p in t.take_extremes(idle_before=NOW + 50)] == [("AA", -68)]
+    assert [(d.mac, p[0]) for d, p in t.take_extremes()] == [("BB", -73)]
+
+
+def test_ignored_devices_are_counted_but_never_logged():
+    t = Tracker()
+    d, new, why = t.observe(WIFI, "AA", -60, NOW, dict(FIX), name="Home", ignored=True)
+    assert new and why is None and d.best is None and t.summary()["wifi"] == 1
+    assert t.take_extremes() == []
+
+
 def test_wigle_file_is_spec_exact(tmp_path):
     path = tmp_path / wigle.log_filename(NOW)
     w = wigle.WigleWriter(path, "13")
