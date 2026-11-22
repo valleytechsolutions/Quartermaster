@@ -6,7 +6,7 @@ The first update since 1.0.1. Versions 1.0.2 and 1.0.3 were test builds.
 
 - Sym now types the symbol printed on each key of the CardputerZero keyboard. Before, a dash, an underscore and most other symbols could not be typed, so some upload keys could only be entered from a phone.
 - Tab in a text box opens a list of every symbol.
-- The battery level is at the top of every screen, with a bolt while it charges. It turns amber at 20 % and red at 10 %.
+- The battery level is at the top of every screen. It is green while it charges. Off the charger it turns amber at 20 % and red at 10 %.
 - A notice at 20 % and at 10 %. When the battery is almost empty, Quartermaster saves a running wardrive and closes, so that the Cardputer can switch off safely. The system's own low battery warning waits while an app is open.
 - The summary of a wardrive is on disk the moment the wardrive stops, so losing power right after cannot empty it.
 - In a quiet place the last rows of a log no longer wait in memory until the next device is heard. They are on disk within seconds.

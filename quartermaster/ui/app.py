@@ -185,6 +185,26 @@ class App:
     def quit(self):
         self.running = False
 
+    def ask_quit(self):
+        said = self.drive.failed if self.wardriving else ""
+        detail = "Finished logs keep uploading next time."
+        if self.wardriving or self.recon_running:
+            detail = self.ending("The scan stops and its log is saved.", "The scan stops.")
+        self.confirm("Quit Quartermaster?", detail, "Quit", lambda: self.leave(said), danger=True)
+
+    def leave(self, said=""):
+        """Quit as asked. A wardrive that turns out not to be saved, when nothing has said so yet, shows why first."""
+        drive = self.drive if self.wardriving else None
+        self.stop_wardrive(show=False)
+        if drive is None or said or not drive.failed:
+            return self.quit()
+        self.push(screens.Summary(drive.status()))
+
+    def ending(self, saved, stops):
+        """What a dialog says of the wardrive it would end: once rows were lost, why, and never that it is saved."""
+        failed = self.drive.failed if self.wardriving else ""
+        return "%s %s." % (stops, failed) if failed else saved
+
     def toast(self, text, color=GOLD, seconds=3.0):
         self.toast_text, self.toast_color, self.toast_until = text, color, time.monotonic() + seconds
         self.dirty = True
@@ -317,7 +337,8 @@ class App:
         self.start_wardrive()
 
     def ask_stop_wardrive(self):
-        self.confirm("Stop the wardrive?", "The log is saved and sent to your upload sites.", "Stop + save",
+        self.confirm("Stop the wardrive?", self.ending("The log is saved and sent to your upload sites.",
+                                                       "The wardrive stops."), "Stop + save",
                      self.stop_wardrive, default=1)
 
     def stop_wardrive(self, show=True):
@@ -338,20 +359,26 @@ class App:
             self.stop_recon()
             return self.toast("Recon stopped. %s flagged" % screens.plural(flagged, "device"))
         if self.wardriving:
-            return self.confirm("Stop the wardrive first?", "Recon and a wardrive never run together. The wardrive "
-                                "is saved and Recon starts.", "Start Recon", self._swap_to_recon, default=1)
+            return self.confirm("Stop the wardrive first?", self.ending(
+                "Recon and a wardrive never run together. The wardrive is saved and Recon starts.",
+                "The wardrive stops and Recon starts."), "Start Recon", self._swap_to_recon, default=1)
         self.start_recon()
 
     def _swap_to_recon(self):
+        drive = self.drive
         self.stop_wardrive(show=False)
         self.start_recon()
+        if drive.failed:
+            self.toast(drive.failed, RED, 5)
 
     def start_recon(self):
         self.recon.cfg = dict(self.cfg)
         try:
             self.recon.start()
-        except (RuntimeError, OSError) as exc:
+        except RuntimeError as exc:
             return self.toast(str(exc) or "Recon could not start", RED, 5)
+        except OSError as exc:
+            return self.toast("Recon could not start: %s" % (exc.strerror or exc), RED, 5)
         if not isinstance(self.screen, recon_screens.Recon):
             self.home()
             self.push(recon_screens.Recon())

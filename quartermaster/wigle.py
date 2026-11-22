@@ -110,16 +110,39 @@ def prune_empty(directory):
     return removed
 
 
+def fsync(fd):
+    """Wait until what a file was given is on disk. A file system that cannot do that at all has still taken it."""
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+
+
 def trim(path, window=65536):
-    """Cut off a last line that has no end. A file that cannot be changed stays as it is."""
+    """Cut off a last line that has no end and put the rest on disk. False when that cannot be done."""
     try:
         with open(path, "rb+") as kept:
             start = max(0, kept.seek(0, os.SEEK_END) - window)
             kept.seek(start)
             tail = kept.read()
             whole = tail.rfind(b"\n") + 1
-            if whole or not start:
-                kept.truncate(start + whole)
+            if start and not whole:
+                return False
+            kept.truncate(start + whole)
+            fsync(kept.fileno())
+    except OSError:
+        return False
+    return True
+
+
+def cut(path, size):
+    """Cut a file back to the size a sync has put on disk. Storage that refuses this as well keeps what it has."""
+    try:
+        with open(path, "rb+") as kept:
+            if kept.seek(0, os.SEEK_END) > size:
+                kept.truncate(size)
+                fsync(kept.fileno())
     except OSError:
         pass
 
@@ -133,13 +156,14 @@ class WigleWriter:
         self.rows = 0
         self.sync_every = sync_every
         self._synced, self._waiting = time.monotonic(), False
+        self._emitted, self._safe, self._dropped = 0, (self.size, 0), False
         if self.size == 0:
             try:
                 self._emit(pre_header(os_version))
                 self._emit(COLUMNS)
                 self.sync(force=True)
             except OSError:
-                self.abandon()
+                self._let_go()
                 self.path.unlink()
                 raise
 
@@ -178,6 +202,7 @@ class WigleWriter:
 
     def write_row(self, row):
         self._emit(row)
+        self._emitted += 1
         self.sync()
         self.rows += 1
 
@@ -187,12 +212,11 @@ class WigleWriter:
         if self._waiting and (force or now - self._synced >= self.sync_every):
             self.file.flush()
             try:
-                os.fsync(self.file.fileno())
-            except OSError as exc:
-                # A file system that cannot do this at all has still taken the rows.
-                if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
-                    raise
-            self._synced, self._waiting = now, False
+                fsync(self.file.fileno())
+            except OSError:
+                self._dropped = True
+                raise
+            self._synced, self._waiting, self._safe = now, False, (self.size, self._emitted)
 
     def close(self):
         """Close the file whatever happens. An error means that the last rows are not on disk."""
@@ -201,12 +225,23 @@ class WigleWriter:
         finally:
             self.file.close()
 
-    def abandon(self):
-        """Give up a file that refused a write. A row that is only half there goes. Returns how many rows are lost."""
+    def _let_go(self):
         try:
             self.file.close()
         except OSError:
             pass
-        trim(self.path)
-        kept = data_rows(self.path)
-        return 0 if kept is None else self.rows - kept
+
+    def abandon(self, exc):
+        """Give up a file that refused a write. Returns how many of the rows counted are not in it.
+
+        Full storage refuses at once what it cannot take: what the file holds then stays, less a row that is only
+        half there. After any other error the kernel may have lost what it took since the last sync, and reading
+        the file back would not show that, so the file is cut back to that sync.
+        """
+        self._let_go()
+        full = exc.errno in (errno.ENOSPC, errno.EDQUOT) and not self._dropped
+        kept = data_rows(self.path) if full and trim(self.path) else None
+        if kept is None:
+            size, kept = self._safe
+            cut(self.path, size)
+        return self.rows - kept

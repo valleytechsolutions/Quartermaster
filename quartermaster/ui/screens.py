@@ -240,9 +240,7 @@ class Home(Screen):
             self.index = next(i for i, tile in enumerate(self.TILES) if tile[0] == key.name)
             app.open(self.TILES[self.index][1])
         elif key in ("ESC", "BACKSPACE", "Q"):
-            busy = app.wardriving or app.recon_running
-            app.confirm("Quit Quartermaster?", "The scan stops and its log is saved." if busy
-                        else "Finished logs keep uploading next time.", "Quit", app.quit, danger=True)
+            app.ask_quit()
         else:
             return False
         return True
@@ -353,15 +351,17 @@ class Summary(Screen):
                 ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
                 ("Saved as", (s["log"].rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
                  if s["log"] else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
+        if s["failed"]:
+            c.text((8, TOP - 1), s["failed"], font("ui", 9), RED, width=W - 16)
         for i, (label, value) in enumerate(rows):
-            y = TOP + i * 17
+            y = TOP + (12 if s["failed"] else 0) + i * 17
             c.text((8, y), label, font("ui", 10), MUTED)
             c.text_right(W - 8, y, value, font("bold", 10), TEXT if i < 5 or s["log"] else AMBER)
             c.line((8, y + 14, W - 8, y + 14))
-        status = app.upload_status()
         if s["failed"]:
-            text, color = s["failed"], RED
-        elif not s["log"]:
+            return
+        status = app.upload_status()
+        if not s["log"]:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
         elif not status["keys"]:
             text, color = "Press K to add your upload keys.", AMBER

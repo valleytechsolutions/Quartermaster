@@ -9,7 +9,7 @@ import pytest
 from quartermaster import engine, wigle
 from quartermaster.engine import Wardrive
 from quartermaster.wifi import parse_iw_scan
-from tests.fakes import QuietFleet, networks, on_a_card
+from tests.fakes import QuietFleet, cards, networks, on_a_card
 from tests.test_core import SCAN, FIX, NOW
 
 
@@ -381,11 +381,13 @@ def test_only_rows_that_are_in_a_log_are_counted(tmp_path, later):
     assert drive.rows == 14 and [len(whole(path)) for path in drive.log_paths] == [10, 0]
     on_a_card(drive.writer, room=0)
     drive._wifi_sink(heard[15:25], ADAPTERS[0])
-    drive.log_paths[1].unlink()
+    first, second = drive.log_paths
+    second.unlink()
     later(5)
     drive._sync()
-    assert drive.rows == 24 and drive.writer is None
+    assert drive.rows == 10 and drive.writer is None and drive.log_paths == [first]
     drive.stop()
+    assert drive.status()["rows"] == len(whole(first)) == 10 and drive.status()["files"] == 1
 
 
 def test_a_wardrive_whose_last_rows_did_not_reach_the_card_does_not_count_as_saved(tmp_path, later):
@@ -402,9 +404,10 @@ def test_a_wardrive_whose_last_rows_did_not_reach_the_card_does_not_count_as_sav
 
 
 def test_a_card_that_does_not_keep_what_it_took_counts_as_a_failed_write(tmp_path, monkeypatch, later):
-    real, errors = os.fsync, []
+    real, errors, synced = os.fsync, [], []
 
     def fsync(fd):
+        synced.append(os.fstat(fd).st_size)
         if errors:
             raise errors.pop()
         return real(fd)
@@ -416,22 +419,188 @@ def test_a_card_that_does_not_keep_what_it_took_counts_as_a_failed_write(tmp_pat
         later(5)
         drive._sync()
         assert errors == [] and (drive.error, drive.failed) == ("", "") and len(whole(drive.log_path)) == rows
-    drive._wifi_sink(heard[10:20], ADAPTERS[0])
+    drive._wifi_sink(heard[10:14], ADAPTERS[0])
+    later(5)
+    drive._wifi_sink(heard[14:20], ADAPTERS[0])
+    assert len(whole(drive.log_path)) == 15 and drive.rows == 20
+    kept, calls = drive.log_path.stat().st_size, len(synced)
     errors.append(OSError(5, "Input/output error"))
     later(5)
     drive._sync()
     assert drive.error == drive.failed == "Cannot write the log: Input/output error" and drive.writer is None
+    assert drive.rows == 15 and synced[calls + 1:] == [kept] < synced[calls:calls + 1]
+    assert [row[0] for row in whole(drive.log_path)] == [net["bssid"].lower() for net in heard[:15]]
     drive._wifi_sink(heard[20:], ADAPTERS[0])
     assert drive.error == "" and len(drive.log_paths) == 2
     drive.stop()
-    assert [len(whole(path)) for path in drive.log_paths] == [20, 20] and drive.rows == 40
+    assert [len(whole(path)) for path in drive.log_paths] == [15, 20] and drive.rows == 35
     assert drive.failed == "Cannot write the log: Input/output error"
+    assert drive.status()["log"] == str(drive.log_paths[0]) != str(drive.log_paths[1]) and drive.status()["files"] == 2
+
+
+def test_a_card_that_fails_only_as_a_log_is_closed_is_said_at_the_next_part_and_at_the_stop(
+        tmp_path, monkeypatch, later):
+    real, errors = os.fsync, []
+
+    def fsync(fd):
+        if errors:
+            raise errors.pop()
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", fsync)
+    drive, heard = quiet_drive(tmp_path), networks(40)
+    drive._wifi_sink(heard[:10], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    drive._wifi_sink(heard[10:15], ADAPTERS[0])
+    errors.append(OSError(5, "Input/output error"))
+    with monkeypatch.context() as patch:
+        patch.setattr(engine, "ROTATE_BYTES", 1)
+        drive._wifi_sink(heard[15:16], ADAPTERS[0])
+    assert drive.error == drive.failed == "Cannot write the log: Input/output error" and drive.writer is None
+    assert drive.rows == len(whole(drive.log_path)) == 10
+    drive._wifi_sink(heard[16:21], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    drive._wifi_sink(heard[21:26], ADAPTERS[0])
+    assert drive.error == "" and drive.rows == 20
+    errors.append(OSError(122, "Disk quota exceeded"))
+    drive.stop()
+    assert drive.error == drive.failed == "Cannot write the log: Disk quota exceeded" and drive.state == "stopped"
+    assert [len(whole(path)) for path in drive.log_paths] == [10, 5] and drive.rows == 15 and drive.writer is None
+
+
+def test_a_row_that_reached_the_log_while_the_card_said_no_is_counted(tmp_path, later):
+    for error in (OSError(28, "No space left on device"), OSError(122, "Disk quota exceeded")):
+        drive, heard = quiet_drive(tmp_path / str(error.errno)), networks(12)
+        drive._wifi_sink(heard[:10], ADAPTERS[0])
+        on_a_card(drive.writer, room=10, error=error, then=1 << 20)
+        later(5)
+        drive._wifi_sink(heard[10:11], ADAPTERS[0])
+        assert drive.failed == "Cannot write the log: " + error.strerror and drive.writer is None
+        assert drive.rows == len(whole(drive.log_path)) == 11
+        drive.stop()
+
+
+def test_what_a_full_card_took_counts_only_once_it_is_on_disk(tmp_path, monkeypatch, later):
+    real, refuse = os.fsync, {}
+
+    def fsync(fd):
+        error = refuse.pop("once", None) or refuse.get("always")
+        if error:
+            raise error
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", fsync)
+    heard = networks(20)
+
+    def filled(name):
+        drive = quiet_drive(tmp_path / name)
+        drive._wifi_sink(heard[:10], ADAPTERS[0])
+        later(5)
+        drive._sync()
+        size = drive.log_path.stat().st_size
+        on_a_card(drive.writer, room=150)
+        drive._wifi_sink(heard[10:], ADAPTERS[0])
+        later(5)
+        return drive, size
+    drive, size = filled("lost")
+    refuse["once"] = OSError(5, "Input/output error")
+    drive._sync()
+    assert drive.failed == "Cannot write the log: No space left on device" and refuse == {}
+    assert drive.rows == len(whole(drive.log_path)) == 10 and drive.log_path.stat().st_size == size
+    drive.stop()
+    refuse["always"] = OSError(95, "Operation not supported")
+    drive, size = filled("no fsync")
+    drive._sync()
+    assert drive.failed == "Cannot write the log: No space left on device"
+    assert drive.rows == len(whole(drive.log_path)) == 11 and size < drive.log_path.stat().st_size < size + 150
+    drive.stop()
+
+
+def test_a_log_that_cannot_be_opened_again_counts_the_rows_of_its_last_sync(tmp_path, monkeypatch, later):
+    drive, heard = quiet_drive(tmp_path), networks(20)
+    drive._wifi_sink(heard[:10], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    size = drive.log_path.stat().st_size
+    on_a_card(drive.writer, room=150)
+    drive._wifi_sink(heard[10:], ADAPTERS[0])
+
+    def read_only(path, mode="r", *args, **kwargs):
+        if "+" in mode:
+            raise OSError(30, "Read-only file system")
+        return open(path, mode, *args, **kwargs)
+    monkeypatch.setattr(wigle, "open", read_only, raising=False)
+    later(5)
+    drive._sync()
+    assert drive.failed == "Cannot write the log: No space left on device" and drive.writer is None
+    assert drive.rows == 10 and drive.log_path.stat().st_size == size + 150
+    drive.stop()
+    assert drive.rows == 10 and len(drive.log_paths) == 1
+
+
+def test_a_part_left_without_a_row_goes_at_once_and_the_summary_is_named_after_a_log_that_stays(tmp_path, later):
+    drive, heard = quiet_drive(tmp_path), networks(30)
+    drive._wifi_sink(heard[:1], ADAPTERS[0])
+    first = drive.log_path
+    on_a_card(drive.writer, room=0, error=OSError(5, "Input/output error"))
+    drive._wifi_sink(heard[1:10], ADAPTERS[0])
+    assert drive.rows == 10 and first.exists()
+    listed = drive.log_paths
+    later(5)
+    drive._sync()
+    assert drive.failed == "Cannot write the log: Input/output error" and drive.rows == 0
+    assert drive.log_paths == [] and drive.log_path is None and drive.status()["log"] == "" and listed == [first]
+    assert list((tmp_path / "logs").iterdir()) == []
+    clock = drive.clock
+    drive.clock = lambda: clock() + 90
+    drive.gps.fix = dict(FIX, utc="2026-11-18T11:08:10Z")
+    drive._wifi_sink(heard[10:], ADAPTERS[0])
+    drive.stop()
+    assert drive.rows == 20 and len(drive.log_paths) == 1 and drive.log_path != first
+    assert len(whole(drive.log_path)) == 20 and len(summary_of(drive.log_path)) == 30
+    assert sorted(path.name for path in (tmp_path / "logs").iterdir()) == [
+        "quartermaster_20261118-110810.summary.csv", "quartermaster_20261118-110810.wigle.csv"]
+
+
+def test_a_part_without_a_row_that_cannot_be_removed_stays_listed(tmp_path, monkeypatch, later):
+    drive, heard = quiet_drive(tmp_path), networks(2)
+    drive._wifi_sink(heard[:1], ADAPTERS[0])
+    first = drive.log_path
+    on_a_card(drive.writer, room=0, error=OSError(5, "Input/output error"))
+    drive._wifi_sink(heard[1:], ADAPTERS[0])
+
+    def stuck(self, *args, **kwargs):
+        raise OSError(30, "Read-only file system")
+    monkeypatch.setattr(type(first), "unlink", stuck)
+    later(5)
+    drive._sync()
+    assert drive.failed == "Cannot write the log: Input/output error" and drive.rows == 0
+    assert drive.log_paths == [first] and first.exists() and drive.status()["files"] == 1
+
+
+def test_a_card_with_room_for_a_header_and_no_more_leaves_no_file_per_row_heard(tmp_path, monkeypatch, later):
+    probe = wigle.WigleWriter(tmp_path / "probe.csv", engine.hardware.os_release())
+    probe.close()
+    drive, sync = quiet_drive(tmp_path), wigle.fsync
+
+    def slow(fd):
+        sync(fd)
+        later(5)
+    monkeypatch.setattr(wigle, "fsync", slow)
+    cards(monkeypatch, room=probe.size)
+    for network in networks(5):
+        drive._wifi_sink([network], ADAPTERS[0])
+        assert drive.error == "Cannot write the log: No space left on device" and drive.rows == 0
+        assert list((tmp_path / "logs").iterdir()) == [] and drive.log_paths == []
+    drive.stop()
+    assert list((tmp_path / "logs").iterdir()) == [] and drive.status()["log"] == ""
 
 
 def test_a_log_that_cannot_be_started_leaves_no_file_behind(tmp_path, monkeypatch):
-    drive = quiet_drive(tmp_path)
+    drive, asked = quiet_drive(tmp_path), []
 
     def full(fd):
+        asked.append(fd)
         raise OSError(28, "No space left on device")
     with monkeypatch.context() as patch:
         patch.setattr(os, "fsync", full)
@@ -439,11 +608,17 @@ def test_a_log_that_cannot_be_started_leaves_no_file_behind(tmp_path, monkeypatc
         with pytest.raises(OSError) as refused:
             wigle.WigleWriter(tmp_path / "log.csv")
         assert refused.value.errno == 28 and len(os.listdir("/proc/self/fd")) == open_before
-        assert not (tmp_path / "log.csv").exists()
+        assert not (tmp_path / "log.csv").exists() and len(asked) == 1
+        with monkeypatch.context() as card:
+            cards(card, room=0)
+            with pytest.raises(OSError):
+                wigle.WigleWriter(tmp_path / "log.csv")
+        assert not (tmp_path / "log.csv").exists() and len(os.listdir("/proc/self/fd")) == open_before
+        assert len(asked) == 1
         for network in networks(8)[:5]:
             drive._wifi_sink([network], ADAPTERS[0])
         assert drive.error == "Cannot write the log: No space left on device" and drive.rows == 0
-        assert drive.log_path is None and list((tmp_path / "logs").iterdir()) == []
+        assert drive.log_path is None and list((tmp_path / "logs").iterdir()) == [] and len(asked) == 6
     drive._wifi_sink(networks(8)[5:], ADAPTERS[0])
     assert drive.error == "" and drive.rows == 3 and drive.log_path.name == "quartermaster_20261118-110640.wigle.csv"
     drive.stop()
@@ -456,9 +631,16 @@ def test_only_a_last_line_without_an_end_is_cut_from_a_log(tmp_path):
                                   (b"a,b", b"", 65536), (b"a\nbb\ncc", b"a\nbb\n", 4), (b"a\nbb\n", b"a\nbb\n", 2),
                                   (b"a\n" + b"c" * 9, b"a\n" + b"c" * 9, 4)):
         path.write_bytes(before)
-        wigle.trim(path, window)
+        assert wigle.trim(path, window) is (before != b"a\n" + b"c" * 9)
         assert path.read_bytes() == after, (before, window)
-    wigle.trim(tmp_path / "missing.csv")
+    path.write_bytes(b"a,b\n" + b"c" * 20000)
+    assert wigle.trim(path) and path.read_bytes() == b"a,b\n"
+    assert wigle.trim(tmp_path / "missing.csv") is False and not (tmp_path / "missing.csv").exists()
+    path.write_bytes(b"a,b\nc,d\n")
+    for size, after in ((9, b"a,b\nc,d\n"), (6, b"a,b\nc,"), (4, b"a,b\n"), (8, b"a,b\n"), (0, b"")):
+        wigle.cut(path, size)
+        assert path.read_bytes() == after
+    wigle.cut(tmp_path / "missing.csv", 0)
     assert not (tmp_path / "missing.csv").exists()
 
 
@@ -481,17 +663,103 @@ def test_rows_that_arrive_after_the_stop_are_not_written_anywhere(tmp_path):
     assert sorted(path.name for path in (tmp_path / "logs").iterdir()) == files and len(files) == 2
 
 
-def test_a_summary_that_cannot_be_written_is_said_and_leaves_nothing_hidden(tmp_path, monkeypatch):
+def test_a_row_that_arrives_as_the_stop_lets_go_of_the_log_is_not_written_either(tmp_path):
     drive = quiet_drive(tmp_path)
-    drive._wifi_sink(networks(5), ADAPTERS[0])
+    drive._wifi_sink(networks(9)[:5], ADAPTERS[0])
+
+    class Lock:
+        def __init__(self, real):
+            self.real, self.let_go = real, []
+
+        def __enter__(self):
+            self.real.acquire()
+
+        def __exit__(self, *exc):
+            self.real.release()
+            if drive._stopped is not None and not self.let_go:
+                self.let_go.append(drive.state)
+                drive._wifi_sink(networks(9)[5:], ADAPTERS[0])
+    drive._lock = lock = Lock(drive._lock)
+    drive.stop()
+    assert lock.let_go == ["stopped"] and drive.writer is None and drive.rows == 5
+    assert [len(whole(path)) for path in drive.log_paths] == [5] and len(list((tmp_path / "logs").iterdir())) == 2
+
+
+def long_drive(tmp_path, monkeypatch):
+    """A wardrive that has let devices go from memory, so that their summary lines wait in a hidden file."""
+    monkeypatch.setattr(engine, "MAX_TRACKED", 10)
+    clock = [NOW]
+    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0])
+    drive.start()
+    drive._wifi_sink(networks(30), ADAPTERS[0])
+    clock[0] += 600
+    drive._tidy()
+    hidden = [path for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")]
+    assert [path.name for path in hidden] == [".quartermaster_20261118-110640.summary.csv.part"]
+    return drive, hidden[0]
+
+
+def test_devices_let_go_before_the_first_row_are_not_set_aside(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "MAX_TRACKED", 10)
+    clock = [NOW]
+    drive = Wardrive({"ble": False}, FakeGPS({"valid": False}), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0])
+    drive.start()
+    drive._wifi_sink(networks(30), ADAPTERS[0])
+    clock[0] += 600
+    drive._tidy()
+    assert drive.status()["wifi"] == 30 and len(drive.tracker.found()) == 8
+    assert list((tmp_path / "logs").iterdir()) == [] and drive.failed == ""
+
+
+def test_a_summary_that_cannot_be_written_is_said_and_leaves_nothing_hidden(tmp_path, monkeypatch):
+    drive, _ = long_drive(tmp_path, monkeypatch)
+    settle, settled = engine._settle, []
 
     def full(*args, **kwargs):
         raise OSError(28, "No space left on device")
+
+    def record(folder):
+        settled.append([path.name for path in folder.iterdir()])
+        settle(folder)
     monkeypatch.setattr(os, "replace", full)
+    monkeypatch.setattr(engine, "_settle", record)
     drive.stop()
     assert drive.failed == "Cannot write the summary: No space left on device" and drive.error == ""
-    assert [path.name for path in (tmp_path / "logs").iterdir()] == [drive.log_path.name]
-    assert len(whole(drive.log_path)) == 5
+    assert settled == [[drive.log_path.name]] == [[path.name for path in (tmp_path / "logs").iterdir()]]
+    assert len(whole(drive.log_path)) == 30
+
+
+def test_a_summary_fails_without_stopping_the_stop(tmp_path, monkeypatch):
+    drive, aside = long_drive(tmp_path / "torn", monkeypatch)
+    aside.write_bytes(b"\xff\xfe")
+    drive.stop()
+    assert drive.failed.startswith("Cannot write the summary: 'utf-8'") and drive.state == "stopped"
+    assert [path.name for path in (tmp_path / "torn" / "logs").iterdir()] == [drive.log_path.name]
+    drive, aside = long_drive(tmp_path / "stuck", monkeypatch)
+    real = type(aside).unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name.startswith("."):
+            raise OSError(30, "Read-only file system")
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(type(aside), "unlink", unlink)
+    monkeypatch.setattr(os, "replace", unlink)
+    drive.stop()
+    assert drive.failed == "Cannot write the summary: Read-only file system" and drive.state == "stopped"
+    assert aside.exists() and len(whole(drive.log_path)) == 30
+
+
+def test_an_error_that_brings_no_words_of_its_own_is_still_said(tmp_path, later):
+    drive = quiet_drive(tmp_path)
+    drive._wifi_sink(networks(8)[:5], ADAPTERS[0])
+    on_a_card(drive.writer, room=0, error=OSError("the card is gone"))
+    drive._wifi_sink(networks(8)[5:], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    assert drive.error == drive.failed == "Cannot write the log: the card is gone"
+    drive.stop()
 
 
 def test_rows_that_were_lost_are_what_is_said_whatever_else_went_wrong(tmp_path, monkeypatch, later):
@@ -514,11 +782,13 @@ def test_rows_that_were_lost_are_what_is_said_whatever_else_went_wrong(tmp_path,
             drive._tidy()
     left_behind(heard[:30])
     assert (drive.error, drive.failed) == ("", "Cannot write the summary: No space left on device")
+    later(5)
+    drive._sync()
     on_a_card(drive.writer, room=0, error=OSError(5, "Input/output error"))
     drive._wifi_sink(heard[30:60], ADAPTERS[0])
     later(5)
     drive._sync()
-    assert drive.error == drive.failed == "Cannot write the log: Input/output error"
+    assert drive.error == drive.failed == "Cannot write the log: Input/output error" and drive.rows == 30
     left_behind(heard[60:])
     assert (drive.error, drive.failed) == ("", "Cannot write the log: Input/output error")
     monkeypatch.setattr(os, "open", no_room)
@@ -539,11 +809,14 @@ def test_a_folder_that_cannot_be_put_on_disk_does_not_stop_the_log(tmp_path, mon
         if stat.S_ISDIR(os.fstat(fd).st_mode):
             raise OSError(22, "Invalid argument")
         return real_fsync(fd)
-    for name, stand_in in (("open", no_open), ("fsync", no_fsync)):
+
+    def never(fd):
+        raise OSError(95, "Operation not supported")
+    for root, name, stand_in in (("open", "open", no_open), ("folder", "fsync", no_fsync), ("never", "fsync", never)):
         open_before = len(os.listdir("/proc/self/fd"))
         with monkeypatch.context() as patch:
             patch.setattr(os, name, stand_in)
-            drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path / name, adapters=ADAPTERS, fleet=FakeFleet,
+            drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path / root, adapters=ADAPTERS, fleet=FakeFleet,
                              clock=lambda: NOW)
             drive.start()
             drive.stop()

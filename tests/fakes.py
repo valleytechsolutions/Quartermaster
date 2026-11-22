@@ -41,8 +41,9 @@ def networks(count=412, seed=7):
 class Card(io.RawIOBase):
     """The file of a log on a card that takes a number of bytes more, refuses, and has room again after that."""
 
-    def __init__(self, path, room, error, then):
-        self.fd, self.room, self.error, self.then = os.open(path, os.O_WRONLY | os.O_APPEND), room, error, then
+    def __init__(self, fd, room, error, then):
+        self.fd, self.room, self.then = fd, room, then
+        self.error = error or OSError(28, "No space left on device")
 
     def writable(self):
         return True
@@ -66,10 +67,17 @@ class Card(io.RawIOBase):
 
 def on_a_card(writer, room, error=None, then=0):
     """From now on the log is on a card with room for `room` bytes and, once it has refused, for `then` more."""
-    card = Card(writer.path, room, error or OSError(28, "No space left on device"), then)
+    card = Card(os.open(writer.path, os.O_WRONLY | os.O_APPEND), room, error, then)
     before = writer.file
     writer.file = io.TextIOWrapper(io.BufferedWriter(card), encoding="utf-8", newline="")
     before.close()
+
+
+def cards(monkeypatch, room, error=None, then=0):
+    """From now on every log and summary that is started is on such a card."""
+    def fdopen(fd, *args, **kwargs):
+        return io.TextIOWrapper(io.BufferedWriter(Card(fd, room, error, then)), encoding="utf-8", newline="")
+    monkeypatch.setattr(os, "fdopen", fdopen)
 
 
 class Gps:

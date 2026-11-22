@@ -101,7 +101,7 @@ The same command updates it. To remove it: `sudo apt remove quartermaster`. Your
 ## Your first wardrive
 
 1. Plug in your GPS, and any Wi-Fi adapters you have.
-2. Open Quartermaster and press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
+2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
 3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
 4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
 

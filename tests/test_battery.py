@@ -7,8 +7,8 @@ import pytest
 from quartermaster import power
 from quartermaster.ui import app as app_module, gfx, screens
 from quartermaster.ui.gfx import AMBER, GREEN, MUTED, RED, TEXT, W, Canvas, font
-from tests.fakes import ADAPTERS, FIX, NO_FIX, Hardware, networks, on_a_card
-from tests.test_ui import KEYS, make_app, press, screen_text
+from tests.fakes import ADAPTERS, FIX, NO_FIX, Hardware, networks
+from tests.test_ui import KEYS, LOST, losing_rows, make_app, placed, press, screen_text
 
 
 def supply(root, name, **files):
@@ -484,7 +484,9 @@ def test_a_charger_that_holds_ends_the_wait_before_closing(tmp_path, later):
     later(14)
     assert discharge(app, 2, charging=True) == ""
     later(1.5)
-    assert discharge(app, 2, charging=True) == "" and discharge(app, 2) == "" and app.wardriving
+    assert discharge(app, 2, charging=True) == "" and app.wardriving
+    later(3)
+    assert discharge(app, 2) == ""
     later(14)
     assert discharge(app, 2) == "" and app.wardriving
     later(1.5)
@@ -514,14 +516,28 @@ def test_the_notice_says_saved_only_when_a_log_was_saved(tmp_path, later):
     later(15.5)
     assert discharge(app, 3) == "Battery almost empty. Closing now." and not app.wardriving
     assert list((tmp_path / "logs").iterdir()) == []
-    failing = make_app(tmp_path / "failing", keys=KEYS)
-    press(failing, "W")
-    on_a_card(failing.drive.writer, room=0)
-    failing.drive._wifi_sink(networks(420)[412:], ADAPTERS[0])
+    failing = losing_rows(tmp_path / "failing")
     assert failing.drive.failed == "" and discharge(failing, 3) == "Battery at 3%. Plug in soon."
     later(15.5)
     assert discharge(failing, 3) == "Battery almost empty. Closing now." and not failing.wardriving
-    assert failing.drive.failed == "Cannot write the log: No space left on device"
+    assert failing.drive.failed == LOST
+    again = losing_rows(tmp_path / "again", later)
+    again.drive._wifi_sink(networks(430)[420:], ADAPTERS[0])
+    assert (again.drive.error, again.drive.failed) == ("", LOST)
+    assert discharge(again, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(again, 3) == "Battery almost empty. Closing now." and not again.wardriving
+
+
+def test_the_closing_notice_leaves_the_reason_a_wardrive_was_not_saved_in_view(tmp_path, later, monkeypatch):
+    app = losing_rows(tmp_path)
+    assert discharge(app, 3) == "Battery at 3%. Plug in soon."
+    later(15.5)
+    assert discharge(app, 3) == "Battery almost empty. Closing now." and isinstance(app.screen, screens.Summary)
+    lines = {text: y for text, (y, _) in placed(app, monkeypatch).items()}
+    notice = lines["Battery almost empty. Closing now."] - 3
+    assert notice == gfx.H - gfx.FOOTER_H - 24 and "WARDRIVE ENDED" in lines
+    assert gfx.STATUS_H < lines[LOST] < lines["Wi-Fi networks"] - 10 and lines["Saved as"] + 10 <= notice
 
 
 def test_the_wait_before_closing_counts_only_an_empty_battery_off_the_charger(tmp_path, later):
