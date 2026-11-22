@@ -1,5 +1,7 @@
 """Stand-ins for the hardware, shared by the tests and the screenshot renderer."""
 
+import io
+import os
 import random
 
 from quartermaster.wifi import band_of, channel_of
@@ -7,6 +9,7 @@ from quartermaster.wifi import band_of, channel_of
 FIX = {"valid": True, "latitude": 25.07805, "longitude": -77.34312, "satellites": 14, "hdop": 0.8, "age_seconds": 0.3,
        "source": "CP210x USB GPS (/dev/ttyUSB0)", "altMSL": 96.0, "status": "fix"}
 NO_FIX = {"valid": False, "source": "none", "status": "no_fix", "age_seconds": None}
+BATTERY = {"percent": 87, "charging": False}
 ADAPTERS = [
     {"interface": "wlan1", "phy": "phy1", "driver": "mt7921u", "external": True, "usb_id": "0e8d:7961",
      "label": "MT7921AU tri-band (ALFA AWUS036AXM)", "bands": ["2.4", "5", "6"], "band_label": "tri-band",
@@ -35,6 +38,48 @@ def networks(count=412, seed=7):
     return found
 
 
+class Card(io.RawIOBase):
+    """The file of a log on a card that takes a number of bytes more, refuses, and has room again after that."""
+
+    def __init__(self, fd, room, error, then):
+        self.fd, self.room, self.then = fd, room, then
+        self.error = error or OSError(28, "No space left on device")
+
+    def writable(self):
+        return True
+
+    def fileno(self):
+        return self.fd
+
+    def write(self, data):
+        if not self.room:
+            self.room, self.then = self.then, 0
+            raise self.error
+        taken = os.write(self.fd, bytes(data[:self.room]))
+        self.room -= taken
+        return taken
+
+    def close(self):
+        if not self.closed:
+            os.close(self.fd)
+        super().close()
+
+
+def on_a_card(writer, room, error=None, then=0):
+    """From now on the log is on a card with room for `room` bytes and, once it has refused, for `then` more."""
+    card = Card(os.open(writer.path, os.O_WRONLY | os.O_APPEND), room, error, then)
+    before = writer.file
+    writer.file = io.TextIOWrapper(io.BufferedWriter(card), encoding="utf-8", newline="")
+    before.close()
+
+
+def cards(monkeypatch, room, error=None, then=0):
+    """From now on every log and summary that is started is on such a card."""
+    def fdopen(fd, *args, **kwargs):
+        return io.TextIOWrapper(io.BufferedWriter(Card(fd, room, error, then)), encoding="utf-8", newline="")
+    monkeypatch.setattr(os, "fdopen", fdopen)
+
+
 class Gps:
     mode, power = "auto", True
 
@@ -59,8 +104,9 @@ class Display:
 
 
 class Hardware:
-    def __init__(self, adapters=ADAPTERS, stalled=(), addresses=("192.168.1.50",)):
+    def __init__(self, adapters=ADAPTERS, stalled=(), addresses=("192.168.1.50",), battery=BATTERY):
         self.adapters = list(adapters)
+        self.battery = battery
         self.stalled = list(stalled)
         self.bluetooth = [{"name": "hci0", "external": False, "label": "Built-in Bluetooth"}]
         self.gps_ports = [{"path": "/dev/ttyUSB0", "label": "CP210x USB GPS", "kind": "usb", "likely": True},

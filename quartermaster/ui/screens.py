@@ -240,9 +240,7 @@ class Home(Screen):
             self.index = next(i for i, tile in enumerate(self.TILES) if tile[0] == key.name)
             app.open(self.TILES[self.index][1])
         elif key in ("ESC", "BACKSPACE", "Q"):
-            busy = app.wardriving or app.recon_running
-            app.confirm("Quit Quartermaster?", "The scan stops and its log is saved." if busy
-                        else "Finished logs keep uploading next time.", "Quit", app.quit, danger=True)
+            app.ask_quit()
         else:
             return False
         return True
@@ -330,7 +328,8 @@ class Wardrive(Screen):
         if key in ("ENTER", "S"):
             app.ask_stop_wardrive()
         elif key.name in ("TAB", "LEFT", "RIGHT"):
-            self.filter = self.NEXT[self.filter]
+            if not key.repeat:
+                self.filter = self.NEXT[self.filter]
         else:
             return super().handle(key, app)
         return True
@@ -339,7 +338,7 @@ class Wardrive(Screen):
 class Summary(Screen):
     def __init__(self, status):
         self.s = status
-        self.title = "WARDRIVE SAVED" if status["log"] else "WARDRIVE ENDED"
+        self.title = "WARDRIVE SAVED" if status["log"] and not status["failed"] else "WARDRIVE ENDED"
 
     def hints(self, app):
         return [("Esc", "Menu"), ("L", "Logs"), ("U", "Uploads"), ("W", "New wardrive")]
@@ -351,12 +350,16 @@ class Summary(Screen):
                 ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
                 ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
                 ("Saved as", (s["log"].rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
-                 if s["log"] else "Nothing: GPS never had a fix")]
+                 if s["log"] else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
+        if s["failed"]:
+            c.text((8, TOP - 1), s["failed"], font("ui", 9), RED, width=W - 16)
         for i, (label, value) in enumerate(rows):
-            y = TOP + i * 17
+            y = TOP + (12 if s["failed"] else 0) + i * 17
             c.text((8, y), label, font("ui", 10), MUTED)
             c.text_right(W - 8, y, value, font("bold", 10), TEXT if i < 5 or s["log"] else AMBER)
             c.line((8, y + 14, W - 8, y + 14))
+        if s["failed"]:
+            return
         status = app.upload_status()
         if not s["log"]:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
@@ -525,6 +528,7 @@ class Logs(Screen, ListMixin):
 
     def handle(self, key, app):
         files = app.log_files()
+        self.clamp(len(files), self.VISIBLE)
         if self.move(key, len(files), self.VISIBLE):
             return True
         if key == "ENTER" and files:
@@ -910,14 +914,15 @@ class Settings(Screen, ListMixin):
             c.text((10, TOP + self.VISIBLE * 15 + 3 + i * 11), line, font("ui", 9), color)
 
     def handle(self, key, app):
-        before = self.index
         if self.move(key, len(self.items), self.VISIBLE):
-            self.skip_headers(1 if self.index >= before or key.name == "PAGEDOWN" else -1)
+            self.skip_headers(-1 if key.name == "UP" else 1)
             self.clamp(len(self.items), self.VISIBLE)
             return True
         name, label, choices, _ = self.items[self.index]
         if key.name not in ("ENTER", "LEFT", "RIGHT", "SPACE"):
             return super().handle(key, app)
+        if key.repeat:
+            return True
         if name == "ignore":
             app.push(IgnoreList())
         elif name == "recon_categories":
@@ -965,6 +970,7 @@ class IgnoreList(Screen, ListMixin):
 
     def handle(self, key, app):
         entries = list(app.cfg.get("ignore", []))
+        self.clamp(len(entries), self.VISIBLE)
         if self.move(key, len(entries), self.VISIBLE):
             return True
         if key == "A":
@@ -1018,13 +1024,17 @@ class Tips(Details):
             ("", "Keys", GOLD),
             ("F  X  Z  C", "Up, down, left, right. The arrow keys work too."),
             ("OK", "Open or confirm"),
-            ("Esc or `", "Back"),
+            ("Esc", "Back"),
+            ("Sym", "Then a key: the symbol printed on it"),
+            ("Tab", "In a text box: lists every symbol"),
             ("Space", "Start or stop a wardrive from the menu"),
             ("", "Wardrive", GOLD),
             ("", "Every Wi-Fi adapter scans at once, with Bluetooth beside them. Rows are logged only with a GPS "
                  "fix, so WiGLE accepts every one.", MUTED),
             ("", "Each device is listed once. Its strongest and weakest sightings are always written, which is "
                  "the closest and the farthest point you heard it from.", MUTED),
+            ("", "When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so that "
+                 "the Cardputer can switch off safely.", MUTED),
             ("", "Uploads", GOLD),
             ("", "Add your keys once under Keys. Finished logs are then sent to WiGLE, WDGWars and Wardrift "
                  "whenever the Cardputer is online.", MUTED),
@@ -1101,7 +1111,8 @@ class Confirm(Modal):
 
     def handle(self, key, app):
         if key.name in ("LEFT", "RIGHT", "TAB", "UP", "DOWN"):
-            self.choice = 1 - self.choice
+            if not key.repeat:
+                self.choice = 1 - self.choice
         elif key == "ENTER":
             app.pop()
             if self.choice == 1:
@@ -1117,15 +1128,24 @@ class Confirm(Modal):
 
 
 class TextInput(Modal):
-    text_mode = True
     refresh = 0.5
+    SYMBOLS = "-_.@:/!#$%&*+=?~()[]{}<>'\"`^|\\,;"
+    COLUMNS = 16
 
     def __init__(self, title, on_submit, initial="", hint="", limit=64):
         self.title, self.on_submit, self.hint, self.limit = title, on_submit, hint, limit
         self.value = initial
+        self.picking = False
+        self.cell = 0
+
+    @property
+    def text_mode(self):
+        return not self.picking
 
     def hints(self, app):
-        return [("OK", "Save"), ("Del", "Erase"), ("Esc", "Cancel")]
+        if self.picking:
+            return [("F/X/Z/C", "Move"), ("OK", "Add"), ("Tab", "Close")]
+        return [("OK", "Save"), ("Tab", "Symbols"), ("Del", "Erase"), ("Esc", "Cancel")]
 
     def render(self, c, app):
         x0, y0, x1, y1 = 14, 38, W - 14, 122
@@ -1136,21 +1156,51 @@ class TextInput(Modal):
         width = c.text((x0 + 16, y0 + 32), shown, font("mono", 10), TEXT)
         if int(time.monotonic() * 2) % 2 == 0:
             c.rect((x0 + 17 + width, y0 + 32, x0 + 18 + width, y0 + 44), fill=GOLD)
+        if self.picking:
+            for i, symbol in enumerate(self.SYMBOLS):
+                x, y = x0 + 18 + i % self.COLUMNS * 16, y0 + 52 + i // self.COLUMNS * 15
+                if i == self.cell:
+                    c.rect((x, y, x + 15, y + 13), fill=GOLD, radius=3)
+                c.put((x + 8, y + 7), symbol, font("monob", 12), GOLD_INK if i == self.cell else TEXT, "mm")
+            return
         c.text_right(x1 - 12, y0 + 53, "%d typed" % len(self.value), font("mono", 8), FAINT)
         for i, line in enumerate(c.wrap(self.hint, x1 - x0 - 90, font("ui", 8))[:3]):
             c.text((x0 + 12, y0 + 53 + i * 10), line, font("ui", 8), MUTED)
 
+    def insert(self, text):
+        if len(self.value) < self.limit:
+            self.value += text
+
     def handle(self, key, app):
+        if self.picking:
+            return self.pick(key)
         if key == "ENTER":
             app.pop()
             if self.value.strip():
                 self.on_submit(self.value.strip())
         elif key == "ESC":
             app.pop()
+        elif key == "TAB":
+            self.picking = True
         elif key.name in ("BACKSPACE", "DELETE"):
             self.value = self.value[:-1]
-        elif key.char and key.char.isprintable() and len(self.value) < self.limit:
-            self.value += key.char
+        elif key.char and key.char.isprintable():
+            self.insert(key.char)
+        else:
+            return False
+        return True
+
+    def pick(self, key):
+        step = {"LEFT": -1, "RIGHT": 1, "UP": -self.COLUMNS, "DOWN": self.COLUMNS}.get(key.name)
+        if step:
+            self.cell = (self.cell + step) % len(self.SYMBOLS)
+        elif key == "ENTER":
+            self.insert(self.SYMBOLS[self.cell])
+            self.picking = False
+        elif key in ("TAB", "ESC"):
+            self.picking = False
+        elif key.name in ("BACKSPACE", "DELETE"):
+            self.value = self.value[:-1]
         else:
             return False
         return True

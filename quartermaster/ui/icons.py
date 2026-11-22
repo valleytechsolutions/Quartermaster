@@ -103,8 +103,13 @@ def phone(d, s):
     _disc(d, s * 0.5, s * 0.86, s * 0.045, HOLE)
 
 
+def bolt(d, s):
+    d.polygon([(s * 0.60, s * 0.02), (s * 0.16, s * 0.58), (s * 0.46, s * 0.58), (s * 0.38, s * 0.98),
+               (s * 0.84, s * 0.40), (s * 0.54, s * 0.40)], fill=INK)
+
+
 ICONS = {"wifi": wifi, "eye": eye, "folder": folder, "cloud": cloud, "chip": chip, "sliders": sliders, "key": key,
-         "anchor": anchor, "pin": pin, "alert": alert, "record": record, "phone": phone}
+         "anchor": anchor, "pin": pin, "alert": alert, "record": record, "phone": phone, "bolt": bolt}
 
 
 @lru_cache(maxsize=256)

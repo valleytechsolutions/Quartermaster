@@ -159,5 +159,5 @@ def test_a_screen_that_keeps_failing_ends_the_app_and_saves_the_wardrive(tmp_pat
 def test_an_unplugged_keyboard_is_dropped_instead_of_spinning():
     board = keys.EvdevInput(["/dev/null"])
     assert len(board.devices) == 1
-    assert board.poll(0) == [] and board.devices == []
+    assert board.poll(0) == [] and not board.devices
     board.close()

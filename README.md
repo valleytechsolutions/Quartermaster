@@ -33,6 +33,7 @@ Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermast
 - **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **One at a time.** Recon and a wardrive never run together, so every radio is always doing one job well.
+- **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %. When the battery is almost empty, it saves a running wardrive and closes, so that the Cardputer can switch off safely.
 
 ## Screens
 
@@ -100,9 +101,9 @@ The same command updates it. To remove it: `sudo apt remove quartermaster`. Your
 ## Your first wardrive
 
 1. Plug in your GPS, and any Wi-Fi adapters you have.
-2. Open Quartermaster and press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
-3. Press **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
-4. Press **OK** to stop. The log is saved and, if you have added keys, sent.
+2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
+3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
+4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
 
 Rows are only written while the GPS has a fix. Without one, the screen tells you and keeps counting.
 
@@ -116,9 +117,9 @@ Each site gives you a key on its own website. Quartermaster never asks for your 
 | [WDGWars](https://wdgwars.pl) | Profile, then **Generate API key**. |
 | [Wardrift](https://wardrift.net) | Dashboard, then **API Keys**. |
 
-**From your phone or PC (easiest).** Press **K**, then **OK** on the first row. Scan the QR code, or open the address on the screen in a browser, and enter the PIN. Paste your keys and press Save. The page also lets you download logs and paste a list of networks to leave out. It only exists while that screen is open, on your own network, and it never shows a saved key.
+**From your phone or PC (easiest).** From the menu, press **K**, then **OK** on the first row. Scan the QR code, or open the address on the screen in a browser, and enter the PIN. Paste your keys and press Save. The page also lets you download logs and paste a list of networks to leave out. It only exists while that screen is open, on your own network, and it never shows a saved key in full, only its last four characters.
 
-**On the Cardputer.** Press **K**, pick a key, press **OK** and type it. Press **T** to test it.
+**On the Cardputer.** From the menu, press **K**, pick a key, press **OK** and type it. Press **T** to test it. A symbol is typed with **Sym** and the key it is printed on, or picked from the list that **Tab** opens.
 
 Use any one site, or all three. Keys are stored on the device in a file only your user can read.
 
@@ -128,7 +129,12 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 - **GPS:** any USB receiver that sends NMEA (u-blox, Quectel LC29H and others), the Cap LoRa-1262, a Grove GPS unit, or gpsd.
 - **Bluetooth:** the built-in radio.
 
-Tested on a CardputerZero with an ALFA AWUS036AXM and a second MT7921AU adapter scanning together, and an LC29H USB GPS.
+Recommended:
+
+- **Wi-Fi:** the [AC1200 USB-C WiFi Card](https://hackergadgets.com/products/ac1200-usb-c-wifi-card) from HackerGadgets, a tri-band MT7921AU adapter for 2.4, 5 and 6 GHz with a USB-C connector.
+- **GPS:** the Dual Band GNSS USB Dongle from [AWOK Dynamics](https://awokdynamics.com).
+
+Tested on a CardputerZero with an ALFA AWUS036AXM and the HackerGadgets AC1200 scanning together, and an LC29H USB GPS.
 
 Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is on USB but not starting, replug it, try the other port, or use a powered hub. One ALFA AWUS036AXML did not start on the test device.
 
@@ -138,10 +144,11 @@ Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is
 | --- | --- |
 | **F X Z C** or the arrows | Up, down, left, right |
 | **OK** (Enter) | Open or confirm |
-| **Esc** or **`** | Back |
+| **Esc** | Back |
 | **Space** | Start or stop a wardrive from the menu |
-| **W R L U H S K A** | Jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
-| **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both |
+| **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
+| **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
+| **Sym**, then a key | In a text box: the symbol printed on that key |
 
 Every screen shows its own keys along the bottom.
 
@@ -186,7 +193,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.0.1,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.0.4,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 A device gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends. A log is split at 8 MB so that every site accepts it.
@@ -220,6 +227,10 @@ python3 tools/build_deb.py
 The package lands in `build/`. That last step needs `dpkg-deb`, so run it on Debian, Ubuntu or the Cardputer itself. `python3 tools/render_screens.py` draws every screen with sample data, which is how the pictures on this page are made.
 
 On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see.
+
+## Thanks
+
+Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://hackergadgets.com).
 
 ## License
 

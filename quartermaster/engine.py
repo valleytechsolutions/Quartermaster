@@ -17,6 +17,7 @@ MIN_FREE_BYTES = 32 * 1024 * 1024
 # Every upload site takes a file this size: Wardrift stops at 10 MiB, WDGWars at 15 MB.
 ROTATE_BYTES = 8 * 1024 * 1024
 EXTREME_IDLE_SECONDS = 120
+UPKEEP_SECONDS = 4.0
 MAX_TRACKED = 100_000       # devices kept in memory, about 1 KB each: the CardputerZero has 512 MB
 DEFAULT_ROOT = Path(os.environ.get("QUARTERMASTER_HOME", str(Path.home() / "quartermaster")))
 BANDS = {"2.4": {"2.4"}, "5": {"5"}, "6": {"6"}, "5+6": {"5", "6"}}
@@ -46,6 +47,24 @@ def _summary_row(d):
             _utc(d.first_seen), _utc(d.last_seen), d.sightings, d.rows, *_extreme(d.best), *_extreme(d.worst)]
 
 
+def _settle(folder):
+    """A file's new name lasts through a power cut only once its folder is on disk as well."""
+    try:
+        fd = os.open(str(folder), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _summary_path(log):
+    return log.with_name(log.name.replace(".wigle.csv", ".summary.csv"))
+
+
 def _record(device):
     return {"mac": device.mac, "name": device.name, "capabilities": device.capabilities,
             "channel": device.channel, "frequency": device.frequency, "mfgr": device.extra}
@@ -59,7 +78,7 @@ class Wardrive:
         self.logs = self.root / "logs"
         self.clock = clock
         self.state = "idle"
-        self.error = ""
+        self.error = self.failed = ""
         self.adapters = adapters
         self.ble = ble
         self.fleet_class = fleet
@@ -81,7 +100,8 @@ class Wardrive:
 
     @property
     def log_path(self):
-        return self.log_paths[0] if self.log_paths else None
+        paths = self.log_paths
+        return paths[0] if paths else None
 
     def set_ignore(self, items):
         """Names and addresses that are shown but never logged. Takes effect at once."""
@@ -104,7 +124,10 @@ class Wardrive:
             return
         self.logs.mkdir(parents=True, exist_ok=True, mode=0o700)
         for leftover in self.logs.glob(".*.summary.csv*"):
-            leftover.unlink(missing_ok=True)
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
         if shutil.disk_usage(self.logs).free < MIN_FREE_BYTES:
             raise RuntimeError("Storage is almost full (under 32 MB free)")
         self._hotplug = self.adapters is None
@@ -128,16 +151,47 @@ class Wardrive:
             thread.start()
 
     def _housekeeping(self):
-        """Pick up adapters plugged in or pulled out, and write the extremes of devices left behind."""
+        """Put waiting rows on disk, follow adapters plugged in or pulled out, write the extremes of devices left."""
         ticks = 0
-        while not self._stop.wait(4.0):
+        while not self._stop.wait(UPKEEP_SECONDS):
             ticks += 1
             try:
+                self._sync()
                 self._follow_adapters()
                 if ticks % 15 == 0:
                     self._tidy()
             except Exception:
                 faults.note("Wardrive upkeep")
+
+    def _sync(self):
+        """Rows wait in memory for the next one. Where nothing new is heard, that row may never come."""
+        with self._lock:
+            try:
+                if self.writer is not None:
+                    self.writer.sync()
+            except OSError as exc:
+                self._refused(exc)
+
+    def _refused(self, exc):
+        """The log took no more. Its file is given up, the next row starts a new one, and the summary will say so.
+
+        Call this with the lock held.
+        """
+        self.error = self.failed = "Cannot write the log: %s" % (exc.strerror or exc)
+        writer, self.writer = self.writer, None
+        if writer is not None:
+            lost = writer.abandon(exc)
+            self.rows -= lost
+            if lost == writer.rows:
+                self._drop(writer.path)
+
+    def _drop(self, path):
+        """A part left without a single row is no log. The list is replaced, for whoever is reading it."""
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+        self.log_paths = [kept for kept in self.log_paths if kept != path]
 
     def _tidy(self):
         """Write the extremes of devices left behind and, on a very long drive, make room in memory."""
@@ -177,16 +231,21 @@ class Wardrive:
             self.ble.close()
         self._flush_extremes()
         with self._lock:
-            if self.writer is not None:
-                self.writer.close()
-                self.writer = None
-        self._stopped = time.monotonic()
-        self.state = "stopped"
+            try:
+                if self.writer is not None:
+                    self.writer.close()
+                    self.writer = None
+            except OSError as exc:
+                self._refused(exc)
+            self._stopped = time.monotonic()
+            self.state = "stopped"
         radios.release("wardrive")
         self._write_summary()
 
     def _append(self, row, epoch):
         with self._lock:
+            if self.state != "running":
+                return False
             try:
                 if self.writer is not None and self.writer.size >= ROTATE_BYTES:
                     self.writer.close()
@@ -195,12 +254,13 @@ class Wardrive:
                     path = wigle.new_log_path(self.logs, epoch)
                     self.writer = wigle.WigleWriter(path, hardware.os_release())
                     self.log_paths.append(path)
+                    _settle(self.logs)
                 self.writer.write_row(row)
                 self.rows += 1
                 self.error = ""
                 return True
             except OSError as exc:
-                self.error = "Cannot write the log: %s" % (exc.strerror or exc)
+                self._refused(exc)
                 return False
 
     def _log(self, kind, record, rssi, fix, epoch):
@@ -295,35 +355,34 @@ class Wardrive:
         fix = self.gps.snapshot()
         summary = self.tracker.summary()
         hdop, limit = fix.get("hdop"), self.cfg.get("gps_max_hdop") or None
-        summary.update(state=self.state, rows=self.rows, files=len(self.log_paths),
-                       log=str(self.log_path) if self.log_path else "", skipped_no_fix=self.skipped_no_fix,
+        paths = self.log_paths
+        summary.update(state=self.state, rows=self.rows, files=len(paths),
+                       log=str(paths[0]) if paths else "", skipped_no_fix=self.skipped_no_fix,
                        elapsed=self.elapsed(),
                        adapters=self.fleet.status() if self.fleet else [], ble_error=self.ble_error,
-                       error=self.error, gps=fix,
+                       error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
 
-    def _summary_path(self):
-        return self.log_path.with_name(self.log_path.name.replace(".wigle.csv", ".summary.csv"))
-
     def _set_aside(self, devices):
         """Summary lines of devices dropped from memory wait in a file until the wardrive ends."""
-        devices = [d for d in devices if not d.ignored]
-        if not devices or self.log_path is None:
+        devices, log = [d for d in devices if not d.ignored], self.log_path
+        if not devices or log is None:
             return
         try:
-            path = self._summary_path()
+            path = _summary_path(log)
             fd = os.open(str(path.with_name("." + path.name + ".part")), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8", newline="") as out:
                 csv.writer(out, lineterminator="\n").writerows(_summary_row(d) for d in devices)
-        except OSError:
-            pass
+        except OSError as exc:
+            self.failed = self.failed or "Cannot write the summary: %s" % (exc.strerror or exc)
 
     def _write_summary(self):
         """A spreadsheet next to the log: one line per device with its strongest and weakest sighting."""
-        if self.log_path is None:
-            return None
-        path = self._summary_path()
+        log = self.log_path
+        if log is None:
+            return
+        path = _summary_path(log)
         tmp, aside = path.with_name("." + path.name), path.with_name("." + path.name + ".part")
         try:
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -334,11 +393,17 @@ class Wardrive:
                     with open(aside, encoding="utf-8", newline="") as earlier:
                         shutil.copyfileobj(earlier, out)
                 writer.writerows(_summary_row(d) for d in self.tracker.found() if not d.ignored)
+                out.flush()
+                wigle.fsync(out.fileno())
             os.replace(tmp, path)
-            aside.unlink(missing_ok=True)
-        except (OSError, ValueError):
-            return None
-        return path
+        except (OSError, ValueError) as exc:
+            self.failed = self.failed or "Cannot write the summary: %s" % (getattr(exc, "strerror", None) or exc)
+        for hidden in (tmp, aside):
+            try:
+                hidden.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _settle(path.parent)
 
 
 def _extreme(point):

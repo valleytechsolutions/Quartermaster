@@ -1,24 +1,32 @@
 """Keyboard input from Linux evdev, mapped to logical keys.
 
-F, X, Z and C carry the arrows on the CardputerZero keyboard and act as Up, Down,
-Left and Right without Fn, as do ; . , / and ` acts as Escape. Text fields read
-the letters themselves; there only ` keeps its meaning, so a field can be left.
+The CardputerZero's own keyboard applies Shift, Sym and Fn in its driver: Fn sends the
+real arrow codes and Sym sends a code of its own for every symbol. Any other keyboard is
+read as a US layout. Screens that are not reading text also take F, X, Z and C as the
+arrows printed on them, without Fn.
 """
 
+import fcntl
 import os
 from pathlib import Path
+import re
 import select
 import struct
 
 EVENT = struct.Struct("llHHi")
 EV_KEY = 1
+SHIFTS = (42, 54)
+CAPS_LOCK = 58
+# linux/input.h: EVIOCGKEY and EVIOCGLED for 96 bytes, and LED_CAPSL
+KEYS_DOWN, LIGHTS_ON, CAPS_LIGHT = 0x80604518, 0x80604519, 1
+INTERNAL = "/dev/input/cardputer-zero-internal"
+KEYMAP = "/usr/share/keymaps/tca8418_keypad_m5stack_keymap.map"
 
 # linux/input-event-codes.h
 CODES = {
     1: "ESC", 14: "BACKSPACE", 15: "TAB", 28: "ENTER", 57: "SPACE", 96: "ENTER",
     103: "UP", 108: "DOWN", 105: "LEFT", 106: "RIGHT", 102: "HOME", 107: "END",
     104: "PAGEUP", 109: "PAGEDOWN", 111: "DELETE",
-    42: "SHIFT", 54: "SHIFT", 29: "CTRL", 97: "CTRL", 56: "ALT", 100: "ALT", 464: "FN",
 }
 CHARS = {
     2: "1!", 3: "2@", 4: "3#", 5: "4$", 6: "5%", 7: "6^", 8: "7&", 9: "8*", 10: "9(", 11: "0)",
@@ -28,8 +36,30 @@ CHARS = {
     44: "zZ", 45: "xX", 46: "cC", 47: "vV", 48: "bB", 49: "nN", 50: "mM", 51: ",<", 52: ".>",
     53: "/?",
 }
-ARROW_ALIASES = {";": "UP", ".": "DOWN", ",": "LEFT", "/": "RIGHT", "`": "ESC",
-                 "f": "UP", "x": "DOWN", "z": "LEFT", "c": "RIGHT"}
+# What Sym sends on the built-in keyboard, as KEYMAP lists it. Several of these codes mean
+# another character on a US keyboard.
+BUILT_IN_SYMBOLS = {
+    26: "!", 27: "@", 39: "#", 40: "$", 41: "%", 43: "^", 51: "&", 52: "*", 53: "(", 94: ")",
+    55: "~", 69: "`", 70: "_", 71: "-", 72: "+", 73: "=", 74: "[", 75: "]", 76: "{", 77: "}",
+    79: ";", 80: ":", 81: "'", 82: '"', 83: "<", 85: ">", 86: "\\", 89: "|",
+    90: ",", 91: ".", 92: "/", 93: "?",
+}
+# The codes of older system images.
+BUILT_IN_SYMBOLS.update({
+    183: "!", 184: "@", 185: "#", 186: "$", 187: "%", 188: "^", 189: "&", 190: "*", 191: "(", 192: ")",
+    193: "~", 194: "`", 195: "+", 196: "-", 197: "/", 198: "\\", 199: "{", 200: "}", 201: "[", 202: "]",
+    209: "=", 210: ":", 211: ";", 212: "_", 213: "?", 214: "<", 215: ">", 216: "'", 217: '"',
+    231: ",", 232: ".", 233: "|",
+})
+KEYSYMS = {
+    "exclam": "!", "at": "@", "numbersign": "#", "dollar": "$", "percent": "%", "asciicircum": "^",
+    "ampersand": "&", "asterisk": "*", "parenleft": "(", "parenright": ")", "asciitilde": "~", "grave": "`",
+    "underscore": "_", "minus": "-", "plus": "+", "equal": "=", "bracketleft": "[", "bracketright": "]",
+    "braceleft": "{", "braceright": "}", "semicolon": ";", "colon": ":", "apostrophe": "'", "quotedbl": '"',
+    "less": "<", "greater": ">", "backslash": "\\", "bar": "|", "comma": ",", "period": ".", "slash": "/",
+    "question": "?",
+}
+ARROWS = {"f": "UP", "x": "DOWN", "z": "LEFT", "c": "RIGHT"}
 
 
 class Key:
@@ -48,6 +78,12 @@ class Key:
 
     def __repr__(self):
         return "Key(%r)" % self.name
+
+
+def navigation(key):
+    """F, X, Z and C as arrows, for a screen that is not reading text."""
+    name = ARROWS.get(key.char.lower())
+    return Key(name, repeat=key.repeat) if name else key
 
 
 def find_keyboards():
@@ -70,23 +106,71 @@ def find_keyboards():
     return paths
 
 
+def built_in_symbols(keymap=None):
+    """BUILT_IN_SYMBOLS, corrected by the keymap file the system installs with the keyboard driver.
+
+    An early driver sent the code of a right Shift key for ")". The left one is the keyboard's own Shift.
+    """
+    symbols = dict(BUILT_IN_SYMBOLS)
+    try:
+        text = Path(keymap or KEYMAP).read_text(errors="replace")
+    except OSError:
+        return symbols
+    for code, keysym in re.findall(r"^[ \t]*keycode[ \t]+(\d{1,3})[ \t]*=[ \t]*(\w+)", text, re.MULTILINE):
+        if keysym in KEYSYMS and int(code) != SHIFTS[0] and not CHARS.get(int(code), "!")[0].isalnum():
+            symbols[int(code)] = KEYSYMS[keysym]
+    return symbols
+
+
+def is_built_in(path, sysfs="/sys/class/input"):
+    """Whether `path` is the CardputerZero's own keyboard."""
+    device = os.path.realpath(path)
+    if device == os.path.realpath(INTERNAL):
+        return True
+    try:
+        name = Path(sysfs, os.path.basename(device), "device", "name").read_text(errors="replace")
+    except OSError:
+        return False
+    return name.startswith("tca8418")
+
+
+def state(fd, request):
+    """The keys held down or the lights lit on a keyboard right now, one bit each."""
+    try:
+        return int.from_bytes(fcntl.ioctl(fd, request, bytes(96)), "little")
+    except OSError:
+        return 0
+
+
 class EvdevInput:
     def __init__(self, paths=None):
-        self.devices = []
+        self.devices = {}
+        self.symbols = built_in_symbols()
         for path in paths or find_keyboards():
             try:
-                self.devices.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+                self.devices[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = is_built_in(path)
             except OSError:
                 continue
-        self.shift = self.fn = self.ctrl = False
-        self.text_mode = False
+        self.look()
+
+    def look(self):
+        """Take Shift and Caps Lock from the keyboards as they are now.
+
+        What happened before a keyboard was opened is never reported: a Shift that was locked in the
+        launcher, or a Caps Lock that was already on. A keyboard that is unplugged takes its part along.
+        """
+        self.shift = self.caps = False
+        for fd, built_in in self.devices.items():
+            down = state(fd, KEYS_DOWN)
+            self.shift |= any(down >> code & 1 for code in SHIFTS if not (built_in and code in self.symbols))
+            self.caps |= bool(state(fd, LIGHTS_ON) >> CAPS_LIGHT & 1)
 
     def poll(self, timeout):
         """Return a list of Keys pressed within `timeout` seconds."""
         if not self.devices:
             select.select([], [], [], timeout)
             return []
-        ready, _, _ = select.select(self.devices, [], [], timeout)
+        ready, _, _ = select.select(list(self.devices), [], [], timeout)
         keys = []
         for fd in ready:
             try:
@@ -102,38 +186,41 @@ class EvdevInput:
                 _, _, kind, code, value = EVENT.unpack_from(data, offset)
                 if kind != EV_KEY:
                     continue
-                key = self.translate(code, value)
+                key = self.translate(code, value, self.devices[fd])
                 if key is not None:
                     keys.append(key)
         return keys
 
-    def translate(self, code, value):
-        name = CODES.get(code)
-        if name in ("SHIFT", "FN", "CTRL"):
-            setattr(self, name.lower(), value != 0)
-            return None
-        if name == "ALT":
+    def translate(self, code, value, built_in=False):
+        if code in SHIFTS and not (built_in and code in self.symbols):
+            self.shift = value != 0
             return None
         if value == 0:
             return None
         repeat = value == 2
-        if code in CHARS:
-            char = CHARS[code][1 if self.shift else 0]
-            if (self.fn or not self.shift) and not self.ctrl and char in ARROW_ALIASES and \
-                    (not self.text_mode or char == "`"):
-                return Key(ARROW_ALIASES[char], "" if self.text_mode else char, repeat)
-            return Key(char.upper() if char.isalpha() else char, char, repeat)
+        if code == CAPS_LOCK:
+            self.caps ^= not repeat
+            return None
+        name = CODES.get(code)
         if name:
             return Key(name, " " if name == "SPACE" else "", repeat)
+        if built_in and code in self.symbols:
+            char = self.symbols[code]
+            return Key(char, char, repeat)
+        if code in CHARS:
+            plain, shifted = CHARS[code]
+            char = shifted if self.shift != (self.caps and plain.isalpha()) else plain
+            return Key(char.upper() if char.isalpha() else char, char, repeat)
         return None
 
     def _drop(self, fd):
         """An unplugged keyboard stays readable for ever: without this the app would spin on it."""
-        self.devices.remove(fd)
+        del self.devices[fd]
         try:
             os.close(fd)
         except OSError:
             pass
+        self.look()
 
     def close(self):
         for fd in list(self.devices):
@@ -145,7 +232,6 @@ class ScriptedInput:
 
     def __init__(self, names=()):
         self.queue = []
-        self.text_mode = False
         self.push(*names)
 
     def push(self, *names):

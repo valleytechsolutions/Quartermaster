@@ -6,30 +6,42 @@ import time
 
 from PIL import Image
 
-from .. import accounts, config, faults, hardware, uploads, wigle
+from .. import accounts, config, faults, hardware, power, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..recon_engine import Recon
 from ..setup_server import SetupServer
 from . import icons, recon_screens, screens
-from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, SURFACE, W, Canvas, clock, font,
-                  image)
+from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, SURFACE, TEXT, W, Canvas, clock,
+                  font, image)
+from .keys import navigation
 
 STALL_SECONDS = 10
 FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
+LOW, VERY_LOW, EMPTY = 20, 10, 3
+EMPTY_SECONDS, CLOSING_SECONDS = 15, 10
+BATTERY_SILENCE = 60
+REPEATING = ("UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "BACKSPACE", "DELETE")
 REC_FILL = (70, 12, 14)
 
 
 class HardwareWatch:
-    """Keeps a fresh list of adapters, Bluetooth radios and GPS ports without stalling the screen."""
+    """Keeps the battery level and the lists of adapters, Bluetooth radios and GPS ports fresh off the screen thread."""
 
     def __init__(self, interval=5.0):
         self.interval = interval
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
+        self.battery, self._battery_read = None, 0.0
         self._since = {}
         self._stop = threading.Event()
         self._thread = None
 
     def refresh(self):
+        level, now = power.battery(), time.monotonic()
+        # The fuel gauge misses a reading now and then, and the battery is still there.
+        if level:
+            self.battery, self._battery_read = level, now
+        elif now - self._battery_read > BATTERY_SILENCE:
+            self.battery = None
         try:
             self.adapters = hardware.wifi_adapters()
             self.bluetooth = hardware.bluetooth_adapters()
@@ -37,7 +49,6 @@ class HardwareWatch:
             found = hardware.stalled_usb_adapters()
         except OSError:
             return
-        now = time.monotonic()
         # A driver needs a few seconds after plugging in; only a lasting stall is worth a warning.
         self._since = {item["port"]: self._since.get(item["port"], now) for item in found}
         self.stalled = [item for item in found if now - self._since[item["port"]] >= STALL_SECONDS]
@@ -46,17 +57,20 @@ class HardwareWatch:
         return hardware.local_addresses()
 
     def start(self):
-        self.refresh()
+        self._check()
         if self._thread is None:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="hardware")
             self._thread.start()
 
     def _loop(self):
         while not self._stop.wait(self.interval):
-            try:
-                self.refresh()
-            except Exception:
-                faults.note("Hardware check")
+            self._check()
+
+    def _check(self):
+        try:
+            self.refresh()
+        except Exception:
+            faults.note("Hardware check")
 
     def stop(self):
         self._stop.set()
@@ -92,6 +106,8 @@ class App:
         self._accounts, self._accounts_stamp = None, None
         self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
         self._faults = []
+        self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
+        self._pressed = None
 
     @property
     def screen(self):
@@ -168,6 +184,26 @@ class App:
 
     def quit(self):
         self.running = False
+
+    def ask_quit(self):
+        said = self.drive.failed if self.wardriving else ""
+        detail = "Finished logs keep uploading next time."
+        if self.wardriving or self.recon_running:
+            detail = self.ending("The scan stops and its log is saved.", "The scan stops.")
+        self.confirm("Quit Quartermaster?", detail, "Quit", lambda: self.leave(said), danger=True)
+
+    def leave(self, said=""):
+        """Quit as asked. A wardrive that turns out not to be saved, when nothing has said so yet, shows why first."""
+        drive = self.drive if self.wardriving else None
+        self.stop_wardrive(show=False)
+        if drive is None or said or not drive.failed:
+            return self.quit()
+        self.push(screens.Summary(drive.status()))
+
+    def ending(self, saved, stops):
+        """What a dialog says of the wardrive it would end: once rows were lost, why, and never that it is saved."""
+        failed = self.drive.failed if self.wardriving else ""
+        return "%s %s." % (stops, failed) if failed else saved
 
     def toast(self, text, color=GOLD, seconds=3.0):
         self.toast_text, self.toast_color, self.toast_until = text, color, time.monotonic() + seconds
@@ -282,8 +318,11 @@ class App:
         drive = self.wardrive_factory(self.cfg, self.gps)
         try:
             drive.start()
-        except (RuntimeError, OSError) as exc:
+        except RuntimeError as exc:
             self.toast(str(exc) or "The wardrive could not start", RED, 5)
+            return False
+        except OSError as exc:
+            self.toast("The logs folder cannot be used: %s" % (exc.strerror or exc), RED, 5)
             return False
         self.drive = drive
         self.stale()
@@ -298,7 +337,8 @@ class App:
         self.start_wardrive()
 
     def ask_stop_wardrive(self):
-        self.confirm("Stop the wardrive?", "The log is saved and sent to your upload sites.", "Stop + save",
+        self.confirm("Stop the wardrive?", self.ending("The log is saved and sent to your upload sites.",
+                                                       "The wardrive stops."), "Stop + save",
                      self.stop_wardrive, default=1)
 
     def stop_wardrive(self, show=True):
@@ -319,20 +359,26 @@ class App:
             self.stop_recon()
             return self.toast("Recon stopped. %s flagged" % screens.plural(flagged, "device"))
         if self.wardriving:
-            return self.confirm("Stop the wardrive first?", "Recon and a wardrive never run together. The wardrive "
-                                "is saved and Recon starts.", "Start Recon", self._swap_to_recon, default=1)
+            return self.confirm("Stop the wardrive first?", self.ending(
+                "Recon and a wardrive never run together. The wardrive is saved and Recon starts.",
+                "The wardrive stops and Recon starts."), "Start Recon", self._swap_to_recon, default=1)
         self.start_recon()
 
     def _swap_to_recon(self):
+        drive = self.drive
         self.stop_wardrive(show=False)
         self.start_recon()
+        if drive.failed:
+            self.toast(drive.failed, RED, 5)
 
     def start_recon(self):
         self.recon.cfg = dict(self.cfg)
         try:
             self.recon.start()
-        except (RuntimeError, OSError) as exc:
+        except RuntimeError as exc:
             return self.toast(str(exc) or "Recon could not start", RED, 5)
+        except OSError as exc:
+            return self.toast("Recon could not start: %s" % (exc.strerror or exc), RED, 5)
         if not isinstance(self.screen, recon_screens.Recon):
             self.home()
             self.push(recon_screens.Recon())
@@ -396,37 +442,79 @@ class App:
         c.rect((0, 0, W, STATUS_H - 1), fill=SURFACE)
         c.line((0, STATUS_H, W, STATUS_H), fill=LINE)
         c.paste(image("quartermaster-logo-dark.png", (22, 16)), (3, 1))
-        c.text((28, 3), screen.title, font("bold", 11), GOLD)
-        small = font("monob", 9)
+        f, battery = font("bold", 11), self.hw.battery
+        parts = self.indicators(c)
+        if battery:
+            room = W - 29 - sum(width + 8 for width, _ in parts) - c.text_width(screen.title, f)
+            parts.insert(0, self.gauge(c, battery, room))
         right = W - 5
+        for width, paint in parts:
+            paint(right)
+            right -= width + 8
+        c.text((28, 3), screen.title, f, GOLD, width=max(0, right - 24))
+
+    def indicators(self, c):
+        """What the status bar shows left of the battery, from the right inwards: (width, paint at that edge)."""
+        parts = []
         fix = self.gps.snapshot()
         label = "GPS %s" % (fix.get("satellites") or "OK") if fix.get("valid") else \
             ("NO GPS" if fix.get("source", "none") == "none" else "GPS --")
-        c.text_right(right, 4, label, small, GREEN if fix.get("valid") else AMBER)
-        right -= int(c.text_width(label, small)) + 8
+        parts.append(self.counted(c, None, label, GREEN if fix.get("valid") else AMBER))
         status = self.upload_status()
         if status["uploading"] or (status["waiting"] and status["keys"]):
-            count = str(status["waiting"])
-            color = GOLD if status["uploading"] else MUTED
-            c.text_right(right, 4, count, small, color)
-            right -= int(c.text_width(count, small)) + 2
-            icons.draw(c, "cloud", right - 13, 2, 13, color)
-            right -= 20
+            parts.append(self.counted(c, "cloud", str(status["waiting"]), GOLD if status["uploading"] else MUTED))
         if self.recon_running:
             summary = self.recon.summary()
             color = RED if summary["strong"] or summary["following"] else AMBER if summary["flagged"] else GREEN
-            if summary["flagged"]:
-                c.text_right(right, 4, str(summary["flagged"]), small, color)
-                right -= int(c.text_width(str(summary["flagged"]), small)) + 2
-            icons.draw(c, "eye", right - 13, 2, 13, color)
-            right -= 20
+            parts.append(self.counted(c, "eye", str(summary["flagged"] or ""), color))
         if self.wardriving:
-            text = clock(self.drive.elapsed())
-            width = int(c.text_width(text, font("monob", 8))) + 18
+            parts.append(self.recording(c, clock(self.drive.elapsed())))
+        return parts
+
+    def gauge(self, c, battery, room):
+        """The battery: green with a bolt while it charges, amber from 20 % down and red from 10 %.
+
+        `room` is what the title and the other indicators leave. Where that is too little for both, the number
+        stays and the bolt goes. Where the number does not fit either, the bolt comes back alone for as long as
+        it fits. The number is judged as "100%", so that it does not come and go with the level.
+        """
+        level, charging = battery["percent"], battery["charging"]
+        color = GREEN if charging else RED if level <= 10 else AMBER if level <= 20 else TEXT
+        small = font("monob", 9)
+        widest = int(c.text_width("100%", small)) + 3
+        reading = "%d%%" % level if room >= 30 + widest else ""
+        bolt = charging and room >= 41 + (widest if reading else 0)
+        text = int(c.text_width(reading, small)) + 3 if reading else 0
+
+        def paint(right):
+            c.battery(right - 22, 4, level, color, MUTED if color == TEXT else color)
+            if reading:
+                c.text_right(right - 25, 4, reading, small, color)
+            if bolt:
+                icons.draw(c, "bolt", right - 33 - text, 3, 11, color)
+        return 22 + text + (11 if bolt else 0), paint
+
+    def counted(self, c, icon, text, color):
+        """A number or a word, with an icon before it."""
+        small = font("monob", 9)
+        width = int(c.text_width(text, small))
+
+        def paint(right):
+            c.text_right(right, 4, text, small, color)
+            if icon:
+                icons.draw(c, icon, right - width - (15 if text else 13), 2, 13, color)
+        return width + ((15 if text else 13) if icon else 0), paint
+
+    def recording(self, c, text):
+        small = font("monob", 8)
+        width = int(c.text_width(text, small)) + 18
+
+        def paint(right):
             c.rect((right - width, 3, right, 15), fill=REC_FILL, radius=6)
             blink = int(time.monotonic() * 2) % 2 == 0
             c.draw.ellipse((right - width + 5, 6, right - width + 11, 12), fill=RED if blink else (120, 30, 30))
-            c.text((right - width + 14, 4), text, font("monob", 8), RED)
+            c.text((right - width + 14, 4), text, small, RED)
+        return width, paint
 
     def footer(self, c, screen):
         y = H - FOOTER_H
@@ -437,6 +525,57 @@ class App:
             if x > W - 36:
                 break
             x += c.keycap(x, y + 3, key, label)
+
+    def watch_battery(self):
+        """Say so as the battery runs down. Almost empty, save what is running and close.
+
+        The system's own low battery warning and safe power-off wait for as long as an app is open.
+        A weak charger comes and goes with the load, so before the save one reading of it settles nothing:
+        that wait ends only when the charger has held for as long as the wait itself. After the save one
+        reading calls the close off, as it does for the system's own countdown.
+        """
+        battery, now = self.hw.battery, time.monotonic()
+        charging = bool(battery) and battery["charging"]
+        if self._closing is not None:
+            if charging:
+                self._empty_since = self._closing = None
+                self.toast("Charging. Quartermaster stays open.", GREEN, 5)
+            elif now >= self._closing:
+                self.quit()
+            return
+        if not battery:
+            return
+        level = battery["percent"]
+        if level > EMPTY:
+            self._empty_since = None
+        elif not charging:
+            self._charger_since = None
+            if self._empty_since is None:
+                self._empty_since = now
+            elif now - self._empty_since >= EMPTY_SECONDS:
+                return self.close_soon()
+        elif self._charger_since is None:
+            self._charger_since = now
+        elif now - self._charger_since >= EMPTY_SECONDS:
+            self._empty_since = None
+        step = VERY_LOW if level <= VERY_LOW else LOW if level <= LOW else 101
+        if self._battery_step is None or level >= LOW + 5 and not charging:
+            self._battery_step = step
+        elif step < self._battery_step and not charging:
+            self._battery_step = step
+            self.toast("Battery at %d%%. Plug in %s." % (level, "soon" if step == VERY_LOW else "to keep going"),
+                       RED if step == VERY_LOW else AMBER, 5)
+
+    def close_soon(self):
+        """Save, say so, and after a moment leave the screen to the system."""
+        self._closing = time.monotonic() + CLOSING_SECONDS
+        drive = self.drive if self.wardriving else None
+        self.stop_wardrive()
+        self.stop_recon()
+        saved = drive is not None and drive.log_path is not None and not drive.failed
+        self._closing = time.monotonic() + CLOSING_SECONDS
+        self.toast("Battery almost empty. %s" % ("Wardrive saved. Closing now." if saved else "Closing now."), RED,
+                   CLOSING_SECONDS)
 
     def booted(self):
         if self.cfg.get("auto_start"):
@@ -453,8 +592,16 @@ class App:
         if not self._booted and not isinstance(self.screen, screens.Splash):
             self._booted = True
             self.booted()
-        self.keyboard.text_mode = self.screen.text_mode
+        if self._booted:
+            self.watch_battery()
         for key in self.keyboard.poll(timeout):
+            if not self.screen.text_mode:
+                key = navigation(key)
+            if not key.repeat:
+                self._pressed = (self.screen, key.name)
+            elif (self.screen, key.name) != self._pressed or \
+                    (key.name not in REPEATING and not (self.screen.text_mode and key.char)):
+                continue
             if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \
                     and recon_screens.fresh_alert(self):
                 self.open("Recon")

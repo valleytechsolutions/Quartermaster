@@ -7,6 +7,7 @@ a log as made by Quartermaster: WiGLE, WDGWars and Wardrift all read it.
 """
 
 import csv
+import errno
 import io
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ COLUMNS = ("MAC", "SSID", "AuthMode", "FirstSeen", "Channel", "Frequency", "RSSI
 FIX_MAX_AGE = 5.0
 MIN_EPOCH = 1704067200  # 2024-01-01: an unset clock must never reach a log
 LOG_GLOB = "quartermaster_*.wigle.csv"
+SYNC_SECONDS = 5.0
 
 
 def pre_header(os_version=""):
@@ -108,24 +110,68 @@ def prune_empty(directory):
     return removed
 
 
+def fsync(fd):
+    """Wait until what a file was given is on disk. A file system that cannot do that at all has still taken it."""
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+
+
+def trim(path, window=65536):
+    """Cut off a last line that has no end and put the rest on disk. False when that cannot be done."""
+    try:
+        with open(path, "rb+") as kept:
+            start = max(0, kept.seek(0, os.SEEK_END) - window)
+            kept.seek(start)
+            tail = kept.read()
+            whole = tail.rfind(b"\n") + 1
+            if start and not whole:
+                return False
+            kept.truncate(start + whole)
+            fsync(kept.fileno())
+    except OSError:
+        return False
+    return True
+
+
+def cut(path, size):
+    """Cut a file back to the size a sync has put on disk. Storage that refuses this as well keeps what it has."""
+    try:
+        with open(path, "rb+") as kept:
+            if kept.seek(0, os.SEEK_END) > size:
+                kept.truncate(size)
+                fsync(kept.fileno())
+    except OSError:
+        pass
+
+
 class WigleWriter:
-    def __init__(self, path, os_version="", sync_every=5.0):
+    def __init__(self, path, os_version="", sync_every=SYNC_SECONDS):
         self.path = Path(path)
         self.size = self.path.stat().st_size if self.path.exists() else 0
         fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self.file = os.fdopen(fd, "a", encoding="utf-8", newline="")
         self.rows = 0
         self.sync_every = sync_every
-        self._synced = time.monotonic()
+        self._synced, self._waiting = time.monotonic(), False
+        self._emitted, self._safe, self._dropped = 0, (self.size, 0), False
         if self.size == 0:
-            self._emit(pre_header(os_version))
-            self._emit(COLUMNS)
-            self.sync(force=True)
+            try:
+                self._emit(pre_header(os_version))
+                self._emit(COLUMNS)
+                self.sync(force=True)
+            except OSError:
+                self._let_go()
+                self.path.unlink()
+                raise
 
     def _emit(self, row):
         line = io.StringIO()
         csv.writer(line, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerow(row)
         text = line.getvalue()
+        self._waiting = True
         self.file.write(text)
         self.size += len(text.encode("utf-8"))
 
@@ -156,22 +202,46 @@ class WigleWriter:
 
     def write_row(self, row):
         self._emit(row)
-        self.rows += 1
+        self._emitted += 1
         self.sync()
+        self.rows += 1
 
     def sync(self, force=False):
+        """Put the rows that wait in memory on disk, every few seconds at most. An error means they are not there."""
         now = time.monotonic()
-        if force or now - self._synced >= self.sync_every:
+        if self._waiting and (force or now - self._synced >= self.sync_every):
             self.file.flush()
             try:
-                os.fsync(self.file.fileno())
+                fsync(self.file.fileno())
             except OSError:
-                pass
-            self._synced = now
+                self._dropped = True
+                raise
+            self._synced, self._waiting, self._safe = now, False, (self.size, self._emitted)
 
     def close(self):
+        """Close the file whatever happens. An error means that the last rows are not on disk."""
         try:
             self.sync(force=True)
+        finally:
             self.file.close()
-        except (OSError, ValueError):
+
+    def _let_go(self):
+        try:
+            self.file.close()
+        except OSError:
             pass
+
+    def abandon(self, exc):
+        """Give up a file that refused a write. Returns how many of the rows counted are not in it.
+
+        Full storage refuses at once what it cannot take: what the file holds then stays, less a row that is only
+        half there. After any other error the kernel may have lost what it took since the last sync, and reading
+        the file back would not show that, so the file is cut back to that sync.
+        """
+        self._let_go()
+        full = exc.errno in (errno.ENOSPC, errno.EDQUOT) and not self._dropped
+        kept = data_rows(self.path) if full and trim(self.path) else None
+        if kept is None:
+            size, kept = self._safe
+            cut(self.path, size)
+        return self.rows - kept

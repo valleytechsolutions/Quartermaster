@@ -198,6 +198,14 @@ class Canvas:
         if fraction > 0:
             self.rect((x0, y0, x0 + max(y1 - y0, int((x1 - x0) * fraction)), y1), fill=fg, radius=(y1 - y0) // 2)
 
+    def battery(self, x, y, percent, color, edge):
+        """A battery 22 wide and 10 high, filled from the left up to the percentage."""
+        self.rect((x, y, x + 19, y + 9), outline=edge, radius=2)
+        self.rect((x + 20, y + 3, x + 21, y + 6), fill=edge)
+        if percent > 0:
+            self.rect((x + 2, y + 2, x + 1 + max(1, round(16 * percent / 100)), y + 7), fill=color)
+        return 22
+
     def signal_bars(self, x, y, rssi, color=None):
         """Four ascending bars; -95 dBm is one, -55 dBm or better is all four."""
         level = 0 if rssi is None else max(1, min(4, int((rssi + 95) / 13) + 1))

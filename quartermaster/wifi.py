@@ -2,7 +2,7 @@
 
 Each adapter gets its own thread and scans all the bands it supports, so a
 tri-band adapter covers 2.4, 5 and 6 GHz in one sweep while the built-in radio
-keeps sweeping 2.4/5 GHz beside it. Results come from `iw` (true dBm, full
+keeps sweeping 2.4 GHz beside it. Results come from `iw` (true dBm, full
 security details), and NetworkManager starts the sweep when the app is not
 allowed to. Nothing here connects to a network or probes one by name.
 """

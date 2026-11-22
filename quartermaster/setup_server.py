@@ -1,8 +1,8 @@
 """The setup page: paste upload keys from a phone or PC on the same network.
 
 The page is served only while the Cardputer shows the setup screen, and only
-after the PIN from that screen is entered. Saved keys are never sent back to
-the browser.
+after the PIN from that screen is entered. Of a saved key only the last four
+characters are sent back to the browser.
 """
 
 import hmac
