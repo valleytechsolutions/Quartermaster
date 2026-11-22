@@ -13,6 +13,7 @@ from ..setup_server import SetupServer
 from . import icons, recon_screens, screens
 from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, SURFACE, W, Canvas, clock, font,
                   image)
+from .keys import navigation
 
 STALL_SECONDS = 10
 FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
@@ -453,8 +454,9 @@ class App:
         if not self._booted and not isinstance(self.screen, screens.Splash):
             self._booted = True
             self.booted()
-        self.keyboard.text_mode = self.screen.text_mode
         for key in self.keyboard.poll(timeout):
+            if not self.screen.text_mode:
+                key = navigation(key)
             if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \
                     and recon_screens.fresh_alert(self):
                 self.open("Recon")

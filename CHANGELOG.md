@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+- Sym now types the symbol printed on each key of the CardputerZero keyboard. Before, a dash, an underscore and most other symbols could not be typed, so some upload keys could only be entered from a phone.
+- Tab in a text box opens a list of every symbol.
+- F, X, Z and C still move while Shift is locked, and Caps Lock on a USB keyboard is followed.
+
 ## 1.0.1
 
 The first release.

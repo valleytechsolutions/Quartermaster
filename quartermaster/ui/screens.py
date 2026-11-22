@@ -1018,7 +1018,9 @@ class Tips(Details):
             ("", "Keys", GOLD),
             ("F  X  Z  C", "Up, down, left, right. The arrow keys work too."),
             ("OK", "Open or confirm"),
-            ("Esc or `", "Back"),
+            ("Esc", "Back"),
+            ("Sym", "Then a key: the symbol printed on it"),
+            ("Tab", "In a text box: lists every symbol"),
             ("Space", "Start or stop a wardrive from the menu"),
             ("", "Wardrive", GOLD),
             ("", "Every Wi-Fi adapter scans at once, with Bluetooth beside them. Rows are logged only with a GPS "
@@ -1117,15 +1119,24 @@ class Confirm(Modal):
 
 
 class TextInput(Modal):
-    text_mode = True
     refresh = 0.5
+    SYMBOLS = "-_.@:/!#$%&*+=?~()[]{}<>'\"`^|\\,;"
+    COLUMNS = 16
 
     def __init__(self, title, on_submit, initial="", hint="", limit=64):
         self.title, self.on_submit, self.hint, self.limit = title, on_submit, hint, limit
         self.value = initial
+        self.picking = False
+        self.cell = 0
+
+    @property
+    def text_mode(self):
+        return not self.picking
 
     def hints(self, app):
-        return [("OK", "Save"), ("Del", "Erase"), ("Esc", "Cancel")]
+        if self.picking:
+            return [("F/X/Z/C", "Move"), ("OK", "Add"), ("Tab", "Close")]
+        return [("OK", "Save"), ("Tab", "Symbols"), ("Del", "Erase"), ("Esc", "Cancel")]
 
     def render(self, c, app):
         x0, y0, x1, y1 = 14, 38, W - 14, 122
@@ -1136,21 +1147,51 @@ class TextInput(Modal):
         width = c.text((x0 + 16, y0 + 32), shown, font("mono", 10), TEXT)
         if int(time.monotonic() * 2) % 2 == 0:
             c.rect((x0 + 17 + width, y0 + 32, x0 + 18 + width, y0 + 44), fill=GOLD)
+        if self.picking:
+            for i, symbol in enumerate(self.SYMBOLS):
+                x, y = x0 + 18 + i % self.COLUMNS * 16, y0 + 52 + i // self.COLUMNS * 15
+                if i == self.cell:
+                    c.rect((x, y, x + 15, y + 13), fill=GOLD, radius=3)
+                c.put((x + 8, y + 7), symbol, font("monob", 12), GOLD_INK if i == self.cell else TEXT, "mm")
+            return
         c.text_right(x1 - 12, y0 + 53, "%d typed" % len(self.value), font("mono", 8), FAINT)
         for i, line in enumerate(c.wrap(self.hint, x1 - x0 - 90, font("ui", 8))[:3]):
             c.text((x0 + 12, y0 + 53 + i * 10), line, font("ui", 8), MUTED)
 
+    def insert(self, text):
+        if len(self.value) < self.limit:
+            self.value += text
+
     def handle(self, key, app):
+        if self.picking:
+            return self.pick(key)
         if key == "ENTER":
             app.pop()
             if self.value.strip():
                 self.on_submit(self.value.strip())
         elif key == "ESC":
             app.pop()
+        elif key == "TAB":
+            self.picking = True
         elif key.name in ("BACKSPACE", "DELETE"):
             self.value = self.value[:-1]
-        elif key.char and key.char.isprintable() and len(self.value) < self.limit:
-            self.value += key.char
+        elif key.char and key.char.isprintable():
+            self.insert(key.char)
+        else:
+            return False
+        return True
+
+    def pick(self, key):
+        step = {"LEFT": -1, "RIGHT": 1, "UP": -self.COLUMNS, "DOWN": self.COLUMNS}.get(key.name)
+        if step:
+            self.cell = (self.cell + step) % len(self.SYMBOLS)
+        elif key == "ENTER":
+            self.insert(self.SYMBOLS[self.cell])
+            self.picking = False
+        elif key in ("TAB", "ESC"):
+            self.picking = False
+        elif key.name in ("BACKSPACE", "DELETE"):
+            self.value = self.value[:-1]
         else:
             return False
         return True

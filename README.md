@@ -118,7 +118,7 @@ Each site gives you a key on its own website. Quartermaster never asks for your 
 
 **From your phone or PC (easiest).** Press **K**, then **OK** on the first row. Scan the QR code, or open the address on the screen in a browser, and enter the PIN. Paste your keys and press Save. The page also lets you download logs and paste a list of networks to leave out. It only exists while that screen is open, on your own network, and it never shows a saved key.
 
-**On the Cardputer.** Press **K**, pick a key, press **OK** and type it. Press **T** to test it.
+**On the Cardputer.** Press **K**, pick a key, press **OK** and type it. Press **T** to test it. A symbol is typed with **Sym** and the key it is printed on, or picked from the list that **Tab** opens.
 
 Use any one site, or all three. Keys are stored on the device in a file only your user can read.
 
@@ -138,10 +138,11 @@ Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is
 | --- | --- |
 | **F X Z C** or the arrows | Up, down, left, right |
 | **OK** (Enter) | Open or confirm |
-| **Esc** or **`** | Back |
+| **Esc** | Back |
 | **Space** | Start or stop a wardrive from the menu |
 | **W R L U H S K A** | Jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
-| **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both |
+| **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
+| **Sym**, then a key | In a text box: the symbol printed on that key |
 
 Every screen shows its own keys along the bottom.
 
@@ -186,7 +187,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.0.1,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.0.2,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 A device gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends. A log is split at 8 MB so that every site accepts it.

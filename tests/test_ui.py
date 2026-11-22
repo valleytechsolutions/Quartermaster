@@ -8,7 +8,7 @@ from quartermaster.engine import Wardrive
 from quartermaster.recon_engine import Recon
 from quartermaster.ui import recon_screens, screens
 from quartermaster.ui.app import App
-from quartermaster.ui.keys import EvdevInput, ScriptedInput
+from quartermaster.ui.keys import ScriptedInput
 from tests.fakes import ADAPTERS, FIX, NO_FIX, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent
 from tests.test_core import NOW
 from tests.test_uploads import KEYS
@@ -148,7 +148,7 @@ def test_keys_are_typed_tested_and_removed_on_the_device(tmp_path, drawn):
     press(app, "DOWN", "DOWN", "DOWN", "ENTER")
     assert isinstance(app.screen, screens.TextInput)
     typed(app, "f" * 64)
-    assert app.keyboard.text_mode and app.screen.value == "f" * 64    # f is a letter here, not the up arrow
+    assert app.screen.text_mode and app.screen.value == "f" * 64      # f is a letter here, not the up arrow
     press(app, "BACKSPACE")
     typed(app, "f")
     press(app, "ENTER")
@@ -166,14 +166,6 @@ def test_keys_are_typed_tested_and_removed_on_the_device(tmp_path, drawn):
     press(app, "ESC", "U")
     text = screen_text(app, drawn)
     assert "Add a key to start uploading" in text and text.count("NO KEY") == 3
-
-
-def test_text_fields_can_always_be_left_with_the_backtick_key():
-    keyboard = EvdevInput(paths=["/nonexistent"])
-    assert keyboard.translate(33, 1) == "UP" and keyboard.translate(41, 1) == "ESC"
-    keyboard.text_mode = True
-    letter, leave = keyboard.translate(33, 1), keyboard.translate(41, 1)
-    assert (letter.name, letter.char) == ("F", "f") and (leave.name, leave.char) == ("ESC", "")
 
 
 def test_settings_are_saved_and_locked_while_scanning(tmp_path, drawn):
