@@ -27,7 +27,7 @@ Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermast
 - **Every adapter at once.** Single, dual or tri-band, on the USB-A or the USB-C port, through a hub or not. Each adapter scans in its own thread across 2.4, 5 and 6 GHz, next to the built-in radio and Bluetooth. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
 - **A full wardriver with no adapter at all.** The built-in 2.4 GHz radio, Bluetooth and a GPS are enough.
 - **GPS from anything.** A USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd. It is found by itself, and the cap and Grove port are powered on when a GPS is needed there.
-- **The closest and the farthest sighting, always.** Each device is listed once, and both its strongest and its weakest sighting are written with their exact positions.
+- **The closest and the farthest sighting, and nothing else.** Each device is listed once. Its strongest and its weakest sighting are written with their exact positions, and by default no other rows, so a log holds no pile of repeats.
 - **Logs WiGLE accepts.** WigleWifi-1.6 CSV, written only with a fresh GPS fix and a real clock, split into files every upload site takes. Each log names Quartermaster in its header.
 - **Uploads by themselves.** Finished logs go to WiGLE, WDGWars and Wardrift whenever the Cardputer is online. Every log shows what each site did with it.
 - **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
@@ -163,9 +163,10 @@ Every screen shows its own keys along the bottom.
 | | Bluetooth scan | On, Off | On |
 | | Random BLE addresses | Log, Skip | Log |
 | | Bluetooth check | 0.5 s, 1 s, 2 s, 5 s | 1 s |
-| Logging | Log when signal changes | 2, 4, 6, 10 dB | 4 dB |
-| | Log again after moving | 10, 25, 50, 100 m | 25 m |
-| | Shortest time between rows | 5, 10, 30, 60 s | 30 s |
+| Logging | Rows per device | Closest + furthest, Full track | Closest + furthest |
+| | Log when signal changes (Full track) | 2, 4, 6, 10 dB | 4 dB |
+| | Log again after moving (Full track) | 10, 25, 50, 100 m | 25 m |
+| | Shortest time between rows (Full track) | 5, 10, 30, 60 s | 30 s |
 | | Hidden networks | Log, Skip | Log |
 | | Ignored networks | Names or addresses that are never logged | |
 | GPS | GPS source | Auto, gpsd, USB, Cap / Grove, Off | Auto |
@@ -196,7 +197,11 @@ Every log starts with a header that names the app:
 WigleWifi-1.6,appRelease=Quartermaster 1.0.5,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
-A device gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends. A log is split at 8 MB so that every site accepts it.
+By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, the next wardrive finishes that log first.
+
+With **Rows per device** set to **Full track**, a device also gets a new row when its signal is stronger or weaker than anything logged so far, or when you have moved and enough time has passed. Its exact strongest and weakest sightings are always in the file by the time the wardrive ends.
+
+A log is split at 8 MB so that every site accepts it.
 
 To copy logs off the Cardputer, open the phone setup page and tap a log, or use SFTP.
 

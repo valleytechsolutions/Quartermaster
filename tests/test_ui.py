@@ -113,7 +113,7 @@ def test_menu_opens_every_screen_and_quits(tmp_path, drawn):
 
 
 def test_wardrive_saves_uploads_and_deletes(tmp_path, drawn):
-    app = make_app(tmp_path, keys=KEYS)
+    app = make_app(tmp_path, keys=KEYS, log_rows="track")
     press(app, "W")
     assert app.wardriving and isinstance(app.screen, screens.Wardrive)
     text = screen_text(app, drawn)
@@ -165,7 +165,7 @@ def test_remove_right_after_removing_the_last_ignored_network_takes_the_one_left
 
 
 def test_the_logs_list_keeps_its_place_as_logs_go_and_keeps_the_one_being_recorded(tmp_path):
-    app = make_app(tmp_path)
+    app = make_app(tmp_path, log_rows="track")
     for _ in range(4):
         press(app, "W", "ESC", "SPACE", "ENTER", "ESC")
     first, second, third, fourth = app.log_files()
@@ -356,7 +356,7 @@ def test_a_wardrive_that_could_never_start_its_log_ends_with_the_reason(tmp_path
 
 
 def test_a_logs_folder_that_cannot_be_used_is_said_and_no_wardrive_starts(tmp_path, monkeypatch):
-    app = make_app(tmp_path)
+    app = make_app(tmp_path, log_rows="track")
 
     def broken(path):
         raise OSError(5, "Input/output error")
@@ -462,6 +462,32 @@ def test_settings_are_saved_and_locked_while_scanning(tmp_path, drawn):
     typed(app, "Black Pearl")
     press(app, "ENTER")
     assert app.drive.ignore_names == {"Black Pearl"}         # the ignore list applies to a running wardrive at once
+
+
+def test_rows_per_device_starts_at_closest_and_furthest_and_waits_for_the_wardrive_to_stop(tmp_path, drawn):
+    app = make_app(tmp_path)
+    assert config.DEFAULTS["log_rows"] == app.cfg["log_rows"] == "extremes"
+    press(app, "S")
+    settings = app.screen
+    settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "log_rows")
+    text = screen_text(app, drawn)
+    assert "Rows per device" in text and "Closest + furthest" in drawn and "two rows per device" in text
+    settings.index += 1
+    assert "Full track only." in screen_text(app, drawn)
+    settings.index -= 1
+    press(app, "ESC", "W")
+    assert app.drive.extremes and app.drive.active_log().name.startswith(".")
+    press(app, "ESC", "S")
+    app.screen.index = settings.index
+    press(app, "ENTER")
+    assert app.cfg["log_rows"] == "extremes" and "Stop the wardrive" in app.toast_text
+    press(app, "ESC", "SPACE", "ENTER", "ESC", "S")
+    app.screen.index = settings.index
+    press(app, "ENTER")
+    assert app.cfg["log_rows"] == config.load(tmp_path / "config.json")["log_rows"] == "track"
+    assert "Full track" in screen_text(app, drawn)
+    press(app, "ESC", "W")
+    assert not app.drive.extremes and app.drive.active_log() == app.drive.log_path
 
 
 def ends(app, count):

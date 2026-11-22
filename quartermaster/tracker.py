@@ -9,6 +9,9 @@ import math
 import threading
 
 WIFI, BLE, BT = "WIFI", "BLE", "BT"
+FLOOR_RSSI = -92
+EDGE_ACCURACY = 25.0
+_UNKNOWN = float("inf")
 
 
 def distance_m(a, b):
@@ -17,10 +20,75 @@ def distance_m(a, b):
     return 2 * 6371000 * math.asin(math.sqrt(min(1.0, h)))
 
 
+def _accuracy(value):
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class Ends:
+    """The strongest sighting of a device, and the weakest one that may stand for the far edge of its range.
+
+    A weak sighting counts only from FLOOR_RSSI up and with a position good to EDGE_ACCURACY metres. One whose
+    accuracy is unknown counts only while the strongest sighting's accuracy is unknown as well. Between equal
+    signals the smaller accuracy wins, then the earlier sighting. Points are (rssi, ., ., time, ., accuracy).
+    """
+
+    __slots__ = ("best", "edge", "blind")
+
+    def __init__(self):
+        self.best = self.edge = self.blind = None
+
+    @staticmethod
+    def _rank(point, sign):
+        accuracy = _accuracy(point[5])
+        return sign * point[0], _UNKNOWN if accuracy is None else accuracy, point[3]
+
+    def _before(self, point, other, sign):
+        """Whether point ranks before other. Most sightings differ in signal, which settles it at once."""
+        if other is None or point[0] != other[0]:
+            return other is None or sign * point[0] < sign * other[0]
+        return self._rank(point, sign) < self._rank(other, sign)
+
+    def add(self, point):
+        """Take a sighting in. Returns 1 when it is the new strongest, 2 when it is the new usable weakest, 3 for
+        both, 4 when it only waits as the weakest of unknown accuracy, and 0 when it changes nothing."""
+        changed = 0
+        if self._before(point, self.best, -1):
+            self.best, changed = point, 1
+        if point[0] < FLOOR_RSSI:
+            return changed
+        accuracy = _accuracy(point[5])
+        if accuracy is None:
+            if self._before(point, self.blind, 1):
+                self.blind = point
+                changed |= 2 if _accuracy(self.best[5]) is None else 4
+        elif accuracy <= EDGE_ACCURACY and self._before(point, self.edge, 1):
+            self.edge = point
+            changed |= 2
+        return changed
+
+    def usable(self, point):
+        """Whether a point may stand for the far edge."""
+        return point is self.edge or point is self.blind and _accuracy(self.best[5]) is None
+
+    def chosen(self):
+        """The strongest sighting, then the weakest if it is another one and may be used."""
+        if self.best is None:
+            return []
+        blind = self.blind if _accuracy(self.best[5]) is None else None
+        weak = [point for point in (self.edge, blind) if point is not None]
+        edge = min(weak, key=lambda point: self._rank(point, 1)) if weak else self.best
+        return [self.best] if edge is self.best else [self.best, edge]
+
+
 class Device:
     __slots__ = ("kind", "mac", "name", "security", "capabilities", "channel", "frequency", "band", "first_seen",
                  "last_seen", "sightings", "rssi", "best", "worst", "logged_best", "logged_worst", "logged_at",
-                 "logged_pos", "rows", "extra", "ignored", "order")
+                 "logged_pos", "rows", "extra", "ignored", "order", "ends", "part", "sent", "fresh")
 
     def __init__(self, kind, mac, now, order=0):
         self.kind, self.mac, self.order = kind, mac, order
@@ -36,10 +104,16 @@ class Device:
         self.rows = 0
         self.extra = None
         self.ignored = False
+        self.ends = self.part = None       # with extremes: Ends of every sighting, and of those in the open log
+        self.sent = ()                     # the points of ends that are logged
+        self.fresh = False                 # ends has changed since its chosen points were last all handed out
 
 
 class Tracker:
-    def __init__(self, relog_seconds=30.0, relog_meters=25.0, rssi_step=4, accuracy=None):
+    def __init__(self, relog_seconds=30.0, relog_meters=25.0, rssi_step=4, accuracy=None, extremes=False):
+        self.extremes = extremes
+        self.kept = 0                      # rows the open part of the log keeps, with extremes
+        self._parted = []                  # devices with a part
         self.relog_seconds = relog_seconds
         self.relog_meters = relog_meters
         self.rssi_step = rssi_step
@@ -56,7 +130,8 @@ class Tracker:
         """Record one sighting and return (device, is_new, reason).
 
         reason says why the sighting earns a log row: "new", "stronger", "weaker" or "moved".
-        It is None when the sighting adds nothing, or when there is no usable fix."""
+        It is None when the sighting adds nothing, or when there is no usable fix. With extremes, there is no
+        "moved", and "weaker" means weaker than any logged sighting that may stand for the far edge."""
         key = (kind, mac)
         with self.lock:
             device = self.devices.pop(key, None)
@@ -92,12 +167,17 @@ class Tracker:
             if device.best is None:
                 device.best = device.worst = point
                 reason = "new"
+                if self.extremes:
+                    device.ends = Ends()
+                    self._edge(device, point)
             else:
                 if rssi > device.best[0]:
                     device.best = point
                 elif rssi < device.worst[0]:
                     device.worst = point
-                if rssi - device.logged_best >= self.rssi_step:
+                if self.extremes:
+                    reason = self._edge(device, point)
+                elif rssi - device.logged_best >= self.rssi_step:
                     reason = "stronger"
                 elif device.logged_worst - rssi >= self.rssi_step:
                     reason = "weaker"
@@ -109,11 +189,62 @@ class Tracker:
                 self._logged(device, point)
             return device, new, reason
 
-    @staticmethod
-    def _logged(device, point):
+    def _edge(self, device, point):
+        """With extremes: take a sighting into the device's ends, and say whether it moves one by rssi_step."""
+        changed = device.ends.add(point)
+        if not changed:
+            return None
+        device.fresh = True
+        if changed & 1 and (device.logged_best is None or point[0] - device.logged_best >= self.rssi_step):
+            return "stronger"
+        if changed & 2 and (device.logged_worst is None or device.logged_worst - point[0] >= self.rssi_step):
+            return "weaker"
+        return None
+
+    def _logged(self, device, point):
         device.logged_best = point[0] if device.logged_best is None else max(device.logged_best, point[0])
+        if self.extremes:
+            self._sent(device, point)
+            if not device.ends.usable(point):
+                return
+        else:
+            device.rows += 1
         device.logged_worst = point[0] if device.logged_worst is None else min(device.logged_worst, point[0])
-        device.rows += 1
+
+    def _sent(self, device, point):
+        part = device.part
+        if part is None:
+            part = device.part = Ends()
+            self._parted.append(device)
+        before = len(part.chosen())
+        part.add(point)
+        self.kept += len(part.chosen()) - before
+        ends = device.ends
+        device.sent = tuple(p for p in device.sent + (point,) if p is ends.best or p is ends.edge or p is ends.blind)
+
+    def _done(self, device):
+        if self.extremes:
+            return not device.fresh or all(point in device.sent for point in device.ends.chosen())
+        return device.best[0] <= device.logged_best and device.worst[0] >= device.logged_worst
+
+    def find(self, kind, mac):
+        """The device a log row names, whose address may be written in another case."""
+        return self.devices.get((kind, mac.upper())) or self.devices.get((kind, mac))
+
+    def log_rows(self, device):
+        """Rows the device has in the log, or will have once the open part is finished."""
+        return device.rows + (len(device.part.chosen()) if device.part is not None else 0)
+
+    def new_part(self, counts):
+        """The open part of the log is finished, and holds counts[(type, mac)] rows of each device."""
+        with self.lock:
+            for device in self._parted:
+                device.part = None
+            self._parted, self.kept = [], 0
+            for (kind, mac), rows in counts.items():
+                device = self.find(kind, mac)
+                if device is not None:
+                    device.rows += rows
 
     def take_extremes(self, idle_before=None):
         """Strongest and weakest sightings that no log row carries yet.
@@ -126,6 +257,14 @@ class Tracker:
                 if device.best is None or device.ignored:
                     continue
                 if idle_before is not None and device.last_seen > idle_before:
+                    continue
+                if self.extremes:
+                    if device.fresh:
+                        for point in device.ends.chosen():
+                            if point not in device.sent:
+                                out.append((device, point))
+                                self._logged(device, point)
+                        device.fresh = False
                     continue
                 if device.best[0] > device.logged_best:
                     out.append((device, device.best))
@@ -169,8 +308,7 @@ class Tracker:
             for key, device in self.devices.items():
                 if len(gone) >= spare + limit // 5 or device.last_seen > idle_before:
                     break
-                if device.best is None or device.ignored or (device.best[0] <= device.logged_best
-                                                             and device.worst[0] >= device.logged_worst):
+                if device.best is None or device.ignored or self._done(device):
                     gone.append(key)
             gone = [self.devices.pop(key) for key in gone]
         return gone

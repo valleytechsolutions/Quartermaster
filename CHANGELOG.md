@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- A log now holds at most two rows per device: its closest and its farthest sighting, each with its own position and time. A far sighting below -92 dBm or less sure than 25 m is left out. The rows wait in a hidden file until the wardrive stops, and a log cut short by a crash or a power cut is finished at the next wardrive. Settings, Rows per device, Full track logs as before.
+
 ## 1.0.5
 
 Small fixes. Nothing changes in how Quartermaster looks or is used.

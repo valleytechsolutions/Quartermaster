@@ -7,7 +7,7 @@ import types
 from quartermaster import gnss, hardware, wigle
 from quartermaster.gnss import GPS, nmea_fix
 from quartermaster.power import Rails
-from quartermaster.tracker import BLE, Tracker, WIFI
+from quartermaster.tracker import BLE, Ends, Tracker, WIFI
 from quartermaster.wifi import parse_iw_scan
 
 SCAN = """BSS aa:bb:cc:dd:ee:01(on wlan1)
@@ -266,3 +266,60 @@ def test_managed_sweep_waits_for_results(monkeypatch):
     assert scanner.method == "nm+iw" and scanner.direct is False
     scanner.scan()
     assert sum(1 for c in calls if c[-1] == "scan") == 1          # direct trigger is not retried
+
+
+def test_closest_and_furthest_are_the_strongest_and_the_weakest_sighting_that_can_be_trusted():
+    def ends(*points):
+        found = Ends()
+        for rssi, accuracy, time in points:
+            found.add((rssi, 0, 0, time, None, accuracy))
+        return [(p[0], p[5], p[3]) for p in found.chosen()]
+    assert ends() == [] and ends((-60, 4.5, 1)) == [(-60, 4.5, 1)]
+    assert ends((-60, 4.5, 1), (-80, 4.5, 2), (-70, 4.5, 3)) == [(-60, 4.5, 1), (-80, 4.5, 2)]
+    assert ends((-60, 4.5, 1), (-93, 4.5, 2), (-92, 25, 3), (-85, 25.5, 4)) == [(-60, 4.5, 1), (-92, 25, 3)]
+    assert ends((-60, 4.5, 1), (-95, 4.5, 2), (-80, 30, 3)) == [(-60, 4.5, 1)]
+    assert ends((-60, 4.5, 1), (-80, "", 2), (-70, 15, 3)) == [(-60, 4.5, 1), (-70, 15, 3)]
+    assert ends((-60, "", 1), (-80, "", 2), (-70, 15, 3)) == [(-60, "", 1), (-80, "", 2)]
+    assert ends((-60, 15, 1), (-60, 4.5, 2), (-60, 4.5, 3)) == [(-60, 4.5, 2)]
+    assert ends((-60, 4.5, 1), (-80, 15, 2), (-80, 4.5, 3), (-80, 4.5, 4)) == [(-60, 4.5, 1), (-80, 4.5, 3)]
+    assert ends((-60, 30, 1), (-60, 4.5, 2)) == [(-60, 4.5, 2)]
+    assert ends((-60, 30, 1), (-70, 30, 2)) == [(-60, 30, 1)]
+
+
+def test_with_extremes_each_device_hands_out_its_closest_and_furthest_sighting_once():
+    t = Tracker(relog_seconds=30, relog_meters=25, rssi_step=4, accuracy=wigle.accuracy_m, extremes=True)
+    handed = []
+    for i, rssi in enumerate([-70, -69, -50, -51, -95, -90, -80]):
+        d, _, why = t.observe(WIFI, "AA", rssi, NOW + i, dict(FIX, latitude=25 + i / 1000))
+        if why:
+            handed.append((why, rssi))
+    assert handed == [("new", -70), ("stronger", -50), ("weaker", -90)]
+    assert t.observe(WIFI, "AA", -80, NOW + 40, dict(FIX, latitude=25.1))[2] is None
+    assert (d.logged_best, d.logged_worst, t.kept) == (-50, -90, 2) and t.take_extremes() == []
+    assert t.observe(WIFI, "AA", -91, NOW + 50, dict(FIX))[2] is None and t.forget(0, NOW + 100) == []
+    assert [(p[0], p[3]) for _, p in t.take_extremes()] == [(-91, NOW + 50)] and t.take_extremes() == []
+    assert not d.fresh and t.observe(WIFI, "AA", -70, NOW + 51, dict(FIX))[2] is None and not d.fresh
+    assert t.log_rows(d) == 2 and t.kept == 2 and d.rows == 0
+    t.new_part({(WIFI, "aa"): 2})
+    assert t.kept == 0 and d.rows == 2 and t.log_rows(d) == 2
+    assert t.observe(WIFI, "AA", -45, NOW + 60, dict(FIX))[2] == "stronger" and t.kept == 1 and t.log_rows(d) == 3
+    t.observe(WIFI, "BB", -60, NOW, dict(FIX))
+    t.observe(WIFI, "BB", -62, NOW + 1, dict(FIX))
+    assert [d.mac for d in t.forget(0, NOW + 100)] == ["AA"]
+    assert [(d.mac, p[0]) for d, p in t.take_extremes()] == [("BB", -62)]
+    assert [d.mac for d in t.forget(0, NOW + 100)] == ["BB"] and t.kept == 3
+    t.new_part({})
+    assert t.kept == 0 and t.log_rows(d) == 2
+
+
+def test_with_extremes_moving_or_a_sighting_too_weak_to_trust_does_not_hold_back_the_next_row():
+    t = Tracker(relog_seconds=30, relog_meters=25, rssi_step=4, accuracy=wigle.accuracy_m, extremes=True)
+    why = [t.observe(WIFI, "AA", rssi, NOW + 40 * i, dict(FIX, latitude=25 + i / 100))[2]
+           for i, rssi in enumerate([-70, -67, -64, -61, -58])]
+    assert why == ["new", None, "stronger", None, "stronger"]
+    why = [t.observe(WIFI, "BB", rssi, NOW + i, dict(FIX))[2] for i, rssi in enumerate([-60, -99, -88, -86])]
+    assert why == ["new", None, "weaker", None]
+    far = dict(FIX, hdop=9)
+    heard = [(-60, far), (-90, far), (-62, FIX)]
+    why = [t.observe(WIFI, "CC", rssi, NOW + i, fix)[2] for i, (rssi, fix) in enumerate(heard)]
+    assert why == ["new", None, "weaker"]

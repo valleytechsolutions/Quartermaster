@@ -37,6 +37,7 @@ class FakeFleet:
         return []
 
 
+TRACK = {"ble": False, "log_rows": "track"}
 ADAPTERS = [{"interface": "wlan1", "external": True, "bands": ["2.4", "5", "6"], "phy": "phy1"},
             {"interface": "wlan0", "external": False, "bands": ["2.4", "5"], "phy": "phy0"}]
 
@@ -58,14 +59,14 @@ def whole(path):
 
 
 def quiet_drive(tmp_path):
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: NOW)
     drive.start()
     return drive
 
 
 def test_wardrive_dedups_across_adapters_and_logs(tmp_path):
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
                      clock=lambda: NOW)
     drive.start()
     status = drive.status()
@@ -81,7 +82,7 @@ def test_wardrive_dedups_across_adapters_and_logs(tmp_path):
 
 
 def test_no_fix_means_no_rows_and_no_file(tmp_path):
-    drive = Wardrive({"ble": False, "wifi_adapters": "external"}, FakeGPS({"valid": False}), root=tmp_path,
+    drive = Wardrive(dict(TRACK, wifi_adapters="external"), FakeGPS({"valid": False}), root=tmp_path,
                      adapters=ADAPTERS, fleet=FakeFleet, clock=lambda: NOW)
     drive.start()
     assert drive.status()["wifi"] == 3 and drive.status()["rows"] == 0 and drive.log_path is None
@@ -117,7 +118,7 @@ NET = {"bssid": "AA:BB:CC:DD:EE:01", "ssid": "Tortuga", "rssi": -70, "channel": 
 
 def run_sweeps(tmp_path, readings, cfg=None, gps=None):
     Sweeps.readings, Sweeps.clock = readings, [NOW]
-    drive = Wardrive(dict({"ble": False}, **(cfg or {})), gps or FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS[:1],
+    drive = Wardrive(dict(TRACK, **(cfg or {})), gps or FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS[:1],
                      fleet=Sweeps, clock=lambda: Sweeps.clock[0])
     drive.start()
     drive.stop()
@@ -212,7 +213,7 @@ def test_fleet_adds_and_drops_adapters_live():
 def test_an_all_day_drive_makes_room_in_memory_and_still_summarises_every_device(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "MAX_TRACKED", 10)
     clock = [NOW]
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: clock[0])
     drive.start()
     heard = networks(40)
@@ -240,7 +241,7 @@ def test_the_log_and_the_summary_are_on_disk_under_their_names_when_the_wardrive
                            sorted(path.name for path in (tmp_path / "logs").iterdir())))
         return real(fd)
     monkeypatch.setattr(os, "fsync", fsync)
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
                      clock=lambda: NOW)
     drive.start()
     log, summary = "quartermaster_20261118-110640.wigle.csv", "quartermaster_20261118-110640.summary.csv"
@@ -255,7 +256,7 @@ def test_the_log_and_the_summary_are_on_disk_under_their_names_when_the_wardrive
 def test_the_last_rows_reach_the_disk_without_waiting_for_the_next_row(tmp_path, monkeypatch, later):
     assert engine.UPKEEP_SECONDS + wigle.SYNC_SECONDS < 10
     monkeypatch.setattr(engine, "UPKEEP_SECONDS", 0.01)
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: NOW)
     drive.start()
     drive._wifi_sink(networks(30), ADAPTERS[0])
@@ -695,7 +696,7 @@ def long_drive(tmp_path, monkeypatch):
     """A wardrive that has let devices go from memory, so that their summary lines wait in a hidden file."""
     monkeypatch.setattr(engine, "MAX_TRACKED", 10)
     clock = [NOW]
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: clock[0])
     drive.start()
     drive._wifi_sink(networks(30), ADAPTERS[0])
@@ -709,7 +710,7 @@ def long_drive(tmp_path, monkeypatch):
 def test_devices_let_go_before_the_first_row_are_not_set_aside(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "MAX_TRACKED", 10)
     clock = [NOW]
-    drive = Wardrive({"ble": False}, FakeGPS({"valid": False}), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS({"valid": False}), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: clock[0])
     drive.start()
     drive._wifi_sink(networks(30), ADAPTERS[0])
@@ -771,7 +772,7 @@ def test_an_error_that_brings_no_words_of_its_own_is_still_said(tmp_path, later)
 def test_rows_that_were_lost_are_what_is_said_whatever_else_went_wrong(tmp_path, monkeypatch, later):
     monkeypatch.setattr(engine, "MAX_TRACKED", 10)
     clock, heard, real = [NOW], networks(90), os.open
-    drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: clock[0])
     drive.start()
 
@@ -822,7 +823,7 @@ def test_a_folder_that_cannot_be_put_on_disk_does_not_stop_the_log(tmp_path, mon
         open_before = len(os.listdir("/proc/self/fd"))
         with monkeypatch.context() as patch:
             patch.setattr(os, name, stand_in)
-            drive = Wardrive({"ble": False}, FakeGPS(FIX), root=tmp_path / root, adapters=ADAPTERS, fleet=FakeFleet,
+            drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path / root, adapters=ADAPTERS, fleet=FakeFleet,
                              clock=lambda: NOW)
             drive.start()
             drive.stop()
@@ -859,3 +860,382 @@ def test_a_half_written_summary_line_set_aside_does_not_join_the_next(tmp_path, 
     rows = summary_of(drive.log_path)
     assert len(rows) == 31 and all(None not in row and None not in row.values() for row in rows)
     assert not any(row[engine.SUMMARY_COLUMNS[0]].startswith("AA:BB:CC") for row in rows)
+
+
+def closest_and_furthest(tmp_path, clock=None, **cfg):
+    clock = clock or [NOW]
+    drive = Wardrive(dict({"ble": False}, **cfg), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0])
+    drive.start()
+    return drive, clock
+
+
+def hear(drive, clock, rssi, net=NET, **fix):
+    drive.gps.fix = dict(FIX, **fix)
+    drive._wifi_sink([dict(net, rssi=rssi)], ADAPTERS[0])
+    clock[0] += 1
+
+
+def per_device(rows):
+    found = {}
+    for row in rows:
+        found.setdefault((row[13], row[0]), []).append(row)
+    return found
+
+
+def expected_ends(points):
+    """The rows a device should keep, worked out the slow way from every sighting: (rssi, accuracy, time, lat)."""
+    def accuracy(point):
+        return float("inf") if point[1] == "" else point[1]
+    best = min(points, key=lambda p: (-p[0], accuracy(p), p[2]))
+    weak = [p for p in points if p[0] >= -92 and (p[1] == "" and best[1] == "" or p[1] != "" and p[1] <= 25)]
+    edge = min(weak, key=lambda p: (p[0], accuracy(p), p[2])) if weak else best
+    return [best] if edge == best else [best, edge]
+
+
+def as_points(rows):
+    return [(int(r[6]), float(r[10]) if r[10] else "", r[3], r[7]) for r in rows]
+
+
+def test_a_long_noisy_drive_keeps_only_the_closest_and_furthest_row_of_each_device(tmp_path, monkeypatch):
+    import random
+    monkeypatch.setattr(engine, "MAX_TRACKED", 30)
+    rnd, heard, seen, last = random.Random(3), networks(40), {}, {}
+    drive, clock = closest_and_furthest(tmp_path)
+    for sweep in range(600):
+        fix = dict(FIX, latitude=FIX["latitude"] + sweep / 10000, hdop=rnd.choice([0.9, 0.9, 3, 6]))
+        drive.gps.fix = fix
+        found = [dict(net, rssi=rnd.randrange(-99, -35)) for net in (heard[:30] if sweep < 300 else heard[20:])]
+        drive._wifi_sink(found, ADAPTERS[0])
+        ble = [{"address": "11:22:33:44:55:%02X" % i, "rssi": rnd.randrange(-99, -50), "name": ""} for i in range(5)]
+        drive._ble_sink(ble, last)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(clock[0]))
+        sightings = [("WIFI", n["bssid"], n["rssi"]) for n in found] + [("BLE", b["address"], b["rssi"]) for b in ble]
+        for kind, mac, rssi in sightings:
+            seen.setdefault((kind, mac.lower()), []).append((rssi, wigle.accuracy_m(fix), stamp,
+                                                             "%.7f" % fix["latitude"]))
+        clock[0] += 1
+        if sweep % 100 == 99:
+            drive._tidy()
+    journal = wigle.journal_path(drive.log_path)
+    assert journal.exists() and not drive.log_path.exists() and drive.status()["rows"] > 0
+    assert len(drive.tracker.devices) < 45 == drive.status()["wifi"] + drive.status()["ble"]
+    assert len(rows_of(journal)) > 2 * len(seen)
+    drive.stop()
+    rows = whole(drive.log_path)
+    assert len(rows) == drive.rows == drive.status()["rows"] and not journal.exists()
+    assert [row[3] for row in rows] == sorted(row[3] for row in rows)
+    found = per_device(rows)
+    assert set(found) == set(seen) and all(len(kept) <= 2 for kept in found.values())
+    for key, kept in found.items():
+        assert sorted(as_points(kept)) == sorted(expected_ends(seen[key])), key
+    summary = summary_of(drive.log_path)
+    assert {(row["Type"], row["MAC"]): int(row["LogRows"]) for row in summary} == {k: len(v) for k, v in found.items()}
+    assert sorted(path.name for path in (tmp_path / "logs").iterdir()) == [
+        "quartermaster_20261118-110640.summary.csv", "quartermaster_20261118-110640.wigle.csv"]
+
+
+def test_a_device_heard_once_or_always_alike_gets_one_row(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for _ in range(50):
+        hear(drive, clock, -70)
+    hear(drive, clock, -70, net=dict(NET, bssid="AA:BB:CC:DD:EE:02"))
+    drive.stop()
+    rows = whole(drive.log_path)
+    assert [(row[0], row[6], row[3]) for row in rows] == [("aa:bb:cc:dd:ee:01", "-70", "2026-11-18 11:06:40"),
+                                                          ("aa:bb:cc:dd:ee:02", "-70", "2026-11-18 11:07:30")]
+    assert drive.rows == 2 and [row["LogRows"] for row in summary_of(drive.log_path)] == ["1", "1"]
+
+
+def test_the_furthest_row_is_never_below_92_dbm_or_less_sure_than_25_m(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path / "floor")
+    for rssi, hdop in ((-60, 0.9), (-95, 0.9), (-93, 0.9), (-88, 6), (-80, 0.9), (-78, 0.9)):
+        hear(drive, clock, rssi, hdop=hdop)
+    drive.stop()
+    assert [(row[6], row[10]) for row in whole(drive.log_path)] == [("-60", "4.5"), ("-80", "4.5")]
+    assert summary_of(drive.log_path)[0]["WeakestRSSI"] == "-80"
+    drive, clock = closest_and_furthest(tmp_path / "unknown")
+    unknown = {"valid": True, "latitude": 25.2, "longitude": -77.7, "age_seconds": 0.1}
+    drive.gps = FakeGPS(dict(FIX))
+    hear(drive, clock, -60)
+    drive.gps = FakeGPS(unknown)
+    drive._wifi_sink([dict(NET, rssi=-85)], ADAPTERS[0])
+    drive.stop()
+    assert [(row[6], row[10]) for row in whole(drive.log_path)] == [("-60", "4.5")]
+    drive, clock = closest_and_furthest(tmp_path / "nothing better")
+    for rssi in (-50, -96, -99):
+        hear(drive, clock, rssi)
+    drive.stop()
+    assert [row[6] for row in whole(drive.log_path)] == ["-50"] and drive.rows == 1
+
+
+def test_between_equal_signals_the_surer_and_then_the_earlier_sighting_is_kept(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for rssi, hdop, lat in ((-60, 3, 1), (-60, 0.9, 2), (-60, 0.9, 3), (-80, 3, 4), (-80, 0.9, 5), (-80, 0.9, 6)):
+        hear(drive, clock, rssi, hdop=hdop, latitude=25 + lat / 1000)
+    drive.stop()
+    rows = whole(drive.log_path)
+    assert [(row[6], row[7], row[10]) for row in rows] == [("-60", "25.0020000", "4.5"), ("-80", "25.0050000", "4.5")]
+
+
+def test_a_name_heard_later_is_on_both_rows(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -60, net=dict(NET, ssid="", capabilities="[ESS]"))
+    hear(drive, clock, -80, net=dict(NET, ssid="", capabilities="[ESS]"))
+    hear(drive, clock, -79)
+    hear(drive, clock, -60, net=dict(NET, bssid="AA:BB:CC:DD:EE:02", ssid="Port, \"Royal\""))
+    drive.stop()
+    rows = whole(drive.log_path)
+    assert [(row[1], row[2], row[6]) for row in rows] == [
+        ("Tortuga", NET["capabilities"], "-60"), ("Tortuga", NET["capabilities"], "-80"),
+        ('Port, "Royal"', NET["capabilities"], "-60")]
+
+
+def test_rows_that_only_say_the_car_moved_are_not_kept_even_in_the_journal(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for step in range(20):
+        clock[0] += 40
+        hear(drive, clock, -70 + step % 2, latitude=25 + step / 100)
+    drive.writer.sync(force=True)
+    assert len(rows_of(wigle.journal_path(drive.log_path))) == 1 and drive.status()["rows"] == 1
+    drive.stop()
+    assert [row[6] for row in whole(drive.log_path)] == ["-70", "-69"] and drive.rows == 2
+
+
+def test_the_journal_is_hidden_from_uploads_the_logs_list_and_pruning(tmp_path):
+    from quartermaster import uploads
+    drive, clock = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(20), ADAPTERS[0])
+    journal = wigle.journal_path(drive.log_path)
+    assert journal.name == ".quartermaster_20261118-110640.wigle.csv.part" and drive.active_log() == journal
+    assert [path.name for path in (tmp_path / "logs").iterdir()] == [journal.name]
+    assert list((tmp_path / "logs").glob(wigle.LOG_GLOB)) == [] and wigle.prune_empty(tmp_path / "logs") == []
+    assert uploads.Uploader(tmp_path, {}, active=lambda: None).logs() == [] and journal.exists()
+    assert drive.status()["rows"] == 20 and drive.status()["log"] == str(drive.log_path)
+    drive.stop()
+    assert uploads.Uploader(tmp_path, {}, active=drive.active_log).logs() == [drive.log_path]
+
+
+def test_the_log_appears_only_once_it_is_whole_and_on_disk_and_then_the_journal_goes(tmp_path, monkeypatch):
+    drive, clock = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(20), ADAPTERS[0])
+    log, journal = drive.log_path, wigle.journal_path(drive.log_path)
+    real_replace, real_settle, real_fsync, steps = os.replace, engine._settle, os.fsync, []
+
+    def fsync(fd):
+        steps.append(("fsync", os.readlink("/proc/self/fd/%d" % fd).rsplit("/", 1)[-1], log.exists()))
+        return real_fsync(fd)
+
+    def replace(src, dst):
+        if str(dst) == str(log):
+            steps.append(("replace", len(whole(type(log)(src))), log.exists()))
+        return real_replace(src, dst)
+
+    def settle(folder):
+        steps.append(("settle", journal.exists(), log.exists()))
+        return real_settle(folder)
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(engine, "_settle", settle)
+    drive.stop()
+    tmp = "." + log.name + ".tmp"
+    assert steps[:4] == [("fsync", journal.name, False), ("fsync", tmp, False), ("replace", 20, False),
+                         ("settle", True, True)]
+    assert len(whole(log)) == drive.rows == 20 and not journal.exists()
+
+
+def test_a_journal_that_reaches_the_rotation_size_becomes_a_log_of_its_own(tmp_path, monkeypatch):
+    from quartermaster import uploads
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 3000)
+    drive, clock = closest_and_furthest(tmp_path)
+    heard = networks(60)
+    for sweep in range(12):
+        drive._wifi_sink([dict(net, rssi=-90 + 4 * ((sweep + i) % 12)) for i, net in enumerate(heard)], ADAPTERS[0])
+        clock[0] += 1
+    assert len(drive.log_paths) > 2
+    finished = [path for path in drive.log_paths if path.exists()]
+    assert finished == drive.log_paths[:-1] and not wigle.journal_path(finished[0]).exists()
+    assert uploads.Uploader(tmp_path, {}, active=drive.active_log).logs() == sorted(finished)
+    drive.stop()
+    assert len({path.name for path in drive.log_paths}) == len(drive.log_paths) > 2
+    total = {}
+    for path in drive.log_paths:
+        rows = whole(path)
+        assert 0 < len(rows) and all(len(kept) <= 2 for kept in per_device(rows).values())
+        assert [row[3] for row in rows] == sorted(row[3] for row in rows) and path.stat().st_size < 3000 + 200
+        for key, kept in per_device(rows).items():
+            total[key] = total.get(key, 0) + len(kept)
+    assert drive.rows == sum(total.values()) == sum(len(whole(path)) for path in drive.log_paths)
+    assert drive.status()["rows"] == drive.rows and drive.status()["files"] == len(drive.log_paths)
+    summary = summary_of(drive.log_paths[0])
+    assert {(row["Type"], row["MAC"]): int(row["LogRows"]) for row in summary} == total
+    assert [path for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == []
+
+
+def test_a_journal_left_by_a_power_cut_is_finished_at_the_next_start(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -50, net=dict(NET, ssid=""))
+    hear(drive, clock, -90)
+    drive._wifi_sink(networks(5), ADAPTERS[0])
+    drive.writer.sync(force=True)
+    log, journal = drive.log_path, wigle.journal_path(drive.log_path)
+    with open(journal, "a", encoding="utf-8") as torn:
+        torn.write("aa:bb:cc:dd:ee:01,Tortuga,[ESS],2026-11-18 11:06:50,6,2437,-30,25.1")
+    (tmp_path / "logs" / ("." + log.name + ".tmp")).write_text("half")
+    drive._stop.set()
+    drive.writer.file.close()
+    drive.writer, drive.state = None, "stopped"
+    again, _ = closest_and_furthest(tmp_path)
+    assert [(row[1], row[6]) for row in whole(log)][:2] == [("Tortuga", "-50"), ("Tortuga", "-90")]
+    assert len(whole(log)) == 7
+    assert sorted(path.name for path in (tmp_path / "logs").iterdir()) == [log.name]
+    again.stop()
+    assert again.log_path is None and again.rows == 0
+    log.write_text("finished before the power went\n")
+    journal.write_text("")
+    closest_and_furthest(tmp_path)[0].stop()
+    assert log.read_text() == "finished before the power went\n" and not journal.exists()
+
+
+def test_a_log_that_cannot_be_compacted_keeps_its_journal_for_the_next_start(tmp_path, monkeypatch):
+    drive, clock = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(20), ADAPTERS[0])
+    log, journal = drive.log_path, wigle.journal_path(drive.log_path)
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", full)
+        drive.stop()
+    assert drive.failed == drive.status()["failed"] == "Cannot write the log: No space left on device"
+    assert drive.rows == drive.status()["rows"] == 0 and drive.log_path is None and drive.status()["log"] == ""
+    assert [path.name for path in (tmp_path / "logs").iterdir()] == [journal.name]
+    assert len(rows_of(journal)) == 20
+    closest_and_furthest(tmp_path)[0].stop()
+    assert len(whole(log)) == 20 and not journal.exists()
+
+
+def test_a_journal_that_storage_refuses_is_finished_and_the_next_row_starts_a_new_log(tmp_path, later):
+    drive, heard = closest_and_furthest(tmp_path)[0], networks(70)
+    drive._wifi_sink(heard[:30], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    first = drive.log_path
+    on_a_card(drive.writer, room=150)
+    drive._wifi_sink(heard[30:60], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    assert drive.error == drive.failed == "Cannot write the log: No space left on device" and drive.writer is None
+    assert 30 < len(whole(first)) < 60 and drive.rows == drive.status()["rows"] == len(whole(first))
+    assert not wigle.journal_path(first).exists()
+    drive._wifi_sink(heard[60:], ADAPTERS[0])
+    assert drive.error == "" and drive.status()["rows"] == len(whole(first)) + 10
+    drive.stop()
+    second = drive.log_paths[1]
+    assert drive.log_paths == [first, second] and second.name.endswith("-1.wigle.csv") and len(whole(second)) == 10
+    assert drive.rows == len(whole(first)) + 10 and drive.failed == "Cannot write the log: No space left on device"
+
+
+def test_a_journal_without_a_row_left_leaves_no_log_and_its_name_is_not_used_again(tmp_path, later):
+    drive, heard = closest_and_furthest(tmp_path)[0], networks(3)
+    drive._wifi_sink(heard[:1], ADAPTERS[0])
+    first = drive.log_path
+    on_a_card(drive.writer, room=0, error=OSError(5, "Input/output error"))
+    drive._wifi_sink(heard[1:2], ADAPTERS[0])
+    later(5)
+    drive._sync()
+    assert drive.failed == "Cannot write the log: Input/output error" and drive.log_paths == [] and drive.rows == 0
+    assert list((tmp_path / "logs").iterdir()) == []
+    drive._wifi_sink(heard[2:], ADAPTERS[0])
+    drive.stop()
+    assert drive.log_path != first and drive.log_path.name.endswith("-1.wigle.csv") and len(whole(drive.log_path)) == 1
+    assert len(summary_of(drive.log_path)) == 3
+
+
+def power_cut(drive):
+    drive.writer.sync(force=True)
+    drive._stop.set()
+    drive.writer.file.close()
+    drive.writer, drive.state = None, "stopped"
+
+
+def test_a_journal_cut_short_holds_the_closest_and_furthest_rows_to_within_the_signal_step(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for i, rssi in enumerate((-70, -67, -64, -61, -58)):
+        clock[0] += 40
+        hear(drive, clock, rssi, latitude=25 + i / 100)
+    for rssi in (-60, -99, -88, -86, -85):
+        hear(drive, clock, rssi, net=dict(NET, bssid="AA:BB:CC:DD:EE:02"))
+    log, journal = drive.log_path, wigle.journal_path(drive.log_path)
+    power_cut(drive)
+    good = ",Tortuga,[ESS],2026-11-18 11:20:00,6,2437,-30,25.1,-77.7,10,4.5,,,"
+    with open(journal, "a", encoding="utf-8") as torn:
+        torn.write("\0\0aa:bb:cc:dd:ee:09" + good + "WIFI\n" + "aa:bb:cc:dd:ee:09" + good + "WIFX\n")
+    closest_and_furthest(tmp_path)[0].stop()
+    assert [(row[0][-2:], row[6]) for row in whole(log)] == [("01", "-70"), ("01", "-58"), ("02", "-60"),
+                                                             ("02", "-88")]
+
+
+def test_a_part_that_rotates_holds_the_exact_ends_of_what_was_heard_while_it_was_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 3000)
+    drive, clock = closest_and_furthest(tmp_path)
+    for rssi in (-70, -68, -67, -72, -73):
+        hear(drive, clock, rssi)
+    drive._wifi_sink(networks(40), ADAPTERS[0])
+    assert len(drive.log_paths) == 2
+    drive.stop()
+    first, second = (whole(path) for path in drive.log_paths)
+    assert [row[6] for row in first if row[0] == "aa:bb:cc:dd:ee:01"] == ["-67", "-73"]
+    assert [row for row in second if row[0] == "aa:bb:cc:dd:ee:01"] == []
+    assert drive.rows == len(first) + len(second)
+
+
+def test_a_name_on_the_ignore_list_keeps_a_device_out_of_the_log_even_when_heard_after_its_first_row(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    drive.set_ignore(["My Tracker"])
+    last = {}
+    drive._ble_sink([{"address": "11:22:33:44:55:66", "rssi": -60, "name": ""}], last)
+    drive._ble_sink([{"address": "11:22:33:44:55:66", "rssi": -61, "name": "My Tracker"}], last)
+    hear(drive, clock, -60)
+    hear(drive, clock, -60, net=dict(NET, bssid="AA:BB:CC:DD:EE:02", ssid="Later"))
+    hear(drive, clock, -60, net=dict(NET, bssid="AA:BB:CC:DD:EE:03", ssid="Gone"))
+    drive.set_ignore(["My Tracker", "Later", "aa-bb-cc-dd-ee-03"])
+    drive.stop()
+    assert [row[0] for row in whole(drive.log_path)] == ["aa:bb:cc:dd:ee:01"] and drive.rows == 1
+    drive, clock = closest_and_furthest(tmp_path / "cut")
+    hear(drive, clock, -60, net=dict(NET, ssid="Later"))
+    hear(drive, clock, -60, net=dict(NET, bssid="AA:BB:CC:DD:EE:02"))
+    log = drive.log_path
+    power_cut(drive)
+    closest_and_furthest(tmp_path / "cut", ignore=["Later"])[0].stop()
+    assert [row[0] for row in whole(log)] == ["aa:bb:cc:dd:ee:02"]
+
+
+def test_a_part_that_cannot_be_compacted_counts_no_rows_and_loses_no_summary_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "MAX_TRACKED", 10)
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 3000)
+    drive, clock = closest_and_furthest(tmp_path)
+    heard = networks(45)
+    drive._wifi_sink(heard[:20], ADAPTERS[0])
+    clock[0] += 600
+    drive._tidy()
+    first, real = drive.log_path, os.replace
+    assert len(drive.tracker.devices) == 8
+
+    def replace(src, dst):
+        if str(dst) == str(first):
+            raise OSError(28, "No space left on device")
+        return real(src, dst)
+    monkeypatch.setattr(os, "replace", replace)
+    drive._wifi_sink(heard[20:], ADAPTERS[0])
+    assert drive.failed == "Cannot write the log: No space left on device" and drive.log_path != first
+    monkeypatch.setattr(os, "replace", real)
+    drive.stop()
+    assert drive.log_paths == [drive.log_path] and wigle.journal_path(first).exists()
+    rows = per_device(whole(drive.log_path))
+    assert drive.rows == sum(len(kept) for kept in rows.values()) > 0
+    summary = summary_of(drive.log_path)
+    assert len(summary) == 45
+    for row in summary[12:]:
+        assert int(row["LogRows"]) == len(rows.get(("WIFI", row["MAC"]), [])), row["MAC"]
+    assert {row["LogRows"] for row in summary[12:20]} == {"0"}
