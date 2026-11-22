@@ -3,12 +3,12 @@
 import csv
 import os
 from pathlib import Path
-import re
 import shutil
 import threading
 import time
 
 from . import hardware, radios, wigle
+from .config import is_mac
 from .ble import BleScanner
 from .tracker import BLE, BT, WIFI, Tracker
 from .wifi import ScanUnavailable, WifiFleet
@@ -22,7 +22,6 @@ BANDS = {"2.4": {"2.4"}, "5": {"5"}, "6": {"6"}, "5+6": {"5", "6"}}
 SUMMARY_COLUMNS = ("MAC", "Type", "Name", "Security", "Channel", "FrequencyMHz", "Band", "FirstSeen", "LastSeen",
                    "Sightings", "LogRows", "StrongestRSSI", "StrongestLatitude", "StrongestLongitude",
                    "StrongestTime", "WeakestRSSI", "WeakestLatitude", "WeakestLongitude", "WeakestTime")
-_MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
 
 
 def gps_epoch(fix, fallback):
@@ -64,12 +63,10 @@ class Wardrive:
         self.writer = None
         self.log_paths = []
         self.rows = 0
-        self.started_at = None
+        self._started = self._stopped = None
         self.skipped_no_fix = 0
         self.ble_error = ""
-        ignore = [str(item).strip() for item in self.cfg.get("ignore", ()) if str(item).strip()]
-        self.ignore_macs = {item.upper().replace("-", ":") for item in ignore if _MAC.fullmatch(item)}
-        self.ignore_names = {item for item in ignore if not _MAC.fullmatch(item)}
+        self.set_ignore(self.cfg.get("ignore", ()))
         self._bands = BANDS.get(self.cfg.get("wifi_bands", "all"))
         self._stop = threading.Event()
         self._threads = []
@@ -80,12 +77,22 @@ class Wardrive:
     def log_path(self):
         return self.log_paths[0] if self.log_paths else None
 
+    def set_ignore(self, items):
+        """Names and addresses that are shown but never logged. Takes effect at once."""
+        items = [str(item).strip() for item in items if str(item).strip()]
+        self.ignore_macs = {item.upper().replace("-", ":") for item in items if is_mac(item)}
+        self.ignore_names = {item for item in items if not is_mac(item)}
+
+    def elapsed(self):
+        if self._started is None:
+            return 0
+        return (self._stopped if self._stopped is not None else time.monotonic()) - self._started
+
     def active_log(self):
         """The file being written right now, which must not be uploaded yet."""
         writer = self.writer
         return writer.path if writer is not None and self.state == "running" else None
 
-    # -- lifecycle -------------------------------------------------------
     def start(self):
         if self.state == "running":
             return
@@ -100,7 +107,7 @@ class Wardrive:
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
         radios.claim("wardrive")
         self._stop.clear()
-        self.started_at = self.clock()
+        self._started, self._stopped = time.monotonic(), None
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self.fleet.start()
@@ -153,11 +160,11 @@ class Wardrive:
             if self.writer is not None:
                 self.writer.close()
                 self.writer = None
+        self._stopped = time.monotonic()
         self.state = "stopped"
         radios.release("wardrive")
         self._write_summary()
 
-    # -- logging ---------------------------------------------------------
     def _append(self, row, epoch):
         with self._lock:
             try:
@@ -191,7 +198,6 @@ class Wardrive:
         now = gps_epoch(fix, self.clock())
         return fix, now, fix if wigle.usable(fix, now, self.cfg.get("gps_max_hdop") or None) else None
 
-    # -- sinks -----------------------------------------------------------
     def _wifi_sink(self, networks, adapter):
         _, now, fix = self._position()
         min_rssi = self.cfg.get("min_rssi", -100)
@@ -245,14 +251,13 @@ class Wardrive:
                 last_rssi.clear()
             self._stop.wait(interval)
 
-    # -- reporting -------------------------------------------------------
     def status(self):
         fix = self.gps.snapshot()
         summary = self.tracker.summary()
         hdop, limit = fix.get("hdop"), self.cfg.get("gps_max_hdop") or None
         summary.update(state=self.state, rows=self.rows, files=len(self.log_paths),
                        log=str(self.log_path) if self.log_path else "", skipped_no_fix=self.skipped_no_fix,
-                       elapsed=(self.clock() - self.started_at) if self.started_at else 0,
+                       elapsed=self.elapsed(),
                        adapters=self.fleet.status() if self.fleet else [], ble_error=self.ble_error,
                        error=self.error, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))

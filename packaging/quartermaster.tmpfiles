@@ -1,4 +1,4 @@
-# Let the gpio group switch the Grove port's 5 V rail and pin mux for a Grove GPS unit.
+# Let the gpio group switch on 5 V for a GPS on the cap connector or the Grove port.
 # systemd-tmpfiles applies this at every boot; nothing here runs as root.
+z /sys/class/leds/ext_5v_out/brightness 0664 root gpio -
 z /sys/class/leds/grove_5v_out/brightness 0664 root gpio -
-z /sys/class/leds/grove_fun/brightness 0664 root gpio -

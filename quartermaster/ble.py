@@ -1,12 +1,8 @@
-"""Bluetooth scanning through BlueZ over D-Bus. Passive: never connects or pairs.
-
-Adapted from LORA Tunnel Zero (MIT).
-"""
+"""Bluetooth scanning through BlueZ over D-Bus. It never connects to or pairs with a device."""
 
 from .wifi import ScanUnavailable
 
 
-# ------------------------------------------------------------------ BLE
 def ble_refusal(name, text=""):
     """A short, fixable reason BlueZ refused to power on or start discovery."""
     name, text = str(name or ""), str(text or "").lower()

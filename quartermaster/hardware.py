@@ -69,6 +69,14 @@ def _read(path):
         return ""
 
 
+def _target(node):
+    """The real path of a device node, following a link such as /dev/serial0. None when it is missing."""
+    try:
+        return node.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
 def _usb_parent(device):
     """Walk up from an interface's device node to the USB device that owns it."""
     try:
@@ -84,12 +92,11 @@ def _usb_parent(device):
 
 def parse_iw_phy(text):
     """Bands and modes from `iw phy <phy> info`."""
-    bands, modes, section, band = set(), set(), None, None
+    bands, modes, section = set(), set(), None
     for line in text.splitlines():
         stripped = line.strip()
-        match = re.match(r"Band (\d+):", stripped)
-        if match:
-            section, band = "band", int(match.group(1))
+        if re.match(r"Band \d+:", stripped):
+            section = "band"
             continue
         if stripped.startswith("Supported interface modes:"):
             section = "modes"
@@ -121,7 +128,8 @@ def wifi_adapters(sys_net=SYS_NET, runner=subprocess.run):
     """Every Wi-Fi interface with what the scanner and the UI need to know about it."""
     adapters = []
     try:
-        names = sorted(p.name for p in Path(sys_net).iterdir() if (p / "phy80211").exists() or (p / "wireless").exists())
+        names = sorted(p.name for p in Path(sys_net).iterdir()
+                       if (p / "phy80211").exists() or (p / "wireless").exists())
     except OSError:
         names = []
     for name in names:
@@ -157,7 +165,7 @@ def wifi_adapters(sys_net=SYS_NET, runner=subprocess.run):
 
 
 def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
-    """Serial ports that may carry NMEA, most likely first: USB receivers, then the cap and Grove UARTs."""
+    """Serial ports that may carry NMEA, most likely first: USB receivers, then the cap and Grove UART."""
     found = []
     try:
         ttys = sorted(p.name for p in Path(sys_tty).iterdir() if re.fullmatch(r"tty(ACM|USB)\d+", p.name))
@@ -174,13 +182,14 @@ def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
         found.append({"path": str(Path(dev) / name), "kind": "usb", "usb_id": usb_id,
                       "label": known or product or "USB serial", "likely": looks_gps})
     found.sort(key=lambda item: not item["likely"])
-    # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's UARTs.
-    for path, label in (("/dev/ttyS0", "Cap / Grove UART"), ("/dev/ttyAMA0", "Grove UART"), ("/dev/serial0", "Pi UART")):
-        node = Path(dev) / Path(path).name
-        # /dev/serial0 is usually a link to one of the others: list each real port once.
-        real = str(node.resolve()) if node.is_symlink() else path
-        if node.exists() and all(c["path"] not in (path, real) for c in found):
-            found.append({"path": path, "kind": "uart", "usb_id": "", "label": label, "likely": True})
+    # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's first UART.
+    # The second one carries Bluetooth and must never be read.
+    bluetooth = _target(Path(dev) / "serial1")
+    for name in ("serial0", "ttyS0"):
+        port = _target(Path(dev) / name)
+        if port is not None and port != bluetooth:
+            found.append({"path": str(port), "kind": "uart", "usb_id": "", "label": "Cap / Grove UART", "likely": True})
+            break
     for path in extra:
         if path and all(c["path"] != path for c in found):
             found.insert(0, {"path": path, "kind": "custom", "usb_id": "", "label": "Custom port", "likely": True})

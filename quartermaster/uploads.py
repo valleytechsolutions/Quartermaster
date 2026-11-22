@@ -35,15 +35,10 @@ class Outcome:
     def __init__(self, state, detail="", ref=""):
         self.state, self.detail, self.ref = state, str(detail)[:160], str(ref)[:64]
 
-    @property
-    def ok(self):
-        return self.state in (DONE, DUPLICATE)
-
     def __repr__(self):
         return "Outcome(%r, %r, %r)" % (self.state, self.detail, self.ref)
 
 
-# ------------------------------------------------------------------ HTTP
 def _request(method, url, headers, parts=(), timeout=60):
     """Send bytes and files in order as one body. Returns (status, first 64 KiB of the reply)."""
     target = urllib.parse.urlsplit(url)
@@ -131,7 +126,6 @@ def _guarded(call):
         return Outcome(RETRY, "Connection problem: %s" % (getattr(exc, "strerror", None) or type(exc).__name__))
 
 
-# ------------------------------------------------------------------ sites
 def _wigle_upload(path, accounts, base):
     content_type, parts = _multipart(path)
     status, body = _request("POST", base + "/api/v2/file/upload",
@@ -241,7 +235,6 @@ def test(service, accounts, endpoints=None):
     return _guarded(lambda: _TEST[service](accounts, base))
 
 
-# ------------------------------------------------------------------ ledger
 class Ledger:
     """Which site has which file. One small JSON file beside the logs."""
 
@@ -297,7 +290,6 @@ class Ledger:
             pass
 
 
-# ------------------------------------------------------------------ uploader
 class Uploader:
     """Background sender. `kick()` asks for a pass now; otherwise it looks for work once a minute."""
 
@@ -324,7 +316,6 @@ class Uploader:
         self._pass = threading.Lock()
         self._with_rows = set()
 
-    # -- lifecycle -------------------------------------------------------
     def start(self):
         if self._thread is None:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="uploader")
@@ -360,7 +351,6 @@ class Uploader:
             delay = BACKOFF[min(self.failures, len(BACKOFF)) - 1] if retry else IDLE_CHECK
             self.next_try = self.clock() + delay if retry else None
 
-    # -- work ------------------------------------------------------------
     def logs(self):
         """Finished logs with at least one row, oldest first. The file still being written is left out."""
         active = self.active()
@@ -415,7 +405,6 @@ class Uploader:
                 self.current = None
             return retry
 
-    # -- reporting -------------------------------------------------------
     def marks(self, name, accounts=None):
         """Per site: "done", "rejected", "waiting", or "" when no key is saved for it."""
         accounts = accounts or keys.load(self.accounts_path)

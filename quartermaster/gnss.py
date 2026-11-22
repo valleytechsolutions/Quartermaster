@@ -1,7 +1,7 @@
 """Receiver position from any GPS: a USB dongle, the Cap LoRa-1262, a Grove GPS unit, or gpsd.
 
 Ports are probed automatically: a port counts as GPS once it sends a
-checksum-valid NMEA sentence. Adapted from LORA Tunnel Zero (MIT).
+checksum-valid NMEA sentence.
 """
 
 from datetime import datetime, timezone
@@ -14,6 +14,8 @@ import time
 
 UART_BAUDS = (115200, 9600, 38400, 460800)
 STALE_SECONDS = 10
+WAKE_SECONDS = 1.5
+_USB_PORT = re.compile(r"tty(USB|ACM)\d+$")
 
 
 def _coordinate(value, hemisphere, degrees):
@@ -80,10 +82,14 @@ def nmea_fix(line):
 class GPS:
     """Thread-safe latest fix with explicit freshness."""
 
-    def __init__(self, source="auto", candidates=None):
-        """source: "auto", "gpsd", "off" or a serial port path. candidates() lists ports to probe."""
+    def __init__(self, source="auto", candidates=None, rails=None, power=True):
+        """source: "auto", "gpsd", "off" or a serial port path. candidates() lists ports to probe.
+
+        rails switches on the cap and Grove supplies before a port that is not USB is tried."""
         self.mode = source
         self.candidates = candidates
+        self.rails = rails
+        self.power = power
         self.source = "none"
         self.port = None
         self._fix = {}
@@ -133,17 +139,25 @@ class GPS:
                 fix.pop(key, None)
         return fix
 
-    # -- feeds -----------------------------------------------------------
     def run(self, stopped):
-        while not stopped.is_set():
-            if self.mode == "off":
+        try:
+            while not stopped.is_set():
+                if not self.power or self.mode in ("off", "gpsd") or _USB_PORT.search(self.mode):
+                    self.unpower()
+                if self.mode == "off":
+                    stopped.wait(2)
+                    continue
+                if self.mode in ("auto", "gpsd") and self._gpsd(stopped):
+                    continue
+                if self.mode != "gpsd" and not stopped.is_set():
+                    self._serial(stopped)
                 stopped.wait(2)
-                continue
-            if self.mode in ("auto", "gpsd") and self._gpsd(stopped):
-                continue
-            if self.mode != "gpsd" and not stopped.is_set():
-                self._serial(stopped)
-            stopped.wait(2)
+        finally:
+            self.unpower()
+
+    def unpower(self):
+        if self.rails is not None:
+            self.rails.restore()
 
     def _ports(self):
         if self.mode not in ("auto", "gpsd", "off"):
@@ -152,14 +166,15 @@ class GPS:
             from .hardware import gps_candidates
             return gps_candidates()
         return self.candidates()
+
     def _gpsd(self, stopped):
         """Return True after a working gpsd session ends, False when unavailable."""
         try:
             with socket.create_connection(("127.0.0.1", 2947), 1) as sock:
                 sock.settimeout(1)
                 sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
-                buffer, deadline, working = b"", time.monotonic() + 5, False
-                while not stopped.is_set():
+                buffer, deadline, working, mode = b"", time.monotonic() + 5, False, self.mode
+                while not stopped.is_set() and self.mode == mode:
                     try:
                         part = sock.recv(8192)
                     except socket.timeout:
@@ -191,6 +206,9 @@ class GPS:
                             self.update(message)
         except OSError:
             return False
+        finally:
+            if self.source == "gpsd":
+                self.source = "none"
         return False
 
     def _serial(self, stopped):
@@ -198,17 +216,23 @@ class GPS:
             import serial
         except ImportError:
             return
+        mode = self.mode
         for candidate in self._ports():
+            usb = bool(_USB_PORT.search(candidate["path"]))
+            if not usb and self.power and self.rails is not None and self.rails.on():
+                stopped.wait(WAKE_SECONDS)
             for baud in UART_BAUDS:
-                if stopped.is_set():
+                if stopped.is_set() or self.mode != mode:
                     return
                 try:
                     with serial.Serial(candidate["path"], baud, timeout=0.5, exclusive=True) as port:
                         valid_until = time.monotonic() + 3
                         seen = False
-                        while not stopped.is_set():
+                        while not stopped.is_set() and self.mode == mode:
                             report = nmea_fix(port.read_until(b"\n", size=129))
                             if report is not None:
+                                if usb and not seen:
+                                    self.unpower()
                                 seen = True
                                 self.source = "%s (%s)" % (candidate.get("label", "GPS"), candidate["path"])
                                 self.port = candidate["path"]
@@ -218,7 +242,7 @@ class GPS:
                             elif seen and time.monotonic() - self._updated > 15:
                                 break  # receiver unplugged or silent: probe again
                         if seen:
-                            self.port = None
+                            self.port, self.source = None, "none"
                             return
                 except (OSError, ValueError):
                     break  # port busy or gone: next candidate

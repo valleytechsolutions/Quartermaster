@@ -1,9 +1,8 @@
-"""Output backends: the CardputerZero framebuffer, or PNG files for previews."""
+"""The CardputerZero screen: a 320x170 RGB565 framebuffer."""
 
 import fcntl
 import mmap
 import os
-from pathlib import Path
 import struct
 
 FBIOGET_VSCREENINFO = 0x4600
@@ -61,22 +60,3 @@ class FramebufferDisplay:
             self.map.close()
         finally:
             os.close(self.fd)
-
-
-class PNGDisplay:
-    """Writes each frame to a file; used for screenshots and desktop previews."""
-
-    def __init__(self, path, scale=1):
-        self.path = Path(path)
-        self.scale = scale
-        self.width, self.height = 320, 170
-        self.last = None
-
-    def show(self, img):
-        self.last = img.copy()
-        out = img if self.scale == 1 else img.resize((img.width * self.scale, img.height * self.scale),
-                                                     resample=0)
-        out.save(self.path)
-
-    def close(self):
-        pass

@@ -1,398 +1,482 @@
-"""The Quartermaster interface: boot animation, menu, live wardrive, hardware, settings."""
+"""Navigation, the status bar and key hints, and the main loop."""
 
-from functools import lru_cache
-import math
+from collections import deque
+import threading
 import time
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
-from .. import __version__, config, hardware
-from ..engine import Wardrive
-from ..tracker import WIFI
-from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN, H,
-                  LINE, MUTED, RED, SURFACE, SURFACE_2, TEXT, W, Canvas, clock, font, image, rssi_color)
+from .. import accounts, config, hardware, uploads, wigle
+from ..engine import DEFAULT_ROOT, Wardrive
+from ..recon_engine import Recon
+from ..setup_server import SetupServer
+from . import icons, recon_screens, screens
+from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, SURFACE, W, Canvas, clock, font,
+                  image)
 
-WHITE = (255, 255, 255)
-INK = (0, 0, 0)
-SEC_COLOR = {"OPEN": RED, "WEP": RED, "WPA": AMBER, "OWE": CYAN}
-
-
-def ease(t):
-    t = max(0.0, min(1.0, t))
-    return 1 - (1 - t) ** 3
+STALL_SECONDS = 10
+REC_FILL = (70, 12, 14)
 
 
-SAIL_GOLD = (245, 179, 1)
-SAIL_CREAM = (252, 240, 204)
-HULL = (196, 138, 0)
-NIGHT = (6, 6, 8)
-STARS = ((18, 14), (47, 30), (71, 9), (96, 22), (222, 12), (251, 27), (283, 8), (305, 33), (14, 58), (309, 70),
-         (140, 6), (190, 9))
+class HardwareWatch:
+    """Keeps a fresh list of adapters, Bluetooth radios and GPS ports without stalling the screen."""
 
+    def __init__(self, interval=5.0):
+        self.interval = interval
+        self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
+        self._since = {}
+        self._stop = threading.Event()
+        self._thread = None
 
-@lru_cache(maxsize=None)
-def _sail(width, height, color, logo, logo_box):
-    """A sail with a logo on it, drawn large and scaled down so its edges are smooth."""
-    k = 4
-    img = Image.new("RGBA", (width * k, height * k), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    w, h, inset, belly = width * k, height * k, width * k * 0.09, height * k * 0.07
-    d.polygon([(inset, 0), (w - inset, 0), (w, h - belly), (w * 0.5, h), (0, h - belly)], fill=color)
-    d.line([(inset, k), (w - inset, k)], fill=(0, 0, 0), width=k * 2)
-    art = image(logo, (logo_box[0] * k, logo_box[1] * k))
-    img.paste(art, ((w - art.width) // 2, int((h - belly - art.height) / 2) + k), art)
-    return img.resize((width, height), Image.Resampling.LANCZOS)
+    def refresh(self):
+        try:
+            self.adapters = hardware.wifi_adapters()
+            self.bluetooth = hardware.bluetooth_adapters()
+            self.gps_ports = hardware.gps_candidates()
+            found = hardware.stalled_usb_adapters()
+        except OSError:
+            return
+        now = time.monotonic()
+        # A driver needs a few seconds after plugging in; only a lasting stall is worth a warning.
+        self._since = {item["port"]: self._since.get(item["port"], now) for item in found}
+        self.stalled = [item for item in found if now - self._since[item["port"]] >= STALL_SECONDS]
 
+    def addresses(self):
+        return hardware.local_addresses()
 
-@lru_cache(maxsize=None)
-def _hull():
-    """Raised stern on the left, upswept bow and bowsprit on the right."""
-    k = 4
-    img = Image.new("RGBA", (300 * k, 46 * k), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    body = [(4, 2), (44, 2), (44, 12), (252, 12), (284, 3), (262, 44), (30, 44)]
-    d.polygon([(x * k, y * k) for x, y in body], fill=HULL)
-    rail = [(4, 2), (44, 2), (44, 12), (252, 12), (284, 3)]
-    d.line([(x * k, y * k) for x, y in rail], fill=SAIL_GOLD, width=3 * k, joint="curve")
-    d.line([(276 * k, 5 * k), (299 * k, 0)], fill=SAIL_GOLD, width=2 * k)
-    for x in (16, 30):
-        d.rectangle((x * k, 7 * k, (x + 6) * k, 12 * k), fill=NIGHT)
-    return img.resize((300, 46), Image.Resampling.LANCZOS)
+    def start(self):
+        self.refresh()
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="hardware")
+            self._thread.start()
 
+    def _loop(self):
+        while not self._stop.wait(self.interval):
+            self.refresh()
 
-def splash_frame(t):
-    """Boot animation at time t (0..1): a black and gold ship sails in, its three sails drop one
-    by one carrying the BWM, Quartermaster and VTS marks, and the name appears on the hull."""
-    c = Canvas()
-    c.rect((0, 0, W, H), fill=NIGHT)
-    for i, (x, y) in enumerate(STARS):
-        twinkle = 0.55 + 0.45 * math.sin(t * 9 + i * 1.7)
-        c.rect((x, y, x + 1, y + 1), fill=tuple(int(v * twinkle) for v in SAIL_GOLD))
-    glide = ease(t / 0.3)
-    dx = int(-300 * (1 - glide))
-    bob = int(round(1.5 * math.sin(t * 10)))
-    # masts
-    for mx, top in ((67, 30), (160, 8), (253, 30)):
-        c.rect((mx - 1 + dx, top + bob, mx + 1 + dx, 108 + bob), fill=HULL)
-    flag = [(161 + dx, 8 + bob), (179 + dx, 12 + bob), (161 + dx, 17 + bob)]
-    c.draw.polygon(flag, fill=SAIL_GOLD)
-    sails = ((33, 36, 68, 66, SAIL_GOLD, "bwm-logo.png", (44, 44), 0.28),
-             (109, 14, 102, 90, SAIL_CREAM, "quartermaster-logo.png", (92, 70), 0.40),
-             (219, 36, 68, 66, SAIL_GOLD, "vts-logo.png", (44, 44), 0.52))
-    for x, y, w, h, color, logo, box, start in sails:
-        drop = ease((t - start) / 0.22)
-        if drop <= 0:
-            continue
-        sail = _sail(w, h, color, logo, box)
-        shown = sail.crop((0, 0, w, max(1, int(h * drop))))
-        c.paste(shown, (x + dx, y + bob))
-    c.paste(_hull(), (10 + dx, 96 + bob))
-    name = ease((t - 0.72) / 0.2)
-    if name > 0:
-        f = font("display", 18)
-        text, gap = "QUARTERMASTER", 3.0
-        width = sum(c.text_width(ch, f) for ch in text) + gap * (len(text) - 1)
-        x = (W - width) / 2
-        ink = tuple(int(h + (0 - h) * name) for h in HULL)
-        for ch in text:
-            c.text((x + 2, 113 + bob), ch, f, ink)
-            x += c.text_width(ch, f) + gap
-    # sea: gold swells in front of the hull
-    for row, (base, amp, shade) in enumerate(((141, 2.5, 1.0), (152, 2.0, 0.7), (162, 1.6, 0.45))):
-        phase = t * (14 - row * 3) + row * 1.3
-        points = [(x, base + amp * math.sin(x / 9.0 + phase)) for x in range(-2, W + 4, 3)]
-        if row == 0:
-            c.draw.polygon(points + [(W + 4, H), (-2, H)], fill=(20, 14, 0))
-        c.draw.line(points, fill=tuple(int(v * shade) for v in SAIL_GOLD), width=2)
-    return c.image
+    def stop(self):
+        self._stop.set()
 
 
 class App:
-    MENU = [("wardrive", "Wardrive", "Scan Wi-Fi and Bluetooth, log for WiGLE"),
-            ("hardware", "Hardware", "Adapters, bands and GPS found"),
-            ("logs", "Logs", "Saved wardrives"),
-            ("settings", "Settings", "Tune scanning, logging and GPS"),
-            ("about", "About", "Version and credits")]
-
-    def __init__(self, display, keyboard, gps, cfg, splash=True, wardrive=Wardrive, clock_fn=time.time):
+    def __init__(self, display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=True, wardrive=None, recon=None,
+                 uploader=None, hw=None, accounts_path=None, config_path=None, tester=uploads.test,
+                 setup=SetupServer):
         self.display, self.keyboard, self.gps, self.cfg = display, keyboard, gps, cfg
-        self.wardrive_class = wardrive
-        self.now = clock_fn
-        self.running = True
-        self.screen = "splash" if splash and cfg.get("splash", True) else "menu"
-        self.cursor = {"menu": 0, "settings": 0, "logs": 0, "hardware": 0}
+        self.root = root
+        self.logs_dir = root / "logs"
+        self.accounts_path = accounts_path
+        self.config_path = config_path
+        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root))
+        self.recon = recon or Recon(cfg, gps, root=root)
+        self.uploader = uploader or uploads.Uploader(root, cfg, active=self.active_log, accounts_path=accounts_path)
+        self.hw = hw or HardwareWatch()
+        self.tester = tester
+        self.setup_class = setup
         self.drive = None
-        self.message = ""
-        self.message_until = 0
-        self.filter = cfg.get("live_list", "all")
-        self.adapters = None
-        self.gps_ports = None
-        self.splash_started = None
+        self.tests = {}
+        self.running = True
+        self.dirty = True
+        self.stack = [screens.Home()]
+        if splash and cfg.get("splash", True):
+            self.stack.append(screens.Splash())
+        self.toast_text, self.toast_color, self.toast_until = "", GOLD, 0.0
+        self._booted = False
+        self._calls = deque()
+        self._files, self._files_at = [], None
+        self._upload, self._upload_at = None, None
+        self._accounts, self._accounts_stamp = None, None
+        self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
 
-    # -- loop ------------------------------------------------------------
-    def run(self):
-        if self.cfg.get("auto_start") and self.screen != "splash":
-            self.start_wardrive()
-        while self.running:
-            self.display.show(self.render())
-            for key in self.keyboard.poll(0.04 if self.screen == "splash" else 0.25):
-                self.handle(key)
-        self.stop_wardrive()
+    @property
+    def screen(self):
+        return self.stack[-1]
 
-    def toast(self, text, seconds=3):
-        self.message, self.message_until = text, time.monotonic() + seconds
+    @property
+    def wardriving(self):
+        return self.drive is not None and self.drive.state == "running"
+
+    @property
+    def recon_running(self):
+        return self.recon.state == "running"
+
+    def active_log(self):
+        return self.drive.active_log() if self.drive is not None else None
+
+    def accounts(self):
+        stamp = accounts.stamp(self.accounts_path)
+        if self._accounts is None or stamp != self._accounts_stamp:
+            self._accounts, self._accounts_stamp = accounts.load(self.accounts_path), stamp
+        return self._accounts
+
+    def upload_status(self):
+        now = time.monotonic()
+        if self._upload_at is None or now - self._upload_at > 1.5:
+            self._upload, self._upload_at = self.uploader.status(), now
+        return self._upload
+
+    def log_files(self, refresh=False):
+        now = time.monotonic()
+        if refresh or self._files_at is None or now - self._files_at > 3:
+            active, files = self.active_log(), []
+            try:
+                paths = sorted(self.logs_dir.glob(wigle.LOG_GLOB), reverse=True)
+            except OSError:
+                paths = []
+            for path in paths:
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                files.append({"path": path, "name": path.name, "size": size, "active": path == active,
+                              "epoch": screens.log_epoch(path.name)})
+            self._files, self._files_at = files, now
+        return self._files
+
+    def stale(self):
+        """Forget cached lists after something changed them."""
+        self._files_at = self._upload_at = None
+        self.dirty = True
+
+    def push(self, screen):
+        self.stack.append(screen)
+        self.dirty = True
+
+    def pop(self):
+        if len(self.stack) > 1:
+            self.stack.pop().closed(self)
+        self.dirty = True
+
+    def home(self):
+        while len(self.stack) > 1:
+            self.stack.pop().closed(self)
+        self.dirty = True
+
+    def open(self, name):
+        if name == "Wardrive":
+            return self.start_wardrive()
+        factory = {"Recon": recon_screens.Recon, "Logs": screens.Logs, "Uploads": screens.Uploads,
+                   "Hardware": screens.Hardware, "Settings": screens.Settings, "Keys": screens.Keys,
+                   "About": screens.About}
+        self.home()
+        self.push(factory[name]())
+
+    def quit(self):
+        self.running = False
+
+    def toast(self, text, color=GOLD, seconds=3.0):
+        self.toast_text, self.toast_color, self.toast_until = text, color, time.monotonic() + seconds
+        self.dirty = True
+
+    def confirm(self, title, detail, action, callback, danger=False, default=0):
+        self.push(screens.Confirm(title, detail, action, callback, danger=danger, default=default))
+
+    def call_soon(self, function):
+        """Run a function on the screen thread. Safe to call from any thread."""
+        self._calls.append(function)
+
+    def busy(self, text):
+        """Show a notice right away, before a call that takes a few seconds."""
+        picture = self.compose()
+        c = Canvas()
+        c.image.paste(picture, (0, 0))
+        c.image.paste(self._shade, (0, 0), self._shade)
+        c.rect((50, 68, W - 50, 102), fill=SURFACE, outline=GOLD, radius=8)
+        c.text_center(W // 2, 78, text, font("bold", 11), GOLD)
+        self.display.show(c.image)
+
+    def save(self):
+        try:
+            config.save(self.cfg, self.config_path or config.PATH)
+            return True
+        except OSError:
+            self.toast("The settings could not be saved", RED)
+            return False
+
+    def change(self, key, value):
+        self.cfg[key] = value
+        self.save()
+        if key == "gps_source":
+            self.gps.mode = value
+        if key == "gps_power":
+            self.gps.power = value
+        if key == "ignore" and self.drive is not None:
+            self.drive.set_ignore(value)
+        if key == "auto_upload" and value:
+            self.uploader.kick()
+        self.recon.cfg = dict(self.cfg)
+        self.stale()
+
+    def ignore(self, entry):
+        entry = entry.strip()[:64]
+        entries = list(self.cfg.get("ignore", []))
+        if entry and entry not in entries:
+            self.change("ignore", (entries + [entry])[:config.MAX_IGNORED])
+            self.toast("%s will not be logged" % entry)
+
+    def save_key(self, field, value):
+        try:
+            saved = accounts.update({field: value}, self.accounts_path)
+        except OSError:
+            return self.toast("The key could not be saved", RED)
+        self.keys_changed()
+        service = screens.FIELD_SERVICE[field]
+        self.tests.pop(service, None)
+        if not value:
+            self.toast("Key removed")
+        elif accounts.configured(saved, service):
+            self.toast("Saved. Checking it now")
+            self.test_key(service)
+        else:
+            self.toast("Saved. Now add the WiGLE API %s" % ("token" if field == "wigle_name" else "name"))
+
+    def keys_changed(self):
+        self._accounts = None
+        self.uploader.kick()
+        self.stale()
+
+    def test_key(self, service):
+        if self.tests.get(service, ("",))[0] == "busy":
+            return
+
+        def work():
+            try:
+                outcome = self.tester(service, accounts.load(self.accounts_path))
+                self.tests[service] = (outcome.state, outcome.detail)
+            except Exception:
+                self.tests[service] = (uploads.RETRY, "The key could not be checked")
+            self.call_soon(self.keys_checked)
+        self.tests[service] = ("busy", "Checking with %s…" % accounts.SERVICE_NAMES[service])
+        self.dirty = True
+        threading.Thread(target=work, daemon=True, name="key-test").start()
+
+    def keys_checked(self):
+        self.uploader.kick()
+        self.stale()
+
+    def setup_server(self):
+        def changed():
+            self.call_soon(self.keys_changed)
+            self.call_soon(lambda: self.toast("Keys saved from the setup page", GREEN))
+
+        def ignored(items):
+            self.call_soon(lambda: self.change("ignore", list(items)))
+        return self.setup_class(self.logs_dir, self.cfg, self.accounts_path, on_keys=changed, on_ignore=ignored,
+                                on_upload=lambda: self.call_soon(self.upload_now), marks=self.uploader.marks)
 
     def start_wardrive(self):
-        self.drive = self.wardrive_class(self.cfg, self.gps)
+        if self.wardriving:
+            if not isinstance(self.screen, screens.Wardrive):
+                self.home()
+                self.push(screens.Wardrive(self))
+            return True
+        if self.recon_running:
+            self.confirm("Stop Recon first?", "Recon and a wardrive never run together. Recon stops and the "
+                         "wardrive starts.", "Start wardrive", self._swap_to_wardrive, default=1)
+            return False
+        drive = self.wardrive_factory(self.cfg, self.gps)
         try:
-            self.drive.start()
-            self.screen = "wardrive"
+            drive.start()
         except (RuntimeError, OSError) as exc:
-            self.drive = None
-            self.screen = "menu"
-            self.toast(str(exc))
+            self.toast(str(exc) or "The wardrive could not start", RED, 5)
+            return False
+        self.drive = drive
+        self.stale()
+        self.home()
+        self.push(screens.Wardrive(self))
+        if self.hw.stalled:
+            self.toast("%s is not starting. See Hardware" % self.hw.stalled[0]["label"], AMBER, 5)
+        return True
 
-    def stop_wardrive(self):
-        if self.drive is not None and self.drive.state == "running":
-            self.drive.stop()
+    def _swap_to_wardrive(self):
+        self.stop_recon()
+        self.start_wardrive()
 
-    # -- input -----------------------------------------------------------
-    def handle(self, key):
-        name = key.name
-        if self.screen == "splash":
-            self.screen = "menu"
-            if self.cfg.get("auto_start"):
-                self.start_wardrive()
+    def ask_stop_wardrive(self):
+        self.confirm("Stop the wardrive?", "The log is saved and sent to your upload sites.", "Stop + save",
+                     self.stop_wardrive, default=1)
+
+    def stop_wardrive(self, show=True):
+        if not self.wardriving:
             return
-        if self.screen == "menu":
-            self._move("menu", name, len(self.MENU))
-            if name == "ENTER":
-                target = self.MENU[self.cursor["menu"]][0]
-                if target == "wardrive":
-                    if self.drive is not None and self.drive.state == "running":
-                        self.screen = "wardrive"
-                    else:
-                        self.start_wardrive()
-                else:
-                    if target == "hardware":
-                        self.adapters, self.gps_ports = hardware.wifi_adapters(), hardware.gps_candidates()
-                    self.screen = target
-            elif name == "Q":
-                self.running = False
-            return
-        if self.screen == "wardrive":
-            if name in ("ENTER", "S"):
-                self.stop_wardrive()
-                self.toast("Wardrive saved" if self.drive.log_path else "Stopped. No GPS fix, so nothing was logged", 4)
-                self.screen = "summary"
-            elif name in ("TAB", "RIGHT", "LEFT"):
-                self.filter = {"all": "wifi", "wifi": "ble", "ble": "all"}[self.filter]
-            elif name == "ESC":
-                self.screen = "menu"   # keeps scanning in the background
-            return
-        if self.screen == "settings":
-            self._move("settings", name, len(config.SETTINGS))
-            key_name = config.SETTINGS[self.cursor["settings"]][0]
-            if name in ("ENTER", "RIGHT", "LEFT", "SPACE"):
-                if self.drive is not None and self.drive.state == "running":
-                    return self.toast("Stop the wardrive to change settings")
-                config.cycle(self.cfg, key_name, -1 if name == "LEFT" else 1)
-                try:
-                    config.save(self.cfg)
-                except OSError:
-                    self.toast("Could not save settings")
-                if key_name == "gps_source":
-                    self.gps.mode = self.cfg["gps_source"]
-                if key_name == "live_list":
-                    self.filter = self.cfg["live_list"]
-        if name == "ESC":
-            self.screen = "menu"
+        self.busy("Saving the wardrive…")
+        self.drive.stop()
+        status = self.drive.status()
+        self.stale()
+        self.uploader.kick()
+        if show:
+            self.home()
+            self.push(screens.Summary(status))
 
-    def _move(self, which, name, count):
-        if name == "UP":
-            self.cursor[which] = (self.cursor[which] - 1) % count
-        elif name == "DOWN":
-            self.cursor[which] = (self.cursor[which] + 1) % count
+    def toggle_recon(self):
+        if self.recon_running:
+            flagged = self.recon.summary()["flagged_total"]
+            self.stop_recon()
+            return self.toast("Recon stopped. %s flagged" % screens.plural(flagged, "device"))
+        if self.wardriving:
+            return self.confirm("Stop the wardrive first?", "Recon and a wardrive never run together. The wardrive "
+                                "is saved and Recon starts.", "Start Recon", self._swap_to_recon, default=1)
+        self.start_recon()
 
-    # -- drawing ---------------------------------------------------------
-    def render(self):
-        if self.screen == "splash":
-            if self.splash_started is None:
-                self.splash_started = time.monotonic()
-            t = (time.monotonic() - self.splash_started) / 3.0
-            if t >= 1.6:
-                self.handle(type("K", (), {"name": "ENTER"})())
-            else:
-                return splash_frame(min(1.0, t))
+    def _swap_to_recon(self):
+        self.stop_wardrive(show=False)
+        self.start_recon()
+
+    def start_recon(self):
+        self.recon.cfg = dict(self.cfg)
+        try:
+            self.recon.start()
+        except (RuntimeError, OSError) as exc:
+            return self.toast(str(exc) or "Recon could not start", RED, 5)
+        if not isinstance(self.screen, recon_screens.Recon):
+            self.home()
+            self.push(recon_screens.Recon())
+        self.toast("Recon started", GREEN)
+
+    def stop_recon(self):
+        if self.recon_running:
+            self.busy("Stopping Recon…")
+            self.recon.stop()
+            self.dirty = True
+
+    def upload_now(self, name=None):
+        if not accounts.ready(self.accounts()):
+            return self.toast("Add a key first: press K on the menu", AMBER, 4)
+        if not self.upload_status()["files"]:
+            return self.toast("There are no finished logs to send yet", AMBER)
+        self.uploader.send_again(name)
+        self.stale()
+        self.toast("Uploading now")
+
+    def delete_log(self, entry):
+        path = entry["path"]
+        try:
+            path.unlink()
+        except OSError:
+            return self.toast("The log could not be deleted", RED)
+        summary = path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
+        try:
+            summary.unlink()
+        except OSError:
+            pass
+        self.uploader.ledger.forget(path.name)
+        self.stale()
+        self.pop()
+        self.toast("Log deleted")
+
+    def compose(self):
         c = Canvas()
-        getattr(self, "draw_" + self.screen)(c)
-        if self.message and time.monotonic() < self.message_until:
-            f = font("ui", 10)
-            w = min(W - 12, int(c.text_width(self.message, f)) + 16)
-            c.rect(((W - w) // 2, 132, (W + w) // 2, 150), fill=GOLD, radius=6)
-            c.text_center(W // 2, 135, c.fit(self.message, w - 10, f), f, GOLD_INK)
+        top = self.stack[-1]
+        modal = isinstance(top, screens.Modal)
+        under = next(s for s in reversed(self.stack) if not isinstance(s, screens.Modal))
+        if under.chrome:
+            self.status_bar(c, under)
+        under.render(c, self)
+        if under.chrome and not modal and not isinstance(under, recon_screens.Recon):
+            recon_screens.alert_banner(c, self)
+        if modal:
+            c.image.paste(self._shade, (0, 0), self._shade)
+            top.render(c, self)
+        if under.chrome:
+            self.footer(c, top)
+        if self.toast_text and time.monotonic() < self.toast_until:
+            f = font("bold", 10)
+            width = min(W - 16, int(c.text_width(self.toast_text, f)) + 24)
+            x, y = (W - width) // 2, H - FOOTER_H - 24
+            c.rect((x, y, x + width, y + 18), fill=SURFACE, outline=self.toast_color, radius=9)
+            c.text_center(W // 2, y + 3, c.fit(self.toast_text, width - 16, f), f, self.toast_color)
         return c.image
 
-    def header(self, c, title, right=""):
-        c.rect((0, 0, W, 18), fill=SURFACE)
+    def status_bar(self, c, screen):
+        c.rect((0, 0, W, STATUS_H - 1), fill=SURFACE)
+        c.line((0, STATUS_H, W, STATUS_H), fill=LINE)
         c.paste(image("quartermaster-logo-dark.png", (22, 16)), (3, 1))
-        c.text((27, 3), title, font("bold", 11), GOLD)
+        c.text((28, 3), screen.title, font("bold", 11), GOLD)
+        small = font("monob", 9)
+        right = W - 5
         fix = self.gps.snapshot()
-        gps_text = ("GPS %d sat" % fix.get("satellites", 0)) if fix.get("valid") else (
-            "GPS searching" if fix.get("source", "none") != "none" else "NO GPS")
-        c.text_right(W - 4, 4, gps_text, font("ui", 9), GREEN if fix.get("valid") else AMBER)
-        if right:
-            c.text_right(W - 78, 4, right, font("mono", 9), MUTED)
+        label = "GPS %s" % (fix.get("satellites") or "OK") if fix.get("valid") else \
+            ("NO GPS" if fix.get("source", "none") == "none" else "GPS --")
+        c.text_right(right, 4, label, small, GREEN if fix.get("valid") else AMBER)
+        right -= int(c.text_width(label, small)) + 8
+        status = self.upload_status()
+        if status["uploading"] or (status["waiting"] and status["keys"]):
+            count = str(status["waiting"])
+            color = GOLD if status["uploading"] else MUTED
+            c.text_right(right, 4, count, small, color)
+            right -= int(c.text_width(count, small)) + 2
+            icons.draw(c, "cloud", right - 13, 2, 13, color)
+            right -= 20
+        if self.recon_running:
+            summary = self.recon.summary()
+            color = RED if summary["strong"] or summary["following"] else AMBER if summary["flagged"] else GREEN
+            if summary["flagged"]:
+                c.text_right(right, 4, str(summary["flagged"]), small, color)
+                right -= int(c.text_width(str(summary["flagged"]), small)) + 2
+            icons.draw(c, "eye", right - 13, 2, 13, color)
+            right -= 20
+        if self.wardriving:
+            text = clock(self.drive.elapsed())
+            width = int(c.text_width(text, font("monob", 8))) + 18
+            c.rect((right - width, 3, right, 15), fill=REC_FILL, radius=6)
+            blink = int(time.monotonic() * 2) % 2 == 0
+            c.draw.ellipse((right - width + 5, 6, right - width + 11, 12), fill=RED if blink else (120, 30, 30))
+            c.text((right - width + 14, 4), text, font("monob", 8), RED)
 
-    def footer(self, c, keys):
-        c.rect((0, H - 15, W, H), fill=SURFACE)
+    def footer(self, c, screen):
+        y = H - FOOTER_H
+        c.rect((0, y, W, H), fill=SURFACE)
+        c.line((0, y, W, y), fill=LINE)
         x = 4
-        for key, label in keys:
-            x += c.keycap(x, H - 12, key, label)
+        for key, label in screen.hints(self):
+            if x > W - 36:
+                break
+            x += c.keycap(x, y + 3, key, label)
 
-    def draw_menu(self, c):
-        running = self.drive is not None and self.drive.state == "running"
-        self.header(c, "QUARTERMASTER", "SCANNING" if running else "")
-        for i, (_, label, hint) in enumerate(self.MENU):
-            y = CONTENT_TOP + 3 + i * 25
-            selected = i == self.cursor["menu"]
-            c.rect((4, y, W - 4, y + 22), fill=GOLD if selected else SURFACE, radius=5)
-            c.text((12, y + 2), label, font("bold", 12), GOLD_INK if selected else TEXT)
-            c.text_right(W - 12, y + 6, hint, font("ui", 8), GOLD_INK if selected else MUTED)
-        self.footer(c, [("F", "up"), ("X", "down"), ("OK", "open"), ("Q", "quit")])
+    def booted(self):
+        if self.cfg.get("auto_start"):
+            self.start_wardrive()
+        elif not accounts.ready(self.accounts()):
+            self.toast("Press K to add your upload keys", GOLD, 5)
 
-    def draw_wardrive(self, c):
-        s = self.drive.status()
-        self.header(c, "WARDRIVE", clock(s["elapsed"]))
-        # counters
-        y = CONTENT_TOP + 2
-        for i, (label, value, color) in enumerate((("WI-FI", s["wifi"], GOLD), ("BLUETOOTH", s["ble"], CYAN),
-                                                    ("LOGGED", s["rows"], GREEN))):
-            x = 4 + i * 105
-            c.rect((x, y, x + 101, y + 43), fill=SURFACE, radius=5)
-            c.text((x + 6, y + 2), label, font("ui", 8), MUTED)
-            text = "{:,}".format(value)
-            size = 30 if len(text) <= 5 else 24 if len(text) <= 6 else 19
-            c.draw.text((x + 6, y + 41), text, font=font("display", size), fill=color, anchor="ls")
-        x = 4
-        y += 46
-        for band in ("2.4", "5", "6"):
-            x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
-                        height=11) + 4
-        radios = len(s["adapters"])
-        note = "%d radio%s" % (radios, "" if radios == 1 else "s")
-        if not s["gps"].get("valid"):
-            note = "waiting for GPS: not logging yet"
-        elif s["ble_error"]:
-            note = s["ble_error"]
-        c.text_right(W - 4, y + 1, note, font("ui", 8), AMBER if "GPS" in note or s["ble_error"] else MUTED, )
-        # live list
-        y += 14
-        kind = {"wifi": WIFI, "all": None}.get(self.filter, "BLE")
-        devices = [d for d in self.drive.tracker.recent(40) if self.filter == "all" or (d.kind == WIFI) == (kind == WIFI)]
-        rows = (CONTENT_BOTTOM - y) // 13
-        for device in devices[:rows]:
-            wifi = device.kind == WIFI
-            c.tag(4, y + 1, device.band if wifi and device.band else ("BT" if not wifi else "?"),
-                  BAND_COLOR.get(device.band, GOLD) if wifi else CYAN, 21)
-            name = device.name or ("(hidden)" if wifi else device.mac)
-            c.text((29, y), name, font("ui", 10), TEXT if device.name else MUTED, width=150)
-            if wifi:
-                c.text((184, y + 1), device.security, font("monob", 8), SEC_COLOR.get(device.security, MUTED))
-                c.text_right(248, y + 1, "ch%s" % (device.channel or "?"), font("mono", 8), MUTED)
-            c.text_right(W - 24, y + 1, "%d" % device.rssi if device.rssi is not None else "", font("mono", 8),
-                         rssi_color(device.rssi))
-            c.signal_bars(W - 20, y + 1, device.rssi, rssi_color(device.rssi))
-            y += 13
-        if not devices:
-            c.text_center(W // 2, y + 18, "Listening…", font("ui", 11), MUTED)
-        self.footer(c, [("OK", "stop + save"), ("TAB", {"all": "all", "wifi": "wi-fi", "ble": "bluetooth"}[self.filter]),
-                        ("`", "menu")])
+    def step(self, timeout=0.05):
+        while self._calls:
+            self._calls.popleft()()
+            self.dirty = True
+        if isinstance(self.screen, screens.Splash) and self.screen.done():
+            self.pop()
+        if not self._booted and not isinstance(self.screen, screens.Splash):
+            self._booted = True
+            self.booted()
+        self.keyboard.text_mode = self.screen.text_mode
+        for key in self.keyboard.poll(timeout):
+            if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \
+                    and recon_screens.fresh_alert(self):
+                self.open("Recon")
+            else:
+                self.screen.handle(key, self)
+            self.dirty = True
 
-    def draw_summary(self, c):
-        s = self.drive.status()
-        self.header(c, "WARDRIVE SAVED" if s["log"] else "WARDRIVE ENDED")
-        rows = [("Wi-Fi networks", "{:,}".format(s["wifi"])), ("Bluetooth devices", "{:,}".format(s["ble"])),
-                ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
-                ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
-                ("File", s["log"].rsplit("/", 1)[-1] if s["log"] else "none (no GPS fix)")]
-        self._table(c, rows)
-        self.footer(c, [("`", "menu")])
+    def run(self):
+        self.hw.start()
+        self.uploader.start()
+        drawn = 0.0
+        try:
+            while self.running:
+                self.step(0.02 if isinstance(self.screen, screens.Splash) else 0.05)
+                now = time.monotonic()
+                if self.dirty or now - drawn >= self.screen.refresh:
+                    self.display.show(self.compose())
+                    drawn, self.dirty = now, False
+        finally:
+            self.shutdown()
 
-    def _table(self, c, rows, top=CONTENT_TOP + 4):
-        for i, (label, value) in enumerate(rows):
-            y = top + i * 18
-            c.text((8, y), label, font("ui", 10), MUTED)
-            c.text_right(W - 8, y, c.fit(value, 230, font("mono", 9) if len(value) > 24 else font("bold", 10)), font("bold", 10), TEXT)
-            c.line((8, y + 15, W - 8, y + 15))
-
-    def draw_hardware(self, c):
-        self.header(c, "HARDWARE")
-        y = CONTENT_TOP + 3
-        for adapter in (self.adapters or [])[:3]:
-            c.rect((4, y, W - 4, y + 28), fill=SURFACE, radius=5)
-            c.tag(8, y + 3, "USB" if adapter["external"] else "INT", GOLD if adapter["external"] else MUTED, 25)
-            c.text((37, y + 2), "%s  %s" % (adapter["interface"], adapter["label"]), font("bold", 10), TEXT, width=W - 46)
-            x = 8
-            for band in adapter["bands"]:
-                x += c.pill(x, y + 15, band + " GHz", font("monob", 8), BG, BAND_COLOR[band], height=10) + 3
-            c.text_right(W - 9, y + 15, adapter["band_label"] + ("  monitor" if adapter["monitor"] else ""),
-                         font("ui", 8), MUTED)
-            y += 31
-        if not self.adapters:
-            c.text((8, y), "No Wi-Fi adapter found", font("ui", 10), AMBER)
-            y += 16
-        fix = self.gps.snapshot()
-        c.rect((4, y, W - 4, y + 28), fill=SURFACE, radius=5)
-        c.tag(8, y + 3, "GPS", GREEN if fix.get("valid") else AMBER, 25)
-        ports = self.gps_ports or []
-        source = fix.get("source", "none")
-        c.text((37, y + 2), source if source != "none" else (ports[0]["label"] + " found" if ports else "No GPS found"),
-               font("bold", 10), TEXT, width=W - 46)
-        detail = ("%.5f, %.5f  %d sats" % (fix["latitude"], fix["longitude"], fix.get("satellites", 0))
-                  if fix.get("valid") else "No fix yet. Needs a view of the sky.")
-        c.text((8, y + 15), detail, font("ui", 8), MUTED)
-        self.footer(c, [("`", "back")])
-
-    def draw_settings(self, c):
-        self.header(c, "SETTINGS")
-        cursor = self.cursor["settings"]
-        first = max(0, min(cursor - 3, len(config.SETTINGS) - 7))
-        for i, (key, label, _, _) in enumerate(config.SETTINGS[first:first + 7]):
-            y = CONTENT_TOP + 2 + i * 16
-            selected = first + i == cursor
-            if selected:
-                c.rect((4, y, W - 4, y + 15), fill=GOLD_DIM, radius=4)
-            c.text((9, y + 1), label, font("ui", 10), TEXT)
-            c.text_right(W - 9, y + 1, config.shown(key, self.cfg.get(key)), font("bold", 10), GOLD if selected else MUTED)
-        c.rect((0, H - 28, W, H - 15), fill=BG)
-        c.text((6, H - 27), config.SETTINGS[cursor][3], font("ui", 8), FAINT, width=W - 12)
-        self.footer(c, [("F", "up"), ("X", "down"), ("OK", "change"), ("`", "back")])
-
-    def draw_logs(self, c):
-        from ..engine import DEFAULT_ROOT
-        self.header(c, "LOGS")
-        files = sorted((DEFAULT_ROOT / "logs").glob("quartermaster_*.wigle.csv"), reverse=True)
-        y = CONTENT_TOP + 4
-        for path in files[:7]:
-            c.text((8, y), path.name.replace("quartermaster_", "").replace(".wigle.csv", ""), font("mono", 10), TEXT)
-            c.text_right(W - 8, y, "%d KB" % max(1, path.stat().st_size // 1024), font("mono", 10), MUTED)
-            y += 16
-        if not files:
-            c.text_center(W // 2, 70, "No wardrives saved yet", font("ui", 11), MUTED)
-        c.text((6, H - 27), "Saved in %s" % (DEFAULT_ROOT / "logs"), font("ui", 8), FAINT, width=W - 12)
-        self.footer(c, [("`", "back")])
-
-    def draw_about(self, c):
-        self.header(c, "ABOUT")
-        c.paste(image("quartermaster-logo-dark.png", (120, 84)), (8, 28))
-        c.text((122, 34), "Quartermaster", font("display", 17), GOLD)
-        c.text((122, 56), "Version %s" % __version__, font("ui", 10), TEXT)
-        c.text((122, 72), "Wi-Fi + Bluetooth wardriver", font("ui", 9), MUTED)
-        c.text((122, 86), "for the CardputerZero", font("ui", 9), MUTED)
-        c.rect((8, 116, W - 8, 150), fill=WHITE, radius=6)
-        c.paste(image("bwm-logo.png", (28, 28)), (16, 119))
-        c.paste(image("vts-logo.png", (28, 28)), (W - 42, 119))
-        c.text_center(W // 2, 121, "Valleytech Solutions", font("bold", 11), INK)
-        c.text_center(W // 2, 135, "MIT open source", font("ui", 9), (90, 90, 90))
-        self.footer(c, [("`", "back")])
+    def shutdown(self):
+        if self.wardriving:
+            self.drive.stop()
+        if self.recon_running:
+            self.recon.stop()
+        while self.stack:
+            self.stack.pop().closed(self)
+        self.uploader.stop()
+        self.hw.stop()

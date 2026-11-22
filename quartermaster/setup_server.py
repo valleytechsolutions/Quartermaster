@@ -154,7 +154,6 @@ class SetupServer:
             self.server.server_close()
             self.server = None
 
-    # -- pages -----------------------------------------------------------
     def unlock_page(self, wrong=False):
         if self.locked:
             body = ("<div class=\"banner bad\">Too many wrong PINs. Close the setup screen on the Cardputer and "
@@ -222,7 +221,6 @@ class SetupServer:
                              % (hidden, service, keys.SERVICE_NAMES[service]))
         return _page("Quartermaster setup", "".join(parts), SCRIPT % json.dumps(self.csrf))
 
-    # -- actions ---------------------------------------------------------
     def save_keys(self, form):
         changes = {name: form[name] for name in ("wigle_name", "wigle_token", "wigle_encoded", "wdgwars_key",
                                                  "wardrift_key") if keys.clean(form.get(name))}

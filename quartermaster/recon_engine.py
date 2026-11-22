@@ -1,8 +1,9 @@
 """Recon mode: watch for surveillance and tracking devices on every radio, without logging a wardrive.
 
-Wi-Fi comes from every adapter at once and Bluetooth from BlueZ. Both are
-passive. Each device is graded by the classifier in `recon`, flagged devices
-are kept in a live table and written to a JSON Lines log.
+Wi-Fi comes from every adapter at once and Bluetooth from BlueZ. Both only
+scan: nothing is connected to. Each device is graded by the classifier in
+`recon`, and flagged devices are kept in a live table and written to a JSON
+Lines log.
 """
 
 from collections import deque
@@ -95,7 +96,6 @@ class Recon:
         self._threads = []
         self._hotplug = False
 
-    # -- settings --------------------------------------------------------
     def enabled(self, category):
         return category in self.cfg.get("recon_categories", recon.CATEGORIES)
 
@@ -105,7 +105,6 @@ class Recon:
     def alert_min(self):
         return recon.CONFIDENCE_BY_KEY.get(self.cfg.get("recon_alert_min", "medium"), recon.MEDIUM)
 
-    # -- lifecycle -------------------------------------------------------
     def start(self):
         if self.state == "running":
             return
@@ -184,7 +183,6 @@ class Recon:
     def elapsed(self):
         return time.monotonic() - self.started if self.state == "running" else 0
 
-    # -- scanners --------------------------------------------------------
     def _wifi_sink(self, networks, adapter):
         for net in networks:
             self.observe("wifi", net)
@@ -207,7 +205,6 @@ class Recon:
                 last_rssi.clear()
             self._stop.wait(BLE_INTERVAL)
 
-    # -- classification --------------------------------------------------
     def classify(self, transport, item):
         if transport == "wifi":
             key = ("wifi", item["bssid"], item.get("ssid", ""))
@@ -330,7 +327,6 @@ class Recon:
             self.counters["log_errors"] += 1
             self.errors["storage"] = "Recon log write failed"
 
-    # -- read side -------------------------------------------------------
     def device_list(self, show_all=False, sort="threat"):
         with self.lock:
             items = [dict(d, rssi_history=list(d["rssi_history"])) for d in self.devices.values()

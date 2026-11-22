@@ -37,15 +37,6 @@ class Device:
         self.extra = None
         self.ignored = False
 
-    def as_dict(self):
-        def point(p):
-            return None if p is None else {"rssi": p[0], "latitude": p[1], "longitude": p[2], "time": p[3]}
-        return {"kind": self.kind, "mac": self.mac, "name": self.name, "security": self.security,
-                "capabilities": self.capabilities, "channel": self.channel, "frequency": self.frequency,
-                "band": self.band, "first_seen": self.first_seen, "last_seen": self.last_seen,
-                "sightings": self.sightings, "rssi": self.rssi, "strongest": point(self.best),
-                "weakest": point(self.worst), "rows": self.rows}
-
 
 class Tracker:
     def __init__(self, relog_seconds=30.0, relog_meters=25.0, rssi_step=4, accuracy=None):

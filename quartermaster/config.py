@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 
 PATH = Path(os.environ.get("QUARTERMASTER_CONFIG", str(Path.home() / ".config" / "quartermaster" / "config.json")))
 ON_OFF = [(True, "On"), (False, "Off")]
@@ -41,6 +42,8 @@ SECTIONS = [
                                       ("off", "Off")], "Auto finds a USB, Cap LoRa or Grove GPS by itself."),
         ("gps_max_hdop", "GPS accuracy needed", [(0, "Any fix"), (10, "Fair"), (5, "Good"), (2, "Best")],
          "Rows wait until the fix is at least this good."),
+        ("gps_power", "Cap and Grove power", [(True, "When needed"), (False, "Leave off")],
+         "Switches on 5 V for a GPS on the Cap or the Grove port."),
     ]),
     ("UPLOADS", [
         ("auto_upload", "Send logs", [(True, "Automatic"), (False, "Only when asked")],
@@ -67,6 +70,11 @@ DEFAULTS = {key: choices[0][0] for key, _, choices, _ in SETTINGS if choices}
 DEFAULTS.update(min_rssi=-100, rssi_step=4, relog_meters=25, relog_seconds=30, ble_interval=1.0)
 LISTS = ("ignore", "recon_categories")
 MAX_IGNORED = 64
+_MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
+
+
+def is_mac(text):
+    return bool(_MAC.fullmatch(str(text).strip()))
 
 
 def default_lists():
@@ -109,13 +117,3 @@ def shown(key, value):
         if name == key and choices:
             return next((text for v, text in choices if v == value), str(value))
     return str(value)
-
-
-def cycle(cfg, key, step=1):
-    for name, _, choices, _ in SETTINGS:
-        if name == key and choices:
-            values = [v for v, _ in choices]
-            index = values.index(cfg[key]) if cfg.get(key) in values else 0
-            cfg[key] = values[(index + step) % len(values)]
-            return cfg[key]
-    raise KeyError(key)

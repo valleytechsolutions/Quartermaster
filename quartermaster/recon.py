@@ -1,8 +1,6 @@
-"""Recon: passive Wi-Fi and Bluetooth counter-surveillance classification.
+"""Recon: classifies the Wi-Fi and Bluetooth devices a scan hears as kinds of surveillance equipment.
 
-The same rules, evidence wording and confidence grades as LORA Tunnel, so a
-device is graded the same way on every Valleytech device. Remote ID decoding
-follows the ASTM F3411 wire layout.
+Remote ID decoding follows the ASTM F3411 wire layout.
 
 A result describes broadcast evidence. It does not establish that a device is
 recording, that it is hostile, or who owns it. Randomized and locally
@@ -10,7 +8,6 @@ administered addresses never supply vendor evidence.
 """
 
 from bisect import bisect_left
-import math
 import struct
 
 from .recon_vendors import VENDOR_PREFIXES
@@ -59,18 +56,8 @@ def _family_priority(family):
     return 10 if family in _TRACKER_FAMILIES else 50
 
 
-def stronger(next_match, current):
-    return next_match[1] > current[1] or (next_match[1] != NONE and next_match[1] == current[1] and
-                                          _family_priority(next_match[0]) > _family_priority(current[0]))
-
-
-# -------------------------------------------------------------- helpers
 def _contains(haystack, needle):
     return needle.lower() in haystack.lower()
-
-
-def _bytes_contain(data, text):
-    return text.encode() in data
 
 
 def safe_text(raw):
@@ -133,7 +120,8 @@ def named(name, base):
     if base == "Ble":
         serial = len(name) == 10 and name.isdigit() and name.isascii()
         fs = 7 <= len(name) <= 15 and name.startswith("FS-") and all(c in "0123456789abcdefABCDEF" for c in name[3:])
-        if fs or serial or _equal_name(name, "FS Ext Battery") or any(_contains(name, w) for w in ("flock", "penguin", "pigvision")):
+        if fs or serial or _equal_name(name, "FS Ext Battery") or any(
+                _contains(name, word) for word in ("flock", "penguin", "pigvision")):
             return ("Flock", LOW, "Flock/battery name match; arbitrary names are unverified")
         if _contains(name, "axon") or _contains(name, "bodyworn"):
             return ("Axon", LOW, "Axon name match; arbitrary names are unverified")
@@ -177,7 +165,6 @@ def named(name, base):
     return (base, NONE, "no specific signature")
 
 
-# -------------------------------------------------------------- Remote ID
 def _odid_message(msg, state):
     """Decode one 25-byte message into state; False when OpenDroneID rejects it."""
     kind = msg[0] >> 4
@@ -294,7 +281,6 @@ def _decode_drone_nan(frame):
     return result
 
 
-# -------------------------------------------------------------- Wi-Fi
 def _valid_security_ie(d, rsn):
     n = len(d)
     if n < 8 or d[0] != 1 or d[1] != 0:
@@ -431,7 +417,6 @@ def parse_wifi(p):
     return f
 
 
-# -------------------------------------------------------------- BLE
 _BASE_UUID = bytes((0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00))
 _FOX = bytes((0x90, 0x4b, 0x5a, 0xc6, 0x44, 0x5f, 0x26, 0x8e, 0x2b, 0x45, 0x14, 0x71, 1, 0, 4, 0xdd))
 _BISCUIT = bytes((0x4b, 0x91, 0x31, 0xc3, 0xc9, 0xc5, 0xcc, 0x8f, 0x9e, 0x45, 0xb5, 0x1f, 0x01, 0xc2, 0xaf, 0x4f))
@@ -621,7 +606,6 @@ def parse_ble(p, adv_length=0):
     return {"valid": True, "name": name, "company": company, "match": match, "drone": drone, "beacon": beacon}
 
 
-# -------------------------------------------------------------- Axon clues
 _AXON_COMPANY, _AXON_SERVICE, _AXON_OUI, _AXON_COMPAT, _AXON_NAME, _AXON_RESEARCH, _AXON_BWC, _BODYCAM = \
     1, 2, 4, 8, 16, 32, 64, 128
 
@@ -713,7 +697,6 @@ def _with_axon(current, signals):
     return nxt
 
 
-# -------------------------------------------------------------- public API
 _FAMILY_CATEGORY = {"Flock": "flock", "Alpr": "alpr", "Axon": "axon", "IBeacon": "ibeacon", "Ring": "ring",
                     "Camera": "camera", "Drone": "drone", "SmartTag": "tracker", "GoogleTag": "tracker",
                     "Tile": "tracker", "Meta": "glasses", "Raven": "raven", "Skimmer": "skimmer",
@@ -890,8 +873,3 @@ def distance_from_rssi(rssi, measured_power=-59, exponent=2.2):
     if rssi is None:
         return None
     return round(10 ** ((measured_power - rssi) / (10 * exponent)), 1)
-
-
-def is_finite_position(lat, lon):
-    return all(isinstance(v, (int, float)) and math.isfinite(v) for v in (lat, lon)) and \
-        abs(lat) <= 90 and abs(lon) <= 180

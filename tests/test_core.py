@@ -1,8 +1,12 @@
 import csv
 import io
+import sys
+import threading
+import types
 
-from quartermaster import hardware, wigle
+from quartermaster import gnss, hardware, wigle
 from quartermaster.gnss import GPS, nmea_fix
+from quartermaster.power import Rails
 from quartermaster.tracker import Tracker, WIFI
 from quartermaster.wifi import parse_iw_scan
 
@@ -172,6 +176,53 @@ def test_gps_candidates_orders_usb_first(tmp_path):
     (dev / "ttyS0").write_text("")
     found = hardware.gps_candidates(tty, dev)
     assert [c["kind"] for c in found] == ["usb", "uart"] and found[0]["label"] == "CH340 USB GPS"
+    assert found[1]["path"] == str(dev / "ttyS0")
+
+
+def test_gps_candidates_never_include_the_bluetooth_uart(tmp_path):
+    dev = tmp_path / "dev"
+    dev.mkdir()
+    (dev / "ttyS0").write_text("")
+    (dev / "ttyAMA0").write_text("")
+    (dev / "serial0").symlink_to(dev / "ttyAMA0")
+    (dev / "serial1").symlink_to(dev / "ttyS0")
+    assert [c["path"] for c in hardware.gps_candidates(tmp_path / "tty", dev)] == [str(dev / "ttyAMA0")]
+    (dev / "serial0").unlink()
+    assert hardware.gps_candidates(tmp_path / "tty", dev) == []
+
+
+def test_rails_power_a_uart_gps_and_are_put_back(tmp_path):
+    cap, grove, missing = tmp_path / "cap", tmp_path / "grove", tmp_path / "missing"
+    cap.write_text("0\n")
+    grove.write_text("1\n")
+    rails = Rails([cap, grove, missing])
+    assert rails.on() and not rails.on()
+    assert cap.read_text() == "1" and grove.read_text() == "1\n"
+    rails.restore()
+    assert cap.read_text() == "0" and grove.read_text() == "1\n"
+
+
+def test_gps_powers_rails_only_for_a_port_that_is_not_usb(tmp_path, monkeypatch):
+    rail = tmp_path / "rail"
+    rail.write_text("0")
+    opened = []
+
+    class Port:
+        def __init__(self, path, baud, **_):
+            opened.append((path, rail.read_text()))
+            raise OSError("no such port")
+    monkeypatch.setitem(sys.modules, "serial", types.SimpleNamespace(Serial=Port))
+    monkeypatch.setattr(gnss, "WAKE_SECONDS", 0)
+    stopped = threading.Event()
+    gps = GPS("auto", candidates=lambda: [{"path": "/dev/ttyUSB0"}, {"path": "/dev/ttyS0"}], rails=Rails([rail]))
+    gps._serial(stopped)
+    assert opened == [("/dev/ttyUSB0", "0"), ("/dev/ttyS0", "1")]
+    gps.power = False
+    stopped.set()
+    gps.run(stopped)
+    assert rail.read_text() == "0"
+    gps._serial(threading.Event())
+    assert rail.read_text() == "0"
 
 
 def test_managed_sweep_waits_for_results(monkeypatch):

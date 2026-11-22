@@ -6,30 +6,9 @@ import pytest
 from quartermaster import radios, recon
 from quartermaster.engine import Wardrive
 from quartermaster.recon_engine import Recon
+from tests.fakes import NoBle, QuietFleet
 from tests.test_core import FIX, NOW
 from tests.test_engine import ADAPTERS, FakeGPS
-
-
-class QuietFleet:
-    def __init__(self, adapters, sink, interval):
-        self.adapters, self.sink = adapters, sink
-
-    def start(self):
-        pass
-
-    def stop(self):
-        pass
-
-    def status(self):
-        return [{"interface": a["interface"], "error": ""} for a in self.adapters]
-
-
-class NoBle:
-    def scan(self):
-        return []
-
-    def close(self):
-        pass
 
 
 class Sound:
@@ -61,12 +40,14 @@ def test_classifier_grades_the_known_families():
     assert recon.classify_wifi("AA:BB:CC:00:00:01", "My Home WiFi")["category"] is None
     # A locally administered (randomised) address never supplies vendor evidence.
     assert recon.classify_wifi("02:25:DF:11:22:33", "")["category"] is None
-    axon = recon.advertisement_from_properties(manufacturer={0x034D: b"\x01\x02"}, uuids=["0000fe6b-0000-1000-8000-00805f9b34fb"])
+    axon = recon.advertisement_from_properties(manufacturer={0x034D: b"\x01\x02"},
+                                               uuids=["0000fe6b-0000-1000-8000-00805f9b34fb"])
     graded = recon.classify_ble("11:22:33:44:55:66", 1, axon)
     assert graded["category"] == "axon" and graded["confidence"] == recon.STRONG
     airtag = recon.advertisement_from_properties(manufacturer={0x004C: bytes([0x12, 0x19]) + bytes(25)})
     assert recon.classify_ble("C1:22:33:44:55:66", 1, airtag)["category"] == "airtag"
-    beacon = recon.advertisement_from_properties(manufacturer={0x004C: bytes([2, 0x15]) + bytes(16) + struct.pack(">HHb", 1, 2, -59)})
+    ibeacon = bytes([2, 0x15]) + bytes(16) + struct.pack(">HHb", 1, 2, -59)
+    beacon = recon.advertisement_from_properties(manufacturer={0x004C: ibeacon})
     assert recon.classify_ble("C1:22:33:44:55:66", 1, beacon)["beacon"]["minor"] == 2
     assert len(recon.VENDOR_PREFIXES) > 150 and set(recon.CATEGORY_LABELS) == set(recon.CATEGORIES)
 

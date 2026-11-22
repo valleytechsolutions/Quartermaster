@@ -1,9 +1,8 @@
 """Keyboard input from Linux evdev, mapped to logical keys.
 
-The CardputerZero's TCA8418 keyboard appears as an input device. F, X, Z and C (the keys with arrows
-printed on them) act as Up, Down, Left and Right without Fn, as do ; . , / from the
-Cardputer ADV, and ` acts as Escape.
-Text fields read characters directly instead of the arrow aliases.
+F, X, Z and C carry the arrows on the CardputerZero keyboard and act as Up, Down,
+Left and Right without Fn, as do ; . , / and ` acts as Escape. Text fields read
+the letters themselves; there only ` keeps its meaning, so a field can be left.
 """
 
 import os
@@ -29,7 +28,6 @@ CHARS = {
     44: "zZ", 45: "xX", 46: "cC", 47: "vV", 48: "bB", 49: "nN", 50: "mM", 51: ",<", 52: ".>",
     53: "/?",
 }
-# The CardputerZero prints its arrows on F, Z, X and C; they work without Fn outside text fields.
 ARROW_ALIASES = {";": "UP", ".": "DOWN", ",": "LEFT", "/": "RIGHT", "`": "ESC",
                  "f": "UP", "x": "DOWN", "z": "LEFT", "c": "RIGHT"}
 
@@ -60,8 +58,8 @@ def find_keyboards():
     except OSError:
         return paths
     for block in blocks:
-        handlers = next((l for l in block.splitlines() if l.startswith("H: Handlers=")), "")
-        keybits = next((l for l in block.splitlines() if l.startswith("B: KEY=")), "")
+        handlers = next((line for line in block.splitlines() if line.startswith("H: Handlers=")), "")
+        keybits = next((line for line in block.splitlines() if line.startswith("B: KEY=")), "")
         events = [h for h in handlers.split("=", 1)[-1].split() if h.startswith("event")]
         if not events or not keybits:
             continue
@@ -116,8 +114,9 @@ class EvdevInput:
         repeat = value == 2
         if code in CHARS:
             char = CHARS[code][1 if self.shift else 0]
-            if not self.text_mode and (self.fn or not self.shift) and char in ARROW_ALIASES and not self.ctrl:
-                return Key(ARROW_ALIASES[char], char, repeat)
+            if (self.fn or not self.shift) and not self.ctrl and char in ARROW_ALIASES and \
+                    (not self.text_mode or char == "`"):
+                return Key(ARROW_ALIASES[char], "" if self.text_mode else char, repeat)
             return Key(char.upper() if char.isalpha() else char, char, repeat)
         if name:
             return Key(name, " " if name == "SPACE" else "", repeat)
@@ -135,11 +134,15 @@ class ScriptedInput:
     """Feeds a fixed key sequence; used by tests and the screenshot renderer."""
 
     def __init__(self, names=()):
-        self.queue = [Key(n, n.lower() if len(n) == 1 else (" " if n == "SPACE" else "")) for n in names]
+        self.queue = []
         self.text_mode = False
+        self.push(*names)
 
     def push(self, *names):
-        self.queue.extend(Key(n, n.lower() if len(n) == 1 else "") for n in names)
+        self.queue.extend(Key(n, n if len(n) == 1 else (" " if n == "SPACE" else "")) for n in names)
+
+    def type(self, text):
+        self.queue.extend(Key(ch.upper() if ch.isalpha() else ch, ch) for ch in text)
 
     def poll(self, timeout):
         return [self.queue.pop(0)] if self.queue else []

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Screen (video), keyboard (input), GPS serial ports (dialout), Grove port power (gpio),
-# Bluetooth scanning (bluetooth) and Wi-Fi scan requests through NetworkManager (netdev)
-# for regular login users.
+# Regular login users get the screen (video), keyboard (input), GPS serial ports (dialout),
+# cap and Grove power (gpio), Bluetooth scanning (bluetooth) and Wi-Fi scan requests
+# through NetworkManager (netdev).
 set -e
 for user in $(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 {print $1}'); do
     for grp in video input dialout gpio bluetooth netdev; do

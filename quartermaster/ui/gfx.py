@@ -1,7 +1,6 @@
 """Theme, fonts and drawing primitives for the 320x170 CardputerZero screen.
 
 Near-black ground with brass-gold accents from the Quartermaster spyglass.
-Adapted from LORA Tunnel Zero (MIT).
 """
 
 from functools import lru_cache
@@ -18,15 +17,12 @@ SURFACE = (13, 19, 23)
 SURFACE_2 = (20, 29, 35)
 LINE = (32, 45, 52)
 GREEN = (77, 255, 77)
-GREEN_DIM = (26, 92, 34)
-GREEN_INK = (3, 20, 6)
 TEXT = (234, 241, 237)
 MUTED = (136, 153, 146)
 FAINT = (86, 100, 95)
 AMBER = (255, 178, 36)
 RED = (255, 84, 84)
 CYAN = (64, 214, 255)
-CYAN_DIM = (14, 70, 88)
 GOLD = (245, 179, 1)
 GOLD_DIM = (96, 70, 4)
 GOLD_INK = (26, 18, 0)
@@ -72,7 +68,6 @@ class Canvas:
         self.image = Image.new("RGB", (W, H), BG)
         self.draw = ImageDraw.Draw(self.image)
 
-    # text ---------------------------------------------------------------
     def text_width(self, text, f):
         return self.draw.textlength(text, font=f)
 
@@ -120,7 +115,6 @@ class Canvas:
             lines.append(line)
         return lines
 
-    # shapes ---------------------------------------------------------------
     def rect(self, box, fill=None, outline=None, radius=0, width=1):
         if radius:
             self.draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
@@ -131,7 +125,12 @@ class Canvas:
         self.draw.line(points, fill=fill, width=width)
 
     def paste(self, img, xy):
-        self.image.paste(img, xy, img if img.mode == "RGBA" else None)
+        self.image.paste(img, (int(xy[0]), int(xy[1])), img if img.mode == "RGBA" else None)
+
+    def select(self, y, height=15, x0=4, x1=W - 8):
+        """Highlight behind the chosen row of a list."""
+        self.rect((x0, y, x1, y + height), fill=SURFACE_2, radius=3)
+        self.rect((x0, y + 2, x0 + 1, y + height - 2), fill=GOLD)
 
     def pill(self, x, y, text, f, fg, bg, pad=4, height=None):
         w = int(self.text_width(text, f)) + pad * 2
