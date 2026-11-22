@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render every screen with sample data: python3 tools/render_screens.py [--out screenshots] [--scale 1]"""
+"""Render every screen with sample data: python3 tools/render_screens.py [--out screenshots] [--scale 1] [--gif]"""
 
 import argparse
 from pathlib import Path
@@ -92,6 +92,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(ROOT / "screenshots"))
     parser.add_argument("--scale", type=int, default=1)
+    parser.add_argument("--gif", action="store_true", help="also write the boot animation as boot.gif")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -103,6 +104,11 @@ def main():
 
     for name, t in (("boot-1", 0.2), ("boot-2", 0.45), ("boot-3", 0.62), ("boot-4", 1.0)):
         save(splash.frame(t), name)
+    if args.gif:
+        count = int(splash.SECONDS * 15)
+        frames = [splash.frame(i / count).resize((320 * scale, 170 * scale), 0) for i in range(count + 1)]
+        frames[0].save(out / "boot.gif", save_all=True, append_images=frames[1:], loop=0, optimize=True,
+                       duration=[66] * count + [int(splash.HOLD * 1000) + 1200])
 
     old_logs(root)
     app = build(root)
