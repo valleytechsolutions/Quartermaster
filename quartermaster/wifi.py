@@ -267,41 +267,66 @@ class AdapterScanner:
 
 
 class WifiFleet:
-    """One scan thread per adapter; results are pushed to `sink(networks, adapter)`."""
+    """One scan thread per adapter; results are pushed to `sink(networks, adapter)`.
+
+    `refresh()` may be called at any time with the adapters now present: new ones start
+    scanning at once and unplugged ones drop out without disturbing the rest."""
 
     def __init__(self, adapters, sink, interval=0.0, scanner=AdapterScanner):
-        self.scanners = [scanner(a) for a in adapters]
+        self.adapters = list(adapters)
         self.sink = sink
         self.interval = interval
+        self.scanner_class = scanner
         self.stopped = threading.Event()
-        self.threads = []
+        self.lock = threading.Lock()
+        self.running = {}      # interface -> (scanner, stop event, thread)
+
+    @property
+    def scanners(self):
+        with self.lock:
+            return [entry[0] for entry in self.running.values()]
 
     def start(self):
-        for scanner in self.scanners:
-            thread = threading.Thread(target=self._loop, args=(scanner,), daemon=True,
-                                      name="wifi-" + scanner.interface)
-            thread.start()
-            self.threads.append(thread)
+        self.refresh(self.adapters)
 
-    def _loop(self, scanner):
+    def refresh(self, adapters):
+        present = {a["interface"]: a for a in adapters}
+        with self.lock:
+            for name in [n for n in self.running if n not in present]:
+                self.running.pop(name)[1].set()
+            for name, adapter in present.items():
+                if name in self.running or self.stopped.is_set():
+                    continue
+                scanner, gone = self.scanner_class(adapter), threading.Event()
+                thread = threading.Thread(target=self._loop, args=(scanner, gone), daemon=True, name="wifi-" + name)
+                self.running[name] = (scanner, gone, thread)
+                thread.start()
+
+    def _loop(self, scanner, gone):
         failures = 0
-        while not self.stopped.is_set():
+        while not self.stopped.is_set() and not gone.is_set():
             try:
                 networks = scanner.scan()
                 failures = 0
-                self.sink(networks, scanner.adapter)
-                self.stopped.wait(self.interval)
+                scanner.last_error = ""
+                if not gone.is_set():
+                    self.sink(networks, scanner.adapter)
+                gone.wait(self.interval)
             except (ScanUnavailable, OSError, subprocess.SubprocessError) as exc:
                 scanner.last_error = str(exc)[:80]
                 failures += 1
-                # Busy radios recover quickly; an unplugged adapter backs off.
-                self.stopped.wait(min(10.0, 0.5 * failures))
+                # Busy radios recover quickly; an unplugged adapter backs off until it is dropped.
+                gone.wait(min(10.0, 0.5 * failures))
 
     def stop(self):
         self.stopped.set()
-        for thread in self.threads:
+        with self.lock:
+            entries = list(self.running.values())
+            self.running = {}
+        for _, gone, thread in entries:
+            gone.set()
+        for _, _, thread in entries:
             thread.join(timeout=25)
-        self.threads = []
 
     def status(self):
         return [{"interface": s.interface, "method": s.method, "sweeps": s.sweeps,

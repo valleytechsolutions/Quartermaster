@@ -53,3 +53,34 @@ def test_no_fix_means_no_rows_but_devices_still_counted(tmp_path):
     assert drive.status()["wifi"] == 3 and drive.status()["rows"] == 0 and drive.log_path is None
     assert drive.skipped_no_fix == 6
     drive.stop()
+
+
+def test_fleet_adds_and_drops_adapters_live():
+    import threading
+    from quartermaster.wifi import WifiFleet
+    seen, ready = [], threading.Event()
+
+    class Scanner:
+        method = last_error = ""
+        sweeps = 0
+        last_sweep_seconds = None
+
+        def __init__(self, adapter):
+            self.adapter, self.interface = adapter, adapter["interface"]
+
+        def scan(self):
+            return [{"bssid": self.interface}]
+
+    def sink(networks, adapter):
+        seen.append(adapter["interface"])
+        if {"wlan0", "wlan1", "wlan2"} <= set(seen):
+            ready.set()
+
+    fleet = WifiFleet([ADAPTERS[1]], sink, interval=0.01, scanner=Scanner)
+    fleet.start()
+    fleet.refresh(ADAPTERS + [{"interface": "wlan2"}])
+    assert ready.wait(3)
+    fleet.refresh([ADAPTERS[1]])
+    assert [s["interface"] for s in fleet.status()] == ["wlan0"]
+    fleet.stop()
+    assert fleet.status() == []

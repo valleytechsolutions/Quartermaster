@@ -64,6 +64,7 @@ class Wardrive:
         logs.mkdir(parents=True, exist_ok=True, mode=0o700)
         if shutil.disk_usage(logs).free < MIN_FREE_BYTES:
             raise RuntimeError("Storage is almost full (under 32 MB free)")
+        self._hotplug = self.adapters is None
         if self.adapters is None:
             self.adapters = hardware.wifi_adapters()
         chosen = self._chosen_adapters()
@@ -75,12 +76,23 @@ class Wardrive:
         self._pending_name = logs
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.fleet.start()
+        if self._hotplug and hasattr(self.fleet, "refresh"):
+            threading.Thread(target=self._watch_adapters, daemon=True, name="hotplug").start()
         if self.cfg.get("ble", True):
             if self.ble is None:
                 self.ble = BleScanner()
             self._ble_thread = threading.Thread(target=self._ble_loop, daemon=True, name="ble")
             self._ble_thread.start()
         self.state = "running"
+
+    def _watch_adapters(self):
+        """Adapters plugged in or pulled out during a wardrive join or leave within a few seconds."""
+        while not self._stop.wait(4.0):
+            try:
+                self.adapters = hardware.wifi_adapters()
+                self.fleet.refresh(self._chosen_adapters())
+            except OSError:
+                pass
 
     def _chosen_adapters(self):
         mode = self.cfg.get("wifi_adapters", "all")
