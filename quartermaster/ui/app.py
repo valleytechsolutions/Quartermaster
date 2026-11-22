@@ -185,7 +185,7 @@ class App:
                 self.stop_wardrive()
                 self.toast("Wardrive saved" if self.drive.log_path else "Stopped. No GPS fix, so nothing was logged", 4)
                 self.screen = "summary"
-            elif name in ("TAB", "F"):
+            elif name in ("TAB", "RIGHT", "LEFT"):
                 self.filter = {"all": "wifi", "wifi": "ble", "ble": "all"}[self.filter]
             elif name == "ESC":
                 self.screen = "menu"   # keeps scanning in the background
@@ -259,7 +259,7 @@ class App:
             c.rect((4, y, W - 4, y + 22), fill=GOLD if selected else SURFACE, radius=5)
             c.text((12, y + 2), label, font("bold", 12), GOLD_INK if selected else TEXT)
             c.text_right(W - 12, y + 6, hint, font("ui", 8), GOLD_INK if selected else MUTED)
-        self.footer(c, [(";", "up"), (".", "down"), ("OK", "open"), ("Q", "quit")])
+        self.footer(c, [("F", "up"), ("X", "down"), ("OK", "open"), ("Q", "quit")])
 
     def draw_wardrive(self, c):
         s = self.drive.status()
@@ -269,11 +269,13 @@ class App:
         for i, (label, value, color) in enumerate((("WI-FI", s["wifi"], GOLD), ("BLUETOOTH", s["ble"], CYAN),
                                                     ("LOGGED", s["rows"], GREEN))):
             x = 4 + i * 105
-            c.rect((x, y, x + 101, y + 30), fill=SURFACE, radius=5)
+            c.rect((x, y, x + 101, y + 43), fill=SURFACE, radius=5)
             c.text((x + 6, y + 2), label, font("ui", 8), MUTED)
-            c.text((x + 6, y + 10), "{:,}".format(value), font("display", 17), color)
+            text = "{:,}".format(value)
+            size = 30 if len(text) <= 5 else 24 if len(text) <= 6 else 19
+            c.draw.text((x + 6, y + 41), text, font=font("display", size), fill=color, anchor="ls")
         x = 4
-        y += 33
+        y += 46
         for band in ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
@@ -365,7 +367,7 @@ class App:
             c.text_right(W - 9, y + 1, config.shown(key, self.cfg.get(key)), font("bold", 10), GOLD if selected else MUTED)
         c.rect((0, H - 28, W, H - 15), fill=BG)
         c.text((6, H - 27), config.SETTINGS[cursor][3], font("ui", 8), FAINT, width=W - 12)
-        self.footer(c, [(";", "up"), (".", "down"), ("OK", "change"), ("`", "back")])
+        self.footer(c, [("F", "up"), ("X", "down"), ("OK", "change"), ("`", "back")])
 
     def draw_logs(self, c):
         from ..engine import DEFAULT_ROOT

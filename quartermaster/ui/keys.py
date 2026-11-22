@@ -1,7 +1,8 @@
 """Keyboard input from Linux evdev, mapped to logical keys.
 
-The CardputerZero's TCA8418 keyboard appears as an input device. As on the
-Cardputer ADV, ; . , / double as Up, Down, Left, Right, and ` acts as Escape.
+The CardputerZero's TCA8418 keyboard appears as an input device. F, X, Z and C (the keys with arrows
+printed on them) act as Up, Down, Left and Right without Fn, as do ; . , / from the
+Cardputer ADV, and ` acts as Escape.
 Text fields read characters directly instead of the arrow aliases.
 """
 
@@ -28,7 +29,9 @@ CHARS = {
     44: "zZ", 45: "xX", 46: "cC", 47: "vV", 48: "bB", 49: "nN", 50: "mM", 51: ",<", 52: ".>",
     53: "/?",
 }
-ARROW_ALIASES = {";": "UP", ".": "DOWN", ",": "LEFT", "/": "RIGHT", "`": "ESC"}
+# The CardputerZero prints its arrows on F, Z, X and C; they work without Fn outside text fields.
+ARROW_ALIASES = {";": "UP", ".": "DOWN", ",": "LEFT", "/": "RIGHT", "`": "ESC",
+                 "f": "UP", "x": "DOWN", "z": "LEFT", "c": "RIGHT"}
 
 
 class Key:
