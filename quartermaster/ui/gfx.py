@@ -1,0 +1,225 @@
+"""Theme, fonts and drawing primitives for the 320x170 CardputerZero screen.
+
+Near-black ground with brass-gold accents from the Quartermaster spyglass.
+Adapted from LORA Tunnel Zero (MIT).
+"""
+
+from functools import lru_cache
+import math
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+W, H = 320, 170
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+
+BG = (4, 7, 10)
+SURFACE = (13, 19, 23)
+SURFACE_2 = (20, 29, 35)
+LINE = (32, 45, 52)
+GREEN = (77, 255, 77)
+GREEN_DIM = (26, 92, 34)
+GREEN_INK = (3, 20, 6)
+TEXT = (234, 241, 237)
+MUTED = (136, 153, 146)
+FAINT = (86, 100, 95)
+AMBER = (255, 178, 36)
+RED = (255, 84, 84)
+CYAN = (64, 214, 255)
+CYAN_DIM = (14, 70, 88)
+GOLD = (245, 179, 1)
+GOLD_DIM = (96, 70, 4)
+GOLD_INK = (26, 18, 0)
+VIOLET = (178, 140, 255)
+
+BAND_COLOR = {"2.4": GREEN, "5": CYAN, "6": VIOLET}
+
+STATUS_H = 18
+FOOTER_H = 15
+CONTENT_TOP = STATUS_H + 1
+CONTENT_BOTTOM = H - FOOTER_H - 1
+
+
+@lru_cache(maxsize=None)
+def font(kind="ui", size=11):
+    files = {
+        "display": "InterDisplay-ExtraBold.otf",
+        "ui": "Inter-SemiBold.otf",
+        "bold": "Inter-Bold.otf",
+        "mono": "JetBrainsMono-Regular.ttf",
+        "monob": "JetBrainsMono-Bold.ttf",
+    }
+    try:
+        return ImageFont.truetype(str(ASSETS / "fonts" / files[kind]), size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+@lru_cache(maxsize=None)
+def image(name, size=None):
+    path = ASSETS / name
+    with Image.open(path) as source:
+        result = source.convert("RGBA")
+    if size:
+        result.thumbnail(size, Image.Resampling.LANCZOS)
+    return result
+
+
+class Canvas:
+    """A PIL image with the handful of primitives the screens need."""
+
+    def __init__(self):
+        self.image = Image.new("RGB", (W, H), BG)
+        self.draw = ImageDraw.Draw(self.image)
+
+    # text ---------------------------------------------------------------
+    def text_width(self, text, f):
+        return self.draw.textlength(text, font=f)
+
+    def fit(self, text, width, f):
+        text = str(text)
+        if self.text_width(text, f) <= width:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.text_width(text[:mid] + "…", f) <= width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo].rstrip() + "…"
+
+    def text(self, xy, text, f, fill=TEXT, width=None, anchor="la"):
+        if width is not None:
+            text = self.fit(text, width, f)
+        self.draw.text(xy, str(text), font=f, fill=fill, anchor=anchor)
+        return self.text_width(str(text), f)
+
+    def text_right(self, x, y, text, f, fill=TEXT):
+        self.draw.text((x, y), str(text), font=f, fill=fill, anchor="ra")
+
+    def text_center(self, x, y, text, f, fill=TEXT):
+        self.draw.text((x, y), str(text), font=f, fill=fill, anchor="ma")
+
+    def wrap(self, text, width, f):
+        lines = []
+        for paragraph in str(text).split("\n"):
+            words, line = paragraph.split(" "), ""
+            for word in words:
+                trial = (line + " " + word).strip()
+                if self.text_width(trial, f) <= width:
+                    line = trial
+                    continue
+                if line:
+                    lines.append(line)
+                while self.text_width(word, f) > width:
+                    cut = len(self.fit(word, width, f).rstrip("…")) or 1
+                    lines.append(word[:cut])
+                    word = word[cut:]
+                line = word
+            lines.append(line)
+        return lines
+
+    # shapes ---------------------------------------------------------------
+    def rect(self, box, fill=None, outline=None, radius=0, width=1):
+        if radius:
+            self.draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+        else:
+            self.draw.rectangle(box, fill=fill, outline=outline, width=width)
+
+    def line(self, points, fill=LINE, width=1):
+        self.draw.line(points, fill=fill, width=width)
+
+    def paste(self, img, xy):
+        self.image.paste(img, xy, img if img.mode == "RGBA" else None)
+
+    def pill(self, x, y, text, f, fg, bg, pad=4, height=None):
+        w = int(self.text_width(text, f)) + pad * 2
+        h = height or (f.size + 4)
+        self.rect((x, y, x + w, y + h), fill=bg, radius=h // 2)
+        self.draw.text((x + pad, y + h / 2), text, font=f, fill=fg, anchor="lm")
+        return w
+
+    def tag(self, x, y, text, color, width=19):
+        self.rect((x, y, x + width, y + 11), fill=color, radius=3)
+        self.draw.text((x + width / 2 + 0.5, y + 6), text, font=font("monob", 9), fill=BG, anchor="mm")
+        return width + 2
+
+    def keycap(self, x, y, key, label):
+        f = font("monob", 8)
+        w = int(self.text_width(key, f)) + 6
+        self.rect((x, y, x + w, y + 10), fill=SURFACE_2, outline=LINE, radius=2)
+        self.draw.text((x + w / 2, y + 5), key, font=f, fill=TEXT, anchor="mm")
+        x += w + 3
+        t = font("ui", 9)
+        self.draw.text((x, y + 5), label, font=t, fill=MUTED, anchor="lm")
+        return w + 3 + int(self.text_width(label, t)) + 8
+
+    def progress(self, box, fraction, fg=GOLD, bg=SURFACE_2):
+        x0, y0, x1, y1 = box
+        self.rect(box, fill=bg, radius=(y1 - y0) // 2)
+        fraction = max(0.0, min(1.0, fraction))
+        if fraction > 0:
+            self.rect((x0, y0, x0 + max(y1 - y0, int((x1 - x0) * fraction)), y1), fill=fg, radius=(y1 - y0) // 2)
+
+    def signal_bars(self, x, y, rssi, color=None):
+        """Four ascending bars; -95 dBm is one, -55 dBm or better is all four."""
+        level = 0 if rssi is None else max(1, min(4, int((rssi + 95) / 13) + 1))
+        color = color or (GREEN if level >= 3 else AMBER if level == 2 else RED)
+        for i in range(4):
+            h = 3 + i * 2
+            self.rect((x + i * 4, y + 9 - h, x + i * 4 + 2, y + 9), fill=color if i < level else LINE)
+        return 16
+
+
+def rssi_color(rssi):
+    if rssi is None:
+        return FAINT
+    if rssi >= -67:
+        return GREEN
+    if rssi >= -82:
+        return AMBER
+    return RED
+
+
+def ago(seconds):
+    if seconds is None:
+        return "—"
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm" % (seconds // 60)
+    if seconds < 86400:
+        return "%dh" % (seconds // 3600)
+    return "%dd" % (seconds // 86400)
+
+
+def clock(seconds):
+    seconds = int(seconds)
+    return "%02d:%02d:%02d" % (seconds // 3600, seconds // 60 % 60, seconds % 60)
+
+
+def distance_m(a, b):
+    lat1, lon1 = map(math.radians, a)
+    lat2, lon2 = map(math.radians, b)
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(h))
+
+
+def bearing(a, b):
+    lat1, lon1 = map(math.radians, a)
+    lat2, lon2 = map(math.radians, b)
+    y = math.sin(lon2 - lon1) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def compass(degrees):
+    return ("N", "NE", "E", "SE", "S", "SW", "W", "NW")[int((degrees + 22.5) // 45) % 8]
+
+
+def human_distance(meters):
+    if meters < 1000:
+        return "%d m" % meters
+    return "%.1f km" % (meters / 1000)
