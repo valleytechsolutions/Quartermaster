@@ -208,36 +208,62 @@ class AdapterScanner:
         self.last_error = ""
         self.sweeps = 0
         self.last_sweep_seconds = None
+        self.direct = None          # None: untested, True: iw may trigger scans, False: use NetworkManager
+        self.sleep = time.sleep
+        self.poll_seconds = 1.0
+        self.sweep_timeout = 12.0
 
     def _run(self, args, timeout=20):
         return self.runner(args, capture_output=True, text=True, timeout=timeout, check=False)
 
-    def scan(self, fresh_ms=None):
+    def scan(self):
         if not shutil.which("iw"):
             raise ScanUnavailable("The iw tool is missing")
         started = self.clock()
-        # A direct trigger gives fresh results and returns when the sweep ends. It needs
-        # CAP_NET_ADMIN, so without it NetworkManager triggers the sweep instead.
-        result = self._run(["iw", "dev", self.interface, "scan"])
-        if result.returncode == 0 and "BSS " in result.stdout:
-            self.method = "iw"
-        else:
-            if shutil.which("nmcli"):
-                self._run(["nmcli", "device", "wifi", "rescan", "ifname", self.interface], timeout=10)
-            result = self._run(["iw", "dev", self.interface, "scan", "dump"])
-            if result.returncode != 0:
-                self.last_error = (result.stderr or "scan failed").strip().splitlines()[-1][:80]
-                raise ScanUnavailable("%s: %s" % (self.interface, self.last_error))
+        text = None
+        if self.direct is not False:
+            # A direct trigger returns when the sweep ends, with fresh results. It needs
+            # CAP_NET_ADMIN; without it NetworkManager triggers the sweep instead.
+            result = self._run(["iw", "dev", self.interface, "scan"])
+            if result.returncode == 0:
+                self.direct, self.method, text = True, "iw", result.stdout
+            elif "not permitted" in (result.stderr or "").lower() or "(-1)" in (result.stderr or ""):
+                self.direct = False
+            elif "busy" not in (result.stderr or "").lower() and self.direct is None:
+                self.direct = False
+        if text is None:
+            text = self._managed_sweep(started)
             self.method = "nm+iw"
         elapsed = self.clock() - started
         self.sweeps += 1
         self.last_sweep_seconds = elapsed
-        limit = fresh_ms if fresh_ms is not None else int(max(elapsed, 1.0) * 1000) + 4000
-        networks = [n for n in parse_iw_scan(result.stdout)
+        limit = int(elapsed * 1000) + 1500
+        networks = [n for n in parse_iw_scan(text)
                     if n["rssi"] is not None and (n["last_seen_ms"] is None or n["last_seen_ms"] <= limit)]
         for net in networks:
             net["interface"] = self.interface
         return networks
+
+    def _managed_sweep(self, started):
+        """Ask NetworkManager for a sweep, then read the kernel's results once they stop arriving.
+
+        The request returns at once and the radio needs a few seconds to cover every band, so
+        the results are polled until the number heard since the request holds steady."""
+        if shutil.which("nmcli"):
+            self._run(["nmcli", "device", "wifi", "rescan", "ifname", self.interface], timeout=10)
+        previous, text, deadline = -1, "", started + self.sweep_timeout
+        while True:
+            self.sleep(self.poll_seconds)
+            result = self._run(["iw", "dev", self.interface, "scan", "dump"])
+            if result.returncode != 0:
+                self.last_error = (result.stderr or "scan failed").strip().splitlines()[-1][:80]
+                raise ScanUnavailable("%s: %s" % (self.interface, self.last_error))
+            text = result.stdout
+            window = (self.clock() - started) * 1000 + 300
+            fresh = sum(1 for n in parse_iw_scan(text) if n["last_seen_ms"] is not None and n["last_seen_ms"] <= window)
+            if (fresh and fresh == previous) or self.clock() >= deadline:
+                return text
+            previous = fresh
 
 
 class WifiFleet:

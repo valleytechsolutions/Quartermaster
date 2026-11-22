@@ -1,6 +1,6 @@
 {
   "package_name": "quartermaster",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "app_name": "Quartermaster",
   "bin_name": "quartermaster",
   "description": "Wi-Fi and Bluetooth wardriver with multi-adapter tri-band scanning and WiGLE logs"

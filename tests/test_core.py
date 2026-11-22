@@ -139,3 +139,33 @@ def test_gps_candidates_orders_usb_first(tmp_path):
     (dev / "ttyS0").write_text("")
     found = hardware.gps_candidates(tty, dev)
     assert [c["kind"] for c in found] == ["usb", "uart"] and found[0]["label"] == "CH340 USB GPS"
+
+
+def test_managed_sweep_waits_for_results(monkeypatch):
+    from quartermaster import wifi
+    monkeypatch.setattr(wifi.shutil, "which", lambda name: "/usr/bin/" + name)
+    now = [0.0]
+    calls = []
+
+    class Result:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def runner(args, **_):
+        calls.append(list(args))
+        if args[:1] == ["iw"] and args[-1] == "scan":
+            return Result(255, "", "command failed: Operation not permitted (-1)")
+        if args[0] == "nmcli":
+            return Result()
+        dumps = sum(1 for c in calls if c[-1] == "dump")
+        # first poll: only stale cache; later polls: the fresh sweep
+        return Result(0, SCAN.replace("120 ms ago", "60000 ms ago").replace("10 ms ago", "70000 ms ago")
+                      if dumps == 1 else SCAN)
+
+    scanner = wifi.AdapterScanner({"interface": "wlan1"}, runner=runner, clock=lambda: now[0])
+    scanner.sleep = lambda s: now.__setitem__(0, now[0] + s)
+    found = scanner.scan()
+    assert [n["bssid"][-2:] for n in found] == ["01", "03"]      # the 90 s old entry is dropped
+    assert scanner.method == "nm+iw" and scanner.direct is False
+    scanner.scan()
+    assert sum(1 for c in calls if c[-1] == "scan") == 1          # direct trigger is not retried
