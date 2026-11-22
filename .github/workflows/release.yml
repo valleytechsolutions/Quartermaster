@@ -1,7 +1,7 @@
 name: Release
 
-# Publishing a GitHub release tagged v<version>, or pushing that tag, tests the app, builds the
-# package and attaches it to the release as quartermaster.deb.
+# Publishing a GitHub release tagged v<version>, pushing that tag, or running this workflow by hand
+# tests the app, builds the package and attaches it to the release as quartermaster.deb.
 on:
   push:
     tags: ['v*']
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and attach to, for example v1.0.0'
+        description: 'Release tag, for example v1.0.0. It is created from this branch if it does not exist.'
         required: true
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
@@ -53,6 +53,7 @@ jobs:
       - name: Create or update the GitHub release
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Quartermaster $VERSION" --notes-file build/notes.md
+            gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "Quartermaster $VERSION" \
+              --notes-file build/notes.md
           fi
           gh release upload "$TAG" build/*.deb build/SHA256SUMS --clobber
