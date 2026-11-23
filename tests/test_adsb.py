@@ -148,7 +148,7 @@ def test_without_readsb_or_the_stick_nothing_starts_and_the_reason_is_given(tmp_
     monkeypatch.setattr(adsb, "READSB_PATHS", (str(tmp_path / "none"),))
     missing = receiver(tmp_path / "a", Clock(), readsb=False)
     missing._tick()
-    assert missing.readsb.started == [] and missing.status()["detail"] == "Install readsb: sudo apt install readsb"
+    assert missing.readsb.started == [] and missing.status()["detail"] == "readsb is missing. Reinstall Quartermaster"
     unplugged = receiver(tmp_path / "b", Clock(), sdr=False)
     unplugged._tick()
     assert unplugged.readsb.started == [] and unplugged.status()["detail"] == "Not plugged in"

@@ -213,8 +213,8 @@ The firmware, the boards it runs on and the serial protocol are described in [fi
 
 With an RTL-SDR stick (RTL2832U) on USB, Quartermaster also logs the aircraft around you, for WDGWars and Wardrift. WiGLE does not take aircraft, so they are never sent there.
 
-1. Install the decoder once: `sudo apt install readsb`. Quartermaster never installs anything itself.
-   The package may also start readsb at every boot, where it keeps the stick and some CPU all the time. To let Quartermaster run it only during wardrives, turn that off once: `sudo systemctl disable --now readsb`.
+1. Nothing to install: the decoder, readsb, comes with Quartermaster. Its own always-on service is turned off, so it only runs during a wardrive.
+   If you installed readsb yourself before Quartermaster, it is left as you set it up and may run at every boot, holding the stick and some CPU. To let Quartermaster run it only during wardrives, turn that off once: `sudo systemctl disable --now readsb`.
 2. Turn on **Settings > Aircraft (ADS-B)** and plug in the stick.
 3. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
 

@@ -49,7 +49,7 @@ DENIED_WORDS = ("usb_open error -3", "access denied", "insufficient permissions"
 
 OFF, NO_DONGLE, NO_READSB, BUSY, RUNNING, SYSTEM, FAILED, READY, DENIED = (
     "off", "no_dongle", "no_readsb", "busy", "running", "system", "failed", "ready", "denied")
-WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_READSB: "Install readsb: sudo apt install readsb",
+WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_READSB: "readsb is missing. Reinstall Quartermaster",
          BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the readsb that already runs",
          FAILED: "readsb stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
          DENIED: "No permission. Run: sudo adduser $USER plugdev"}

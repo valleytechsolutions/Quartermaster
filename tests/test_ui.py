@@ -1549,7 +1549,7 @@ def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
     assert title not in hardware_text(sky_app(tmp_path / "a", hw=SkyHardware(sdr=False)), drawn)
     assert "Off in Settings" in hardware_text(sky_app(tmp_path / "b"), drawn)
     for hw, words in ((SkyHardware(sdr=False), "Not plugged in"),
-                      (SkyHardware(readsb=False), "Install readsb: sudo apt install readsb"),
+                      (SkyHardware(readsb=False), "readsb is missing. Reinstall Quartermaster"),
                       (SkyHardware(), "Ready. It listens in the next wardrive.")):
         text = hardware_text(sky_app(tmp_path / words[:6], hw=hw, adsb=True), drawn)
         assert title in text and words in text
