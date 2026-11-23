@@ -1495,26 +1495,27 @@ def test_a_node_added_by_the_hub_is_saved_on_the_screen_thread(tmp_path, ports_l
 
 
 def sky_app(tmp_path, hw=None, sdr=True, **settings):
-    """An app whose wardrives start a stand-in for readsb."""
+    """An app whose wardrives start a stand-in for rtl_adsb."""
     import functools
     import subprocess
     from quartermaster import adsb
-    from tests.fakes import FakeReadsb, SkyHardware
+    from tests.fakes import FakeRtlAdsb, SkyHardware
     app = make_app(tmp_path, hw=hw or SkyHardware(), **settings)
-    fake = FakeReadsb(lambda: NOW)
-    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+    fake = FakeRtlAdsb()
+    receiver = functools.partial(adsb.Receiver, launcher=fake,
+                                 which=lambda name: "/usr/bin/rtl_adsb" if name == "rtl_adsb" else None,
                                  dongles=lambda: [{"usb_id": "0bda:2838"}] if sdr else [], feeds=(),
                                  out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
                                  runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""),
                                  tools=lambda name: None)
     app.wardrive_factory = lambda c, g: Wardrive(c, g, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=Fleet,
                                                  clock=lambda: NOW, receiver=receiver)
-    app.readsb = fake
+    app.rtl = fake
     return app
 
 
 def hear(app, *planes):
-    fake = app.readsb
+    fake = app.rtl
     wait_for(lambda: fake.processes)
     fake.air(*planes)
     wait_for(lambda: app.drive.status()["aircraft"] == len(planes))
@@ -1549,7 +1550,7 @@ def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
     assert title not in hardware_text(sky_app(tmp_path / "a", hw=SkyHardware(sdr=False)), drawn)
     assert "Off in Settings" in hardware_text(sky_app(tmp_path / "b"), drawn)
     for hw, words in ((SkyHardware(sdr=False), "Not plugged in"),
-                      (SkyHardware(readsb=False), "readsb is missing. Reinstall Quartermaster"),
+                      (SkyHardware(decoder=False), "rtl-sdr is missing. Reinstall Quartermaster"),
                       (SkyHardware(), "Ready. It listens in the next wardrive.")):
         text = hardware_text(sky_app(tmp_path / words[:6], hw=hw, adsb=True), drawn)
         assert title in text and words in text
@@ -1558,7 +1559,7 @@ def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
     hear(app, plane("a1b2c3", 25.2, -77.7))
     text = hardware_text(app, drawn)
     assert "Running" in text and "1 aircraft" in text
-    app.readsb.processes[0].exit("usb_claim_interface error -6\n")
+    app.rtl.processes[0].exit("usb_claim_interface error -6\n")
     wait_for(lambda: app.drive.status()["adsb"]["state"] == "busy")
     assert "In use by another program" in hardware_text(app, drawn)
 
@@ -1568,7 +1569,7 @@ def test_the_wardrive_and_its_summary_count_aircraft_only_when_they_are_on(tmp_p
     press(off, "W")
     assert "aircraft" not in screen_text(off, drawn)
     press(off, "ENTER", "ENTER")
-    assert "Aircraft" not in screen_text(off, drawn) and off.readsb.started == []
+    assert "Aircraft" not in screen_text(off, drawn) and off.rtl.started == []
     app = sky_app(tmp_path / "on", adsb=True)
     press(app, "W")
     hear(app, plane("a1b2c3", 25.2, -77.7), plane("c0ffee"))
@@ -1578,7 +1579,7 @@ def test_the_wardrive_and_its_summary_count_aircraft_only_when_they_are_on(tmp_p
     press(app, "ENTER", "ENTER")
     text = screen_text(app, drawn)
     assert "WARDRIVE SAVED" in text and "Aircraft\n2" in text
-    assert app.readsb.processes[0].signals == [signal.SIGTERM]
+    assert app.rtl.processes[0].signals == [signal.SIGTERM]
 
 
 def test_aircraft_files_are_listed_with_their_own_marks_and_are_never_for_wigle(tmp_path, drawn):
@@ -1608,20 +1609,20 @@ def test_aircraft_files_are_listed_with_their_own_marks_and_are_never_for_wigle(
     assert "quartermaster_20261118-110640.aircraft.json.gz" not in app.uploader.ledger.data
 
 
-def test_readsb_is_stopped_when_quartermaster_closes_during_a_wardrive(tmp_path):
+def test_the_decoder_is_stopped_when_quartermaster_closes_during_a_wardrive(tmp_path):
     app = sky_app(tmp_path, adsb=True)
     press(app, "W")
-    wait_for(lambda: app.readsb.processes)
+    wait_for(lambda: app.rtl.processes)
     app.shutdown()
-    assert app.readsb.processes[0].signals == [signal.SIGTERM] and app.drive.aircraft_path is None
+    assert app.rtl.processes[0].signals == [signal.SIGTERM] and app.drive.aircraft_path is None
 
 
 def test_the_aircraft_card_is_amber_when_the_stick_cannot_listen_and_says_who_holds_it(tmp_path):
     from quartermaster import adsb
     from tests.fakes import SkyHardware
     cards = {}
-    for name, hw in (("ready", SkyHardware()), ("gone", SkyHardware(sdr=False)), ("bare", SkyHardware(readsb=False)),
-                     ("system", SkyHardware(readsb=False, sky_use=adsb.SYSTEM)),
+    for name, hw in (("ready", SkyHardware()), ("gone", SkyHardware(sdr=False)), ("bare", SkyHardware(decoder=False)),
+                     ("system", SkyHardware(decoder=False, sky_use=adsb.SYSTEM)),
                      ("busy", SkyHardware(sky_use=adsb.BUSY))):
         cards[name] = screens.Hardware.aircraft_card(sky_app(tmp_path / name, hw=hw, adsb=True), None)
     assert cards["ready"]["color"] == gfx.GOLD and "edge" not in cards["ready"]
@@ -1629,7 +1630,7 @@ def test_the_aircraft_card_is_amber_when_the_stick_cannot_listen_and_says_who_ho
         assert cards[name]["color"] == cards[name]["edge"] == cards[name]["detail_color"] == gfx.AMBER
     assert cards["busy"]["detail"] == "In use by another program"
     assert (cards["system"]["detail"], cards["system"]["detail_color"], cards["system"]["right"]) == \
-        ("Uses the readsb that already runs", gfx.GREEN, "")
+        ("Uses the aircraft program that already runs", gfx.GREEN, "")
 
 
 def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_does_not_fit(tmp_path, monkeypatch):
@@ -1760,6 +1761,16 @@ def test_every_word_about_a_node_fits_where_it_is_shown():
         assert canvas.text_width(words, gfx.font("ui", 8)) <= gfx.W - 57, words
     for words in list(screens.NodeDetail.HELP.values()) + [screens.NodeDetail.STRANDED]:
         assert canvas.text_width(words, gfx.font("ui", 9)) <= gfx.W - 20, words
+
+
+def test_every_word_about_the_aircraft_radio_fits_on_its_card():
+    from quartermaster import adsb
+    canvas = gfx.Canvas()
+    for state, words in adsb.WORDS.items():
+        room = gfx.W - 57
+        if state in (adsb.RUNNING, adsb.SYSTEM):
+            room -= int(canvas.text_width("9999 aircraft", gfx.font("ui", 8))) + 6
+        assert canvas.text_width(words, gfx.font("ui", 8)) <= room, words
 
 
 def test_a_flash_that_cannot_work_again_offers_no_retry_and_another_layout_offers_a_first_install(

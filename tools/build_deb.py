@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
 # The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
+# rtl-sdr brings rtl_adsb for aircraft, the stick's udev rules and the TV driver blacklist, and starts no service.
 DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
            "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr")
 

@@ -37,7 +37,7 @@ SECTIONS = [
         ("ble_interval", "Bluetooth check", [(0.5, "0.5 s"), (1.0, "1 s"), (2.0, "2 s"), (5.0, "5 s")],
          "How often Bluetooth results are read."),
         ("adsb", "Aircraft (ADS-B)", [(False, "Off"), (True, "On")],
-         "Logs aircraft with an RTL-SDR stick and readsb. Sent to WDGWars and Wardrift only."),
+         "Logs aircraft with an RTL-SDR stick. Sent to WDGWars and Wardrift only."),
         ("country", "Country", COUNTRIES, "Where you are. Nodes use only the Wi-Fi channels allowed here."),
     ]),
     ("NODES", [

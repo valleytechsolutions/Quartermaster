@@ -57,7 +57,7 @@ class HardwareWatch:
         self.interval = interval
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
         self.serial_ports = []
-        self.sdr, self.readsb, self.sky_use = [], "", ""
+        self.sdr, self.decoder, self.sky_use = [], "", ""
         self.battery, self._battery_read = None, 0.0
         self._since = {}
         self._stop = threading.Event()
@@ -75,7 +75,7 @@ class HardwareWatch:
             self.bluetooth = hardware.bluetooth_adapters()
             self.gps_ports = hardware.gps_candidates()
             self.serial_ports = serial_ports()
-            self.sdr, self.readsb = hardware.rtl_sdr_dongles(), adsb.find_readsb()
+            self.sdr, self.decoder = hardware.rtl_sdr_dongles(), adsb.find_decoder()
             self.sky_use = adsb.in_use() if self.sdr else ""
             found = hardware.stalled_usb_adapters()
         except OSError:

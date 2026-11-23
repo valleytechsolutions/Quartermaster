@@ -1,10 +1,13 @@
 """Aircraft from an RTL-SDR stick, for WDGWars and Wardrift. WiGLE takes no aircraft.
 
-readsb decodes the radio. It runs as a program of its own, never inside Quartermaster: the copy the system already
-runs when its JSON output is fresh, otherwise a copy started for the wardrive and stopped with it. Quartermaster
-reads the small aircraft.json it writes every few seconds and keeps one record per aircraft, with the closest and
-the furthest position heard from it. At the stop that becomes a dump1090 aircraft.json.gz beside the WiGLE log,
-and a summary with both positions.
+The radio is read by a program of its own, never inside Quartermaster. A readsb or dump1090 the system already runs
+is used when its aircraft.json in /run is fresh. Otherwise rtl_adsb, from the rtl-sdr package Quartermaster depends
+on, is started for the wardrive and stopped with it: it prints each frame it hears as hex, and modes.py decodes them.
+A readsb built with RTL-SDR support is started instead only when rtl_adsb is not installed.
+
+Either way the aircraft reach the same store, as readsb's aircraft.json lists them, and one record is kept per
+aircraft with the closest and the furthest position heard from it. At the stop that becomes a dump1090
+aircraft.json.gz beside the WiGLE log, and a summary with both positions.
 """
 
 import atexit
@@ -22,7 +25,7 @@ import subprocess
 import threading
 import time
 
-from . import faults, hardware, wigle
+from . import faults, hardware, modes, wigle
 
 POLL_SECONDS = 5.0
 JOURNAL_SECONDS = 30.0
@@ -36,27 +39,35 @@ WARDRIFT_BATCH = 5000
 CREDIT_SECONDS = 72 * 3600
 FILE_GLOB = "quartermaster_*.aircraft.json.gz"
 JOURNAL_GLOB = ".quartermaster_*.aircraft.json.part"
-SYSTEM_FEEDS = (Path("/run/readsb/aircraft.json"), Path("/run/adsb/aircraft.json"))
+SYSTEM_FEEDS = (Path("/run/readsb/aircraft.json"), Path("/run/adsb/aircraft.json"),
+                Path("/run/dump1090-fa/aircraft.json"), Path("/run/dump1090-mutability/aircraft.json"))
 READSB_PATHS = ("/usr/bin/readsb", "/usr/local/bin/readsb")
+RTL_ADSB_PATHS = ("/usr/bin/rtl_adsb", "/usr/local/bin/rtl_adsb")
+MAX_FRAMES = 2000
+READ_PAUSE = 0.05
+MAX_LINE = 80
 SUMMARY_COLUMNS = ("ICAO", "Callsign", "Squawk", "Category", "FirstSeen", "LastSeen", "StrongestRSSI",
                    "WeakestRSSI", "ClosestKm", "ClosestLatitude", "ClosestLongitude", "ClosestAltitudeFt",
                    "ClosestSpeedKt", "ClosestTrack", "ClosestTime", "FurthestKm", "FurthestLatitude",
                    "FurthestLongitude", "FurthestAltitudeFt", "FurthestSpeedKt", "FurthestTrack", "FurthestTime")
 HOLDERS = ("readsb", "dump1090", "rtl_")
+DRIVER_WORDS = ("kernel driver is active",)
 BUSY_WORDS = ("usb_claim_interface", "resource busy", "error -6")
 GONE_WORDS = ("no supported devices", "no rtl-sdr", "device not found")
 DENIED_WORDS = ("usb_open error -3", "access denied", "insufficient permissions")
+NO_RTLSDR_WORDS = ("not recognized", "not enabled in this build")
 
-OFF, NO_DONGLE, NO_READSB, BUSY, RUNNING, SYSTEM, FAILED, READY, DENIED = (
-    "off", "no_dongle", "no_readsb", "busy", "running", "system", "failed", "ready", "denied")
-WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_READSB: "readsb is missing. Reinstall Quartermaster",
-         BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the readsb that already runs",
-         FAILED: "readsb stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
-         DENIED: "No permission. Run: sudo adduser $USER plugdev"}
+OFF, NO_DONGLE, NO_TOOLS, BUSY, RUNNING, SYSTEM, FAILED, READY, DENIED, DRIVER = (
+    "off", "no_dongle", "no_tools", "busy", "running", "system", "failed", "ready", "denied", "driver")
+WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_TOOLS: "rtl-sdr is missing. Reinstall Quartermaster",
+         BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the aircraft program that already runs",
+         FAILED: "It stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
+         DENIED: "No permission yet. Restart the Cardputer once.", DRIVER: "Restart the Cardputer once to use it"}
 
 _HEX = re.compile(r"[0-9a-f]{6}")
 _NAME = re.compile(r"quartermaster_\d{8}-\d{6}(-\d+)?\.aircraft\.json\.gz")
 _help = {}
+_no_rtlsdr = set()
 _children = set()
 _children_lock = threading.Lock()
 
@@ -81,11 +92,28 @@ def journal_path(path):
     return path.with_name("." + path.name.replace(".json.gz", ".json.part"))
 
 
-def find_readsb(which=shutil.which):
-    found = which("readsb")
+def _find(name, paths, which):
+    found = which(name)
     if found:
         return found
-    return next((path for path in READSB_PATHS if os.access(path, os.X_OK)), "")
+    return next((path for path in paths if os.access(path, os.X_OK)), "")
+
+
+def find_readsb(which=shutil.which):
+    return _find("readsb", READSB_PATHS, which)
+
+
+def find_rtl_adsb(which=shutil.which):
+    return _find("rtl_adsb", RTL_ADSB_PATHS, which)
+
+
+def find_decoder(which=shutil.which, runner=subprocess.run):
+    """The program a wardrive would start for the stick: rtl_adsb, else a readsb that can open it, else ""."""
+    found = find_rtl_adsb(which)
+    if found:
+        return found
+    readsb = find_readsb(which)
+    return readsb if readsb and reads_rtlsdr(readsb, runner) else ""
 
 
 def distance_km(lat1, lon1, lat2, lon2):
@@ -236,6 +264,9 @@ class Sky:
             code = code.lower()
             if not _HEX.fullmatch(code):
                 continue
+            if "alt_baro" not in report and "altitude" in report or "gs" not in report and "speed" in report:
+                report = dict(report, alt_baro=report.get("alt_baro", report.get("altitude")),
+                              gs=report.get("gs", report.get("speed")))
             seen = _number(report.get("seen"))
             plane = planes.get(code)
             when = epoch - max(0.0, seen or 0.0)
@@ -414,7 +445,7 @@ def part_name(name, part):
 
 
 def read_feed(path, now):
-    """A readsb aircraft.json written in the last STALE_SECONDS, or None."""
+    """A readsb or dump1090 aircraft.json written in the last STALE_SECONDS, or None."""
     try:
         with open(path, "rb") as source:
             data = json.loads(source.read(16 * 1024 * 1024).decode("utf-8", "replace"))
@@ -426,14 +457,14 @@ def read_feed(path, now):
 
 
 def system_feed(feeds=SYSTEM_FEEDS, now=None):
-    """The aircraft.json of a readsb the system already runs, when it is fresh."""
+    """The aircraft.json of a readsb or dump1090 the system already runs, when it is fresh."""
     now = time.time() if now is None else now
     return next((Path(path) for path in feeds if read_feed(path, now) is not None), None)
 
 
 def in_use(feeds=SYSTEM_FEEDS, proc=Path("/proc"), now=None, me=None):
-    """Between wardrives: SYSTEM when a readsb the system runs writes fresh output, BUSY when another program that
-    takes the stick runs, else "". What Quartermaster started itself does not count."""
+    """Between wardrives: SYSTEM when a readsb or dump1090 the system runs writes fresh output, BUSY when another
+    program that takes the stick runs, else "". What Quartermaster started itself does not count."""
     if system_feed(feeds, now) is not None:
         return SYSTEM
     me = os.getpid() if me is None else me
@@ -453,8 +484,8 @@ def in_use(feeds=SYSTEM_FEEDS, proc=Path("/proc"), now=None, me=None):
     return ""
 
 
-def options(binary, runner=subprocess.run):
-    """Flags that lighten readsb's load, only those its --help lists. Asked once per binary."""
+def _usage(binary, runner):
+    """readsb's --help, asked once per binary."""
     if binary not in _help:
         try:
             result = runner([binary, "--help"], capture_output=True, text=True, errors="replace", timeout=10,
@@ -462,12 +493,31 @@ def options(binary, runner=subprocess.run):
             _help[binary] = (result.stdout or "") + (result.stderr or "")
         except (OSError, subprocess.SubprocessError):
             _help[binary] = ""
+    return _help[binary]
+
+
+def reads_rtlsdr(binary, runner=subprocess.run):
+    """Whether a readsb was built with RTL-SDR support: its --help then lists the RTL-SDR options, and a start
+    that said otherwise is remembered."""
+    if binary in _no_rtlsdr:
+        return False
+    text = _usage(binary, runner).lower()
+    return "rtl-sdr options" in text or "--device-type rtlsdr" in text
+
+
+def options(binary, runner=subprocess.run):
+    """Flags that lighten readsb's load, only those its --help lists."""
+    _usage(binary, runner)
     extra = []
     entry = re.search(r"--preamble-threshold\S*(.*?)(?=\n\s*-|\Z)", _help[binary], re.S)
     match = entry and re.search(r"pi zero[^:]*:\s*(\d+)", entry.group(1), re.I)
     if match:
         extra += ["--preamble-threshold", match.group(1)]
     return extra
+
+
+def rtl_command(binary, prefix=()):
+    return list(prefix) + [binary, "-d", "0", "-S"]
 
 
 def command(binary, out, here=None, extra=(), prefix=()):
@@ -486,7 +536,7 @@ def run_dir():
 
 
 def _own_dir(path):
-    """A folder for readsb's output that only this user can write, never a link someone else left."""
+    """A folder for the decoder's output that only this user can write, never a link someone else left."""
     path = Path(path)
     try:
         path.mkdir(mode=0o700, exist_ok=True)
@@ -500,9 +550,9 @@ def _own_dir(path):
 
 
 def calm(cpu, which=shutil.which):
-    """The programs readsb is started through, each of them only when it is there: setpriv ends it when the thread
-    that started it ends, even when Quartermaster is killed; nice lowers its priority; taskset keeps it on one CPU.
-    No Python runs between the fork and readsb, so the threads Quartermaster runs cannot hang the start."""
+    """The programs the decoder is started through, each of them only when it is there: setpriv ends it when the
+    thread that started it ends, even when Quartermaster is killed; nice lowers its priority; taskset keeps it on one
+    CPU. No Python runs between the fork and the decoder, so the threads Quartermaster runs cannot hang the start."""
     prefix = []
     for tool, args in (("setpriv", ["--pdeathsig", "TERM"]), ("nice", ["-n", "10"]),
                        ("taskset", ["-c", str(cpu)] if cpu is not None else None)):
@@ -513,7 +563,7 @@ def calm(cpu, which=shutil.which):
 
 
 def end(proc, kill=None, wait=STOP_WAIT):
-    """Stop readsb and everything it started: SIGTERM, then SIGKILL after `wait` seconds."""
+    """Stop the decoder and everything it started: SIGTERM, then SIGKILL after `wait` seconds."""
     kill = kill or os.killpg
     with _children_lock:
         _children.discard(proc)
@@ -547,6 +597,33 @@ def end_all():
 atexit.register(end_all)
 
 
+def listen(stream, decoder, lock, mono=None, limit=MAX_FRAMES, pause=READ_PAUSE, read=os.read):
+    """Give each line rtl_adsb prints to the decoder until it ends. rtl_adsb writes each frame in many small pieces,
+    so the pipe is read in large chunks, `pause` seconds apart, instead of waking for each piece. Past `limit` lines in
+    one second the rest of that second are dropped unread by the decoder, so a flood of noise never queues up."""
+    mono = mono or time.monotonic
+    fd, left, second, count = stream.fileno(), b"", None, 0
+    while True:
+        chunk = read(fd, 65536)
+        if not chunk:
+            return
+        lines = (left + chunk).split(b"\n")
+        left = lines.pop()
+        if len(left) > MAX_LINE:
+            left = b""
+            decoder.dropped += 1
+        now = mono()
+        if second is None or now - second >= 1.0:
+            second, count = now, 0
+        take = lines[:max(0, limit - count)]
+        count += len(lines)
+        decoder.dropped += len(lines) - len(take)
+        with lock:
+            for raw in take:
+                decoder.line(raw, now)
+        time.sleep(pause)
+
+
 def _tail(path, size=4096):
     try:
         with open(path, "rb") as log:
@@ -561,14 +638,18 @@ class Receiver:
 
     def __init__(self, logs, gps, clock=time.time, log=None, launcher=subprocess.Popen, which=shutil.which,
                  dongles=hardware.rtl_sdr_dongles, feeds=SYSTEM_FEEDS, out=None, cpus=os.cpu_count,
-                 runner=subprocess.run, kill=None, poll=POLL_SECONDS, max_hdop=None, epoch=None, tools=shutil.which):
+                 runner=subprocess.run, kill=None, poll=POLL_SECONDS, max_hdop=None, epoch=None, tools=shutil.which,
+                 mono=None):
         self.logs, self.gps, self.clock, self.log = Path(logs), gps, clock, log or (lambda: None)
         self.epoch = epoch or (lambda fix: self.clock())
         self.launcher, self.which, self.dongles, self.feeds = launcher, which, dongles, feeds
         self.out, self.cpus, self.runner, self.kill, self.poll = out, cpus, runner, kill, poll
         self.max_hdop, self.tools = max_hdop, tools
+        self.mono = mono or (lambda: time.monotonic())
         self.sky = Sky()
         self.state, self.proc, self.feed = RUNNING, None, None
+        self.decoder = self._listener = self._said = self._binary = None
+        self._decoding = threading.Lock()
         self.target = self.journal = self.started = None
         self._journaled = self._failed_at = None
         self._last, self._blind = None, False
@@ -684,7 +765,7 @@ class Receiver:
 
     def _tick(self):
         self._watch()
-        if self.feed is None:
+        if self.feed is None and self.proc is None:
             self._connect()
         self._read()
         if self.sky.changed and time.monotonic() - self._journaled >= JOURNAL_SECONDS:
@@ -696,16 +777,28 @@ class Receiver:
                     faults.note("Saving the aircraft journal")
 
     def _watch(self):
-        """Notice that readsb ended, that the system's copy went quiet, or that the GPS has a fix for a readsb started
-        without one: it is started again with the position, so that its own range check works."""
+        """Notice that the decoder ended, that the system's copy went quiet, or that the GPS has a fix for a readsb
+        started without one: it is started again with the position, so that its own range check works."""
         proc = self.proc
         if proc is not None and proc.poll() is not None:
-            said = _tail(Path(self.feed).parent / "readsb.log") if self.feed else ""
+            said = _tail(self._said) if self._said else ""
+            readsb = self.decoder is None
+            if not readsb:
+                if self._listener is not None:
+                    self._listener.join(STOP_WAIT)
+                try:
+                    self._heard()
+                except Exception:
+                    faults.note("Aircraft")
             self._end()
-            said = said.lower()
-            self.state = BUSY if any(w in said for w in BUSY_WORDS) else \
-                DENIED if any(w in said for w in DENIED_WORDS) else \
-                NO_DONGLE if any(w in said for w in GONE_WORDS) or not self.dongles() else FAILED
+            if readsb and any(w in said for w in NO_RTLSDR_WORDS):
+                _no_rtlsdr.add(self._binary)
+                self.state = NO_TOOLS
+            else:
+                self.state = DRIVER if any(w in said for w in DRIVER_WORDS) else \
+                    BUSY if any(w in said for w in BUSY_WORDS) else \
+                    DENIED if any(w in said for w in DENIED_WORDS) else \
+                    NO_DONGLE if any(w in said for w in GONE_WORDS) or not self.dongles() else FAILED
             self._failed_at = time.monotonic()
         elif proc is not None and self._blind:
             fix = self.gps.snapshot()
@@ -722,17 +815,50 @@ class Receiver:
         if not self.dongles():
             self.state = NO_DONGLE
             return
-        binary = find_readsb(self.which)
-        if not binary:
-            self.state = NO_READSB
+        rtl_adsb = find_rtl_adsb(self.which)
+        readsb = "" if rtl_adsb else find_readsb(self.which)
+        if not rtl_adsb and not (readsb and reads_rtlsdr(readsb, self.runner)):
+            self.state = NO_TOOLS
             return
         if self._failed_at is not None and time.monotonic() - self._failed_at < RETRY_SECONDS:
             return
         try:
-            self._launch(binary)
+            if rtl_adsb:
+                self._listen(rtl_adsb)
+            else:
+                self._launch(readsb)
         except (OSError, subprocess.SubprocessError):
-            faults.note("Starting readsb")
+            faults.note("Starting the aircraft decoder")
             self.state, self._failed_at = FAILED, time.monotonic()
+
+    def _prefix(self):
+        count = self.cpus() or 1
+        return calm(count - 1 if count >= 4 else None, self.tools)
+
+    def _listen(self, binary):
+        out = _own_dir(self.out or run_dir())
+        said = out / "rtl_adsb.log"
+        with open(said, "wb") as log:
+            proc = self.launcher(rtl_command(binary, self._prefix()), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=log, cwd=str(out), close_fds=True,
+                                 start_new_session=True)
+        with _children_lock:
+            _children.add(proc)
+        decoder = modes.Decoder()
+        fix = self.gps.snapshot()
+        decoder.receiver = self._here(fix, self._time(fix))
+        listener = threading.Thread(target=self._hear, args=(proc.stdout, decoder), daemon=True, name="rtl_adsb")
+        self.proc, self.decoder, self._listener, self._said, self._binary = proc, decoder, listener, said, binary
+        self.feed, self.state, self._blind = None, RUNNING, False
+        listener.start()
+
+    def _hear(self, stream, decoder):
+        try:
+            listen(stream, decoder, self._decoding, self.mono)
+        except (OSError, ValueError):
+            pass
+        except Exception:
+            faults.note("Aircraft")
 
     def _launch(self, binary):
         out = _own_dir(self.out or run_dir())
@@ -743,24 +869,38 @@ class Receiver:
             pass
         fix = self.gps.snapshot()
         here = self._here(fix, self._time(fix))
-        count = self.cpus() or 1
-        argv = command(binary, out, here, options(binary, self.runner), calm(count - 1 if count >= 4 else None,
-                                                                             self.tools))
-        with open(out / "readsb.log", "wb") as said:
-            proc = self.launcher(argv, stdin=subprocess.DEVNULL, stdout=said, stderr=subprocess.STDOUT, cwd=str(out),
+        argv = command(binary, out, here, options(binary, self.runner), self._prefix())
+        said = out / "readsb.log"
+        with open(said, "wb") as log:
+            proc = self.launcher(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, cwd=str(out),
                                  close_fds=True, start_new_session=True)
         with _children_lock:
             _children.add(proc)
         self.proc, self.feed, self.state, self._blind = proc, feed, RUNNING, here is None
+        self.decoder, self._said, self._binary = None, said, binary
 
     def _end(self):
         proc, self.proc = self.proc, None
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            self.decoder = None
         if proc is not None:
             end(proc, self.kill)
             if self.state in (RUNNING, SYSTEM):
                 self.feed = None
+        if listener is not None:
+            listener.join(STOP_WAIT)
+            stream = getattr(proc, "stdout", None)
+            if stream is not None and not listener.is_alive():
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
     def _read(self):
+        if self.decoder is not None:
+            self._heard()
+            return
         if self.feed is None:
             return
         now = self.clock()
@@ -774,3 +914,19 @@ class Receiver:
             return
         with self._lock:
             self.sky.update(data, epoch - max(0.0, now - data["now"]), self._here(fix, epoch))
+
+    def _heard(self):
+        """What rtl_adsb was heard saying since the last look, through the decoder, into the store."""
+        decoder = self.decoder
+        fix = self.gps.snapshot()
+        epoch = self._time(fix)
+        here = self._here(fix, epoch)
+        now = self.mono()
+        with self._decoding:
+            decoder.receiver = here
+            decoder.forget(now)
+            planes = decoder.aircraft(now)
+        if epoch < wigle.MIN_EPOCH or not planes:
+            return
+        with self._lock:
+            self.sky.update({"now": epoch, "aircraft": planes}, epoch, here)

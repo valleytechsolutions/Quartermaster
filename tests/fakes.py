@@ -4,6 +4,7 @@ import functools
 import hashlib
 import io
 import json
+import math
 import operator
 import os
 from pathlib import Path
@@ -1026,10 +1027,169 @@ def plane(code, lat=None, lon=None, **fields):
 
 
 class SkyHardware(Hardware):
-    """The hardware check with an RTL-SDR stick plugged in and readsb installed, or not."""
+    """The hardware check with an RTL-SDR stick plugged in and rtl_adsb installed, or not."""
 
-    def __init__(self, sdr=True, readsb=True, sky_use="", **kwargs):
+    def __init__(self, sdr=True, decoder=True, sky_use="", **kwargs):
         super().__init__(**kwargs)
         self.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}] if sdr else []
-        self.readsb = "/usr/bin/readsb" if readsb else ""
+        self.decoder = "/usr/bin/rtl_adsb" if decoder else ""
         self.sky_use = sky_use
+
+
+def adsb_frame(icao, me, df=17):
+    """A DF17 (or DF18) frame with good parity."""
+    from quartermaster import modes
+    body = bytes([df << 3 | (5 if df == 17 else 0)]) + icao.to_bytes(3, "big") + me.to_bytes(7, "big")
+    return body + modes.syndrome(body + b"\0\0\0").to_bytes(3, "big")
+
+
+def reply_frame(df, icao, field):
+    """A DF4/5 (short) or DF20/21 (long) reply whose parity carries the address."""
+    from quartermaster import modes
+    body = (df << 27 | field).to_bytes(4, "big") + (bytes(7) if df >= 20 else b"")
+    return body + (modes.syndrome(body + b"\0\0\0") ^ icao).to_bytes(3, "big")
+
+
+def ident_me(callsign, tc=4, ca=3):
+    chars = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######"
+    me = tc << 51 | ca << 48
+    for index, char in enumerate(callsign.ljust(8)[:8]):
+        me |= chars.index(char) << (42 - 6 * index)
+    return me
+
+
+def cpr_encode(lat, lon, odd):
+    """The 17 bit CPR latitude and longitude of a position, from the published encoding."""
+    from quartermaster import modes
+    dlat = 360.0 / (59 if odd else 60)
+    yz = int(math.floor(131072 * ((lat % dlat) / dlat) + 0.5))
+    rlat = dlat * (yz / 131072.0 + math.floor(lat / dlat))
+    dlon = 360.0 / max(modes.nl(rlat) - odd, 1)
+    xz = int(math.floor(131072 * ((lon % dlon) / dlon) + 0.5))
+    return yz % 131072, xz % 131072
+
+
+def position_me(lat, lon, alt, odd, tc=11):
+    n = (alt + 1000) // 25
+    ac12 = ((n & 0x7F0) << 1) | 0x10 | (n & 0xF)
+    lat_cpr, lon_cpr = cpr_encode(lat, lon, odd)
+    return tc << 51 | ac12 << 36 | odd << 34 | lat_cpr << 17 | lon_cpr
+
+
+def velocity_me(gs, track, rate=0, baro=True):
+    vx, vy = gs * math.sin(math.radians(track)), gs * math.cos(math.radians(track))
+    me = 19 << 51 | 1 << 48
+    me |= (vx < 0) << 42 | (int(round(abs(vx))) + 1) << 32 | (vy < 0) << 31 | (int(round(abs(vy))) + 1) << 21
+    me |= baro << 20 | (rate < 0) << 19 | (abs(rate) // 64 + 1) << 10
+    return me
+
+
+def id13(code):
+    """A four digit squawk laid out as the 13 bit identity field."""
+    a, b, c, d = (int(x, 8) for x in code)
+    out = 0
+    for index, (digit, weight) in enumerate(((c, 1), (a, 1), (c, 2), (a, 2), (c, 4), (a, 4), (0, 0), (b, 1), (d, 1),
+                                             (b, 2), (d, 2), (b, 4), (d, 4))):
+        if digit & weight:
+            out |= 1 << (12 - index)
+    return out
+
+
+def frames_for(report):
+    """What an aircraft reported as readsb lists it would send over the air, as rtl_adsb lines."""
+    icao = int(report["hex"].lstrip("~"), 16)
+    out = []
+    category = report.get("category") or "A0"
+    if report.get("flight") is not None:
+        out.append(adsb_frame(icao, ident_me(report["flight"].strip(), 4 - "ABCD".index(category[0]),
+                                             int(category[1]))))
+    alt = report.get("alt_baro")
+    alt = alt if isinstance(alt, int) else 0
+    if report.get("lat") is not None:
+        for odd in (0, 1, 0):
+            out.append(adsb_frame(icao, position_me(report["lat"], report["lon"], alt, odd)))
+    if report.get("gs") is not None:
+        out.append(adsb_frame(icao, velocity_me(report["gs"], report.get("track") or 0.0)))
+    if len(out) < 2:
+        out.append(adsb_frame(icao, ident_me("")))
+    if report.get("squawk"):
+        out += [reply_frame(5, icao, id13(report["squawk"]))] * 2
+    if report.get("lat") is None and alt:
+        n = (alt + 1000) // 25
+        out += [reply_frame(4, icao, ((n & 0x7E0) << 2) | ((n & 0x10) << 1) | 0x10 | (n & 0xF))] * 2
+    return [b"*" + frame.hex().encode() + b";\r\n" for frame in out]
+
+
+class RtlProcess:
+    """rtl_adsb as the receiver sees it: frames come on a real pipe, signals through `kill`."""
+
+    def __init__(self, argv, log, pid, stubborn=False):
+        self.argv, self.log, self.pid, self.stubborn = argv, log, pid, stubborn
+        self.returncode, self.signals, self.waits = None, [], []
+        read, write = os.pipe()
+        self.stdout, self._writer = os.fdopen(read, "rb"), os.fdopen(write, "wb", buffering=0)
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return self.returncode
+
+    def send(self, lines):
+        self._writer.write(b"".join(lines))
+
+    def _close(self):
+        if not self._writer.closed:
+            self._writer.close()
+
+    def receive(self, sig):
+        self.signals.append(sig)
+        if sig == signal.SIGKILL or not self.stubborn:
+            self.returncode = -sig
+            self._close()
+
+    def terminate(self):
+        self.receive(signal.SIGTERM)
+
+    def kill(self):
+        self.receive(signal.SIGKILL)
+
+    def exit(self, said, code=1):
+        """rtl_adsb ends by itself, leaving `said` on stderr."""
+        Path(self.log).write_text(said)
+        self.returncode = code
+        self._close()
+
+
+class FakeRtlAdsb:
+    """Stands in for starting rtl_adsb: it records how it was started and prints the frames of the aircraft given."""
+
+    def __init__(self, stubborn=False):
+        self.stubborn = stubborn
+        self.started, self.processes = [], []
+
+    def __call__(self, argv, **kwargs):
+        self.started.append((list(argv), kwargs))
+        process = RtlProcess(argv, kwargs["stderr"].name, 5000 + len(self.processes), self.stubborn)
+        self.processes.append(process)
+        return process
+
+    def kill(self, pid, sig):
+        live = [p for p in self.processes if p.pid == pid and p.returncode is None]
+        if not live:
+            raise ProcessLookupError(pid)
+        live[-1].receive(sig)
+
+    def lines(self, *lines):
+        self.processes[-1].send(list(lines))
+
+    def air(self, *planes):
+        self.processes[-1].send([line for report in planes for line in frames_for(report)])
+
+    def close(self):
+        for process in self.processes:
+            process._close()
+            process.stdout.close()

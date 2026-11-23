@@ -1287,9 +1287,10 @@ def test_a_part_that_cannot_be_compacted_counts_no_rows_and_loses_no_summary_lin
 
 def sky_drive(tmp_path, gps=None, sdr=True, **cfg):
     from quartermaster import adsb
-    from tests.fakes import FakeReadsb
-    fake = FakeReadsb(lambda: NOW)
-    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+    from tests.fakes import FakeRtlAdsb
+    fake = FakeRtlAdsb()
+    receiver = functools.partial(adsb.Receiver, launcher=fake,
+                                 which=lambda name: "/usr/bin/rtl_adsb" if name == "rtl_adsb" else None,
                                  dongles=lambda: [{"usb_id": "0bda:2838"}] if sdr else [], feeds=(),
                                  out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
                                  runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
@@ -1375,9 +1376,10 @@ def test_aircraft_left_in_a_journal_by_a_power_cut_are_finished_at_the_next_star
 
 def test_with_aircraft_on_a_wardrive_starts_without_wifi_or_bluetooth(tmp_path):
     from quartermaster import adsb
-    from tests.fakes import FakeReadsb
-    fake = FakeReadsb(lambda: NOW)
-    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+    from tests.fakes import FakeRtlAdsb
+    fake = FakeRtlAdsb()
+    receiver = functools.partial(adsb.Receiver, launcher=fake,
+                                 which=lambda name: "/usr/bin/rtl_adsb" if name == "rtl_adsb" else None,
                                  dongles=lambda: [{"usb_id": "0bda:2838"}], feeds=(), out=tmp_path / "run",
                                  cpus=lambda: 4, kill=fake.kill, poll=0.01, tools=lambda name: None,
                                  runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))

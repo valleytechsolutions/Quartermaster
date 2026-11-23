@@ -43,7 +43,7 @@ class Site:
 
 
 class Aircraft:
-    """Stands in for readsb's side of a wardrive, with the aircraft it has heard."""
+    """Stands in for the aircraft side of a wardrive, with the aircraft it has heard."""
 
     count = 23
 
@@ -168,7 +168,8 @@ def fly(app, root, shot):
     app.change("nodes", [])
     app.nodes.configure(app.cfg)
     app.cfg["adsb"] = True
-    app.hw.sdr, app.hw.readsb = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}], "/usr/bin/readsb"
+    app.hw.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}]
+    app.hw.decoder = "/usr/bin/rtl_adsb"
     app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
                                                  clock=lambda: next(ticks), receiver=Aircraft)
     app.home()

@@ -572,8 +572,8 @@ class Hardware(Screen):
             state = adsb.NO_DONGLE
         elif getattr(app.hw, "sky_use", "") == adsb.SYSTEM:
             state = adsb.SYSTEM
-        elif not getattr(app.hw, "readsb", ""):
-            state = adsb.NO_READSB
+        elif not getattr(app.hw, "decoder", ""):
+            state = adsb.NO_TOOLS
         else:
             state = getattr(app.hw, "sky_use", "") or adsb.READY
         card["detail"] = adsb.WORDS[state]

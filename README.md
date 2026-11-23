@@ -33,7 +33,7 @@ Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermast
 - **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **Nodes.** Small ESP32-C5 boards scan beside your adapters, on USB or wireless through a hub node. Quartermaster shares the channels out between them.
-- **Aircraft.** With an RTL-SDR stick and readsb, the aircraft around you are logged for WDGWars and Wardrift.
+- **Aircraft.** With an RTL-SDR stick, the aircraft around you are logged for WDGWars and Wardrift.
 - **One at a time.** Recon and a wardrive never run together, so every radio is always doing one job well.
 - **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %. When the battery is almost empty, it saves a running wardrive and closes, so that the Cardputer can switch off safely.
 
@@ -213,12 +213,14 @@ The firmware, the boards it runs on and the serial protocol are described in [fi
 
 With an RTL-SDR stick (RTL2832U) on USB, Quartermaster also logs the aircraft around you, for WDGWars and Wardrift. WiGLE does not take aircraft, so they are never sent there.
 
-1. Nothing to install: the decoder, readsb, comes with Quartermaster. Its own always-on service is turned off, so it only runs during a wardrive.
-   If you installed readsb yourself before Quartermaster, it is left as you set it up and may run at every boot, holding the stick and some CPU. To let Quartermaster run it only during wardrives, turn that off once: `sudo systemctl disable --now readsb`.
-2. Turn on **Settings > Aircraft (ADS-B)** and plug in the stick.
-3. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
+1. Nothing to install: the radio tools, rtl-sdr, come with Quartermaster. They add no service, so nothing runs until a wardrive.
+2. Restart the Cardputer once after the first install. This keeps the TV driver off the stick and gives you access to it.
+3. Turn on **Settings > Aircraft (ADS-B)** and plug in the stick.
+4. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
 
-If readsb already runs on the Cardputer as a system service, Quartermaster reads what it writes to `/run/readsb` or `/run/adsb` and does not start a second copy. Otherwise it starts readsb for the wardrive at a low priority on one CPU, with no network ports, and stops it with the wardrive. Without the stick or readsb the wardrive goes on as ever, and the Hardware screen says why. Installing Quartermaster gives the user access to the stick. If the Hardware screen still says there is no permission, restart the Cardputer once.
+During a wardrive Quartermaster starts `rtl_adsb` at a low priority on one CPU, with no network ports, and stops it with the wardrive. It reads what the stick hears and works out each aircraft itself. Wi-Fi and Bluetooth come first: when the air is very busy, some aircraft messages are skipped rather than slow the wardrive.
+
+If readsb or dump1090 already runs on the Cardputer, Quartermaster reads what it writes to `/run/readsb`, `/run/adsb`, `/run/dump1090-fa` or `/run/dump1090-mutability` and does not start anything. Without the stick the wardrive goes on as ever, and the Hardware screen says why. If it says there is no permission, or asks you to restart, restart the Cardputer once.
 
 Each aircraft is kept once, with its closest and its furthest position. When the wardrive stops, `quartermaster_<date>-<time>.aircraft.json.gz` (readsb's own aircraft.json format, at the closest position) is written beside the WiGLE log and goes to WDGWars and Wardrift. Wardrift only gives points for aircraft heard in the last 3 days, so keep uploads on.
 

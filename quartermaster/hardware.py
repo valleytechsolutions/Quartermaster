@@ -310,7 +310,7 @@ def stalled_usb_adapters(sys_usb=Path("/sys/bus/usb/devices")):
 
 
 def rtl_sdr_dongles(sys_usb=Path("/sys/bus/usb/devices")):
-    """RTL2832U sticks on USB, the radio readsb hears aircraft with."""
+    """RTL2832U sticks on USB, the radio aircraft are heard with."""
     found = []
     try:
         nodes = sorted(Path(sys_usb).iterdir())
