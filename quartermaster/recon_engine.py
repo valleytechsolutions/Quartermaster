@@ -22,7 +22,7 @@ from .wifi import ScanUnavailable, WifiFleet
 
 BLE_INTERVAL = 1.0
 LOG_INTERVAL = 30.0
-ALERT_REPEAT = 300.0
+ALERT_AGAIN = 900.0
 FOLLOW_MIN_SECONDS = 600
 FOLLOW_MIN_METERS = 800
 MAX_DEVICES = 3000
@@ -35,8 +35,8 @@ class AlertSound:
     def __init__(self, player=None):
         self.player = player if player is not None else tones.Player()
 
-    def play(self):
-        return self.player.play("beep", "high", kind="recon")
+    def play(self, volume="medium"):
+        return self.player.play("beep", volume, kind="recon")
 
 
 class Recon:
@@ -240,6 +240,7 @@ class Recon:
         rssi = item.get("rssi")
         key = (transport, address)
         record = alert = None
+        followed = False
         with self.lock:
             self.counters["observations"] += 1
             if key not in self._seen and len(self._seen) < 200000:
@@ -251,9 +252,10 @@ class Recon:
                     self._make_room()
                 device = self.devices[key] = {
                     "transport": transport, "address": address, "first_seen": now, "count": 0, "best_rssi": rssi,
-                    "rssi_history": deque(maxlen=60), "places": [], "alerted_at": 0.0, "logged_at": 0.0,
+                    "rssi_history": deque(maxlen=60), "places": [], "alerted_at": None, "logged_at": 0.0,
                     "follow": False, "category": None, "confidence": 0}
             device["count"] += 1
+            away = now - device.get("last_seen", now)
             device["last_seen"] = now
             device["rssi"] = rssi
             device["rssi_history"].append((now, rssi))
@@ -280,12 +282,12 @@ class Recon:
                     places.append((now, gps["latitude"], gps["longitude"]))
                     del places[:-30]
                 if shown and not device["follow"] and self._following(places):
-                    device["follow"] = True
+                    device["follow"] = followed = True
                     changed = True
             if shown and changed:
                 self.counters["classified"] += 1
             if shown and (result["confidence"] >= self.alert_min() or device["follow"]) and \
-                    now - device["alerted_at"] >= ALERT_REPEAT:
+                    (device["alerted_at"] is None or away >= ALERT_AGAIN or followed):
                 device["alerted_at"] = now
                 alert = {"time": now, "transport": transport, "address": address, "category": category,
                          "label": recon.CATEGORY_LABELS[category], "confidence": result["confidence"],
@@ -311,7 +313,7 @@ class Recon:
                         record[field] = result[field]
                 self._write(record)
         if alert and self.cfg.get("recon_sound", True):
-            self.sound.play()
+            self.sound.play(self.cfg.get("drive_alert_volume", "medium"))
         return device
 
     @staticmethod

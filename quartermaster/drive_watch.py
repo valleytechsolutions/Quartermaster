@@ -38,13 +38,20 @@ TYPES = FIRST + tuple(sorted((k for k in LABELS if k not in FIRST), key=lambda k
 DEFAULT_TYPES = ["flock", "axon", "glasses", "mine"]
 DEFAULT_TONES = dict({key: "blip" for key in TYPES}, axon="siren", flock="chirp", glasses="ping")
 FIRST_HIT = {"flock", "alpr", "axon", "ring", "camera", "glasses", "drone", "hacker", "mine"}
-TONE_GAP = {"flock": 60.0, "axon": 30.0, "glasses": 120.0, "mine": 30.0}
+FIXED = frozenset({"flock", "alpr", "ring", "camera", "raven"})
+TONE_GAP = {"flock": 60.0, "axon": 300.0, "glasses": 120.0, "mine": 30.0}
 TONE_PRIORITY = {"axon": 99, "mine": 98}
 QUIET = {"eviltwin": 1800.0, "burst": 600.0, "deauth": 600.0}
 BANNER_SECONDS, AXON_BANNER_SECONDS = 6.0, 10.0
-RUN_SECONDS, RUN_SPACING = 30.0, 0.4
-TONE_SPACING, TONES_PER_HOUR = 8.0, 30
-FLOOD_COUNT, FLOOD_WINDOW, FLOOD_QUIET = 15, 60.0, 300.0
+BANNER_MIN, BANNER_EXTEND, BANNER_MAX, BANNER_WAITING = 3.0, 3.0, 12.0, 3
+RUN_SECONDS, RUN_SPACING, PASS_SECONDS = 30.0, 0.4, 600.0
+TONE_SPACING, TONES_PER_HOUR, URGENT_PER_HOUR = 8.0, 30, 6
+CARD_REST = {"axon": 300.0}
+START_SILENCE, QUIET_SECONDS = 60.0, 600.0
+BACKOFF_TONES, BACKOFF_WINDOW, BACKOFF_MAX = 5, 600.0, 240.0
+FLOOD_COUNT, FLOOD_WINDOW, FLOOD_QUIET, FIRST_FLOOD = 15, 60.0, 300.0, 30
+HANDOFF_SECONDS, TWIN_SECONDS, DRAGON_FOLD_SECONDS, DRAGON_PASS = 20.0, 60.0, 30.0, 120.0
+HEARD_BY = {"wifi": "Wi-Fi", "ble": "BLE", "dragon": "Dragon Detector"}
 BURST_WINDOW, BURST_TRACKERS, BURST_PAIRING = 5.0, 12, 24
 LOG_INTERVAL = 30.0
 QUEUE_LIMIT = 256
@@ -243,11 +250,14 @@ class DriveWatch:
         self._cache = {}
         self._incidents = {}
         self._tones, self._tone_at = deque(), {}
+        self._kind_tones, self._kind_alert_at, self._backoff, self._streak = {}, {}, {}, {}
+        self._banner, self._waiting = None, []
+        self._card_at = {}
+        self.started = self.quiet_until = None
         self._floods, self._muted = {}, {}
         self._bursts, self._pairing = deque(), deque()
         self._conflicts = SsidConflicts()
         self._paused = {}
-        self._external_count = 0
         self._log = None
         self._lock = threading.Lock()
         self._ready = threading.Event()
@@ -262,6 +272,7 @@ class DriveWatch:
         if not cfg.get("drive_alerts", True):
             types = set()
         watch = WatchList(cfg.get("drive_watch", ()))
+        skip = [str(e).strip() for e in cfg.get("drive_alert_skip", ()) if str(e).strip()]
         hot = set(types) | {"?"} | ({"mine"} if watch else set())
         if hot & set(APPLE) or "burst" in types:
             hot.add("apple")
@@ -269,15 +280,18 @@ class DriveWatch:
         sounds.update(cfg.get("drive_alert_sounds") or {})
         self.settings = {
             "types": frozenset(types), "hot": frozenset(hot), "watch": watch,
-            "tones": cfg.get("drive_alert_tones", True), "volume": cfg.get("drive_alert_volume", "high"),
+            "tones": cfg.get("drive_alert_tones", True), "volume": cfg.get("drive_alert_volume", "medium"),
             "min": recon.CONFIDENCE_BY_KEY.get(cfg.get("drive_alert_min", "medium"), recon.MEDIUM),
             "again": cfg.get("drive_alert_again", 900), "floor": cfg.get("drive_alert_floor", -100),
             "sounds": sounds, "mute": frozenset(cfg.get("drive_alert_mute", ())),
+            "skip": (frozenset(e.upper().replace("-", ":") for e in skip if is_mac(e)),
+                     frozenset(e.lower() for e in skip if not is_mac(e))),
             "ignore": ignoring(cfg.get("ignore", ()))}
 
     def start(self, epoch):
         stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(epoch))
         self.log_path = self.root / "recon" / ("drive_%s.jsonl" % stamp)
+        self.started = self.monotonic()
         self._stop.clear()
         if self.threads and self._thread is None:
             self._thread = threading.Thread(target=self._run, daemon=True, name="drive-alerts")
@@ -455,10 +469,10 @@ class DriveWatch:
                                   alert.get("evidence", ""), alert.get("name", ""), alert.get("rssi"), "dragon")
         result = {"category": category, "confidence": alert.get("confidence", recon.MEDIUM),
                   "evidence": alert.get("evidence", ""), "label": LABELS[category], "vendor": ""}
-        address = "%s / %s" % (alert.get("name") or "", alert.get("evidence") or "")
-        self._external_count += 1
-        self._consider("dragon", self._external_count, address, alert.get("name", ""), alert.get("rssi"), result,
-                       alert, source="dragon")
+        name, evidence = alert.get("name") or "", alert.get("evidence") or ""
+        key = ("dragon", 0, "%s|%s" % (category, name.lower() or evidence))
+        self._consider("dragon", 0, "%s / %s" % (name, evidence), name, alert.get("rssi"), result, alert,
+                       source="dragon", key=key, unnamed=not name)
 
     def _incident(self, category, tag, evidence, name, rssi, transport, address=""):
         now = self.monotonic()
@@ -472,7 +486,7 @@ class DriveWatch:
             del self._incidents[oldest]
         if last is not None and self._age(transport if transport != "dragon" else "wifi", last, now) < quiet:
             return
-        alert = category in self.settings["types"]
+        alert = category in self.settings["types"] and not self._skipped(address, "", None)
         record = {"time": self.clock(), "transport": transport, "address": address, "rssi_dbm": rssi, "name": name,
                   "category": category, "label": LABELS[category], "confidence": "medium", "evidence": evidence,
                   "vendor": "", "alert": alert, "source": "dragon" if transport == "dragon" else "scan",
@@ -487,7 +501,8 @@ class DriveWatch:
         if fix.get("valid"):
             record["receiver"] = {"latitude": fix["latitude"], "longitude": fix["longitude"]}
 
-    def _consider(self, transport, address_type, address, name, rssi, result, item, source="scan"):
+    def _consider(self, transport, address_type, address, name, rssi, result, item, source="scan", key=None,
+                  unnamed=False, replay=False):
         s = self.settings
         now = self.monotonic()
         mine = s["watch"].match(address if transport != "dragon" else None, name) if s["watch"] else None
@@ -499,7 +514,8 @@ class DriveWatch:
             category, confidence = "mine", recon.STRONG
         if not category or confidence < recon.LOW:
             return
-        key = (transport, address_type, address)
+        key = key or (transport, address_type, address)
+        back, handed_to = False, None
         with self._lock:
             device = self.devices.get(key)
             fresh = device is None
@@ -508,10 +524,23 @@ class DriveWatch:
                     self.devices.popitem(last=False)
                 device = self.devices[key] = {"first": now, "last": now, "run": now, "hits": 0, "notified": False,
                                               "category": category, "confidence": confidence, "result": result,
-                                              "logged_at": None, "best_rssi": rssi, "repeats": 0, "alert": None}
+                                              "logged_at": None, "best_rssi": rssi, "repeats": 0, "alert": None,
+                                              "sig": _signature(item, name) if transport == "ble" else None}
+                self._join_twin(key, device, now)
+                if device.get("handed") is not None:
+                    device["replay"] = (transport, address_type, address, name, rssi, result, item, source, key)
             else:
                 self.devices.move_to_end(key)
-                if s["again"] and self._age(transport, device["last"], now) >= s["again"]:
+                handed = device.get("handed")
+                if handed is not None and handed["last"] > device["first"]:
+                    device.update(notified=False, alert=None, skip=False, handed=None, replay=None)
+                handed_to = device.pop("handed_to", None) if not replay else None
+                away = self._age(transport, device["last"], now)
+                back = away >= PASS_SECONDS
+                if unnamed and away >= DRAGON_PASS:
+                    device.update(notified=False, hits=0, repeats=0, alert=None, skip=False)
+                    back = True
+                elif s["again"] and away >= s["again"] and device["category"] not in FIXED:
                     device.update(notified=False, hits=0, repeats=0, alert=None)
                 if now - device["last"] > RUN_SECONDS:
                     device["hits"] = 0
@@ -521,16 +550,18 @@ class DriveWatch:
             else:
                 changed = False
                 result, category, confidence = device["result"], device["category"], device["confidence"]
-            if device["hits"] == 0:
-                device["run"] = now
-            device["hits"] += 1
-            device["last"] = now
+            if not replay:
+                if device["hits"] == 0:
+                    device["run"] = now
+                device["hits"] += 1
+                device["last"] = now
             improved = isinstance(rssi, (int, float)) and (device["best_rssi"] is None or rssi > device["best_rssi"])
             if improved:
                 device["best_rssi"] = rssi
         ignored = address in s["ignore"][0] or bool(name) and name in s["ignore"][1]
-        alert = self._gate(category, confidence, rssi, device, now, ignored, source)
-        if fresh or changed or alert or improved and (device["logged_at"] is None or
+        skipped = self._skipped(address, name, device)
+        alert = self._gate(category, confidence, rssi, device, now, ignored, source, skipped)
+        if fresh or changed or alert or back or improved and (device["logged_at"] is None or
                                                       now - device["logged_at"] >= LOG_INTERVAL):
             device["logged_at"] = now
             record = {"time": self.clock(), "transport": transport, "address": address, "rssi_dbm": rssi,
@@ -548,13 +579,21 @@ class DriveWatch:
                     record[field] = result[field]
             if ignored:
                 record["ignored"] = True
+            if skipped:
+                record["skipped"] = True
             self._place(record)
             self._write(record)
             if alert:
                 device["alert"] = self._raise(category, record, rssi)
+        for twin in handed_to or ():
+            if twin.get("handed") is device and twin.get("replay"):
+                again = twin.pop("replay")
+                self._consider(*again[:7], source=again[7], key=again[8], replay=True)
 
-    def _gate(self, category, confidence, rssi, device, now, ignored, source="scan"):
+    def _gate(self, category, confidence, rssi, device, now, ignored, source="scan", skipped=False):
         s = self.settings
+        if skipped:
+            return False
         if category != "mine":
             if category not in s["types"] or ignored or confidence < s["min"]:
                 return False
@@ -568,18 +607,101 @@ class DriveWatch:
                     return False
                 if not device["notified"] and self._flooded(category, now):
                     return False
+            elif not device["notified"]:
+                self._first_flood(category, now)
         elif "mine" not in s["types"]:
             return False
         if device["notified"]:
             device["repeats"] += 1
             shown = device.get("alert")
             if shown is not None:
-                shown["count"] = device["repeats"] + 1
-                if isinstance(rssi, (int, float)) and (shown.get("rssi") is None or rssi > shown["rssi"]):
-                    shown["rssi"] = rssi
+                with self._lock:
+                    shown["count"] = shown.get("count", 1) + 1
+                    if isinstance(rssi, (int, float)) and (shown.get("rssi") is None or rssi > shown["rssi"]):
+                        shown["rssi"] = rssi
             return False
         device["notified"] = True
         return True
+
+    def _join_twin(self, key, device, now):
+        """A new device that is one already alerted about: the same camera on Wi-Fi and Bluetooth, a Bluetooth
+        address that changed, or a Dragon Detector line about what the scan just heard. It joins that alert."""
+        transport, address_type, address = key
+        category = device["category"]
+        shown, other = None, None
+        for alert in self.alerts:
+            if now - alert.get("seen", now) > DRAGON_FOLD_SECONDS:
+                break
+            if alert["category"] == category and not alert.get("flood") and alert.get("transport") in HEARD_BY and \
+                    (transport == "dragon") != (alert.get("source") == "dragon"):
+                shown = alert
+                break
+        if shown is None and transport != "dragon":
+            for other_key, candidate in reversed(self.devices.items()):
+                if candidate is device:
+                    continue
+                if now - candidate["last"] > TWIN_SECONDS:
+                    break
+                if candidate.get("alert") is None or candidate["category"] != category:
+                    continue
+                kind, kind_type, kind_address = other_key
+                if transport == "ble" and address_type == 1 and kind == "ble" and kind_type == 1 and \
+                        now - candidate["last"] <= HANDOFF_SECONDS and _same_device(device["sig"], candidate["sig"]):
+                    shown, other = candidate["alert"], candidate
+                    device["handed"] = candidate
+                    candidate.setdefault("handed_to", []).append(device)
+                    break
+                if {transport, kind} == {"wifi", "ble"} and abs(now - candidate["first"]) <= TWIN_SECONDS and \
+                        _near(address, kind_address):
+                    shown, other = candidate["alert"], candidate
+                    break
+        if shown is None:
+            return
+        device.update(notified=True, alert=shown, skip=bool(other and other.get("skip")))
+        via = shown.setdefault("via", [HEARD_BY.get(shown.get("transport"), "")])
+        if HEARD_BY[transport] not in via:
+            via.append(HEARD_BY[transport])
+
+    def _skipped(self, address, name, device):
+        addresses, names = self.settings["skip"]
+        return bool(device and device.get("skip")) or str(address or "").upper() in addresses or \
+            bool(name) and name.lower() in names
+
+    def silence(self, shown):
+        """No more alerts on this drive for the devices of an alert. Whether this drive knew any of them."""
+        known = False
+        with self._lock:
+            for device in self.devices.values():
+                if device.get("alert") is shown:
+                    device["skip"] = known = True
+        return known
+
+    def hide(self):
+        """Take the banner off the screen now, and the ones waiting behind it. Whether one was showing."""
+        with self._lock:
+            shown = self._current(self.monotonic()) is not None
+            self._banner, self._waiting = None, []
+        return shown
+
+    def quiet(self):
+        """No tones and no banners for QUIET_SECONDS, or back to normal when that is on already. Whether it is on
+        now. Alerts are still listed and logged."""
+        with self._lock:
+            now = self.monotonic()
+            if self.quiet_until is not None and now < self.quiet_until:
+                self.quiet_until = None
+                return False
+            self.quiet_until = now + QUIET_SECONDS
+            self._banner, self._waiting = None, []
+        hush = getattr(self.player, "hush", None)
+        if hush is not None:
+            hush()
+        return True
+
+    def quiet_left(self):
+        """Seconds of quiet left, or 0."""
+        until = self.quiet_until
+        return max(0.0, until - self.monotonic()) if until is not None else 0.0
 
     def _flooded(self, category, now):
         times = self._floods.setdefault(category, deque())
@@ -597,10 +719,25 @@ class DriveWatch:
         self._show(record, tone=False)
         return True
 
+    def _first_flood(self, category, now):
+        times = self._floods.setdefault(category, deque())
+        times.append(now)
+        while times and now - times[0] > FLOOD_WINDOW:
+            times.popleft()
+        if len(times) < FIRST_FLOOD:
+            return
+        record = {"time": self.clock(), "category": category, "label": LABELS[category], "flood": True,
+                  "name": "%d %s in 1 min" % (len(times), NAMES[category].lower()), "address": "",
+                  "confidence": recon.LOW, "rssi": None, "count": 1,
+                  "evidence": "Each one is still listed and logged"}
+        times.clear()
+        self._show(record, tone=False)
+
     def _raise(self, category, record, rssi):
         shown = {"time": self.clock(), "seen": self.monotonic(), "category": category,
                  "label": LABELS[category], "name": record.get("name", ""), "address": record.get("address", ""),
-                 "transport": record.get("transport", ""), "rssi": rssi, "count": 1,
+                 "transport": record.get("transport", ""), "address_type": record.get("address_type"),
+                 "rssi": rssi, "count": 1,
                  "confidence": recon.CONFIDENCE_BY_KEY.get(record.get("confidence"), recon.MEDIUM),
                  "evidence": record.get("evidence", ""), "vendor": record.get("vendor", ""),
                  "owner": record.get("owner"), "source": record.get("source", "scan"),
@@ -612,26 +749,90 @@ class DriveWatch:
         now = self.monotonic()
         shown.setdefault("seen", now)
         with self._lock:
-            if not shown.get("flood"):
-                gap = TONE_GAP.get(shown["category"], 300.0)
-                shown["fold"] = 1 + sum(1 for a in self.alerts if a["category"] == shown["category"] and
-                                        not a.get("flood") and now - a["seen"] < gap)
             self.alerts.appendleft(shown)
             self.counts[shown["category"]] = self.counts.get(shown["category"], 0) + (0 if shown.get("flood") else 1)
-        if tone:
+            hushed = self.quiet_until is not None and now < self.quiet_until
+            if not hushed:
+                self._present(shown, now)
+        if tone and not hushed:
             shown["tone"] = self._sound(shown["category"], now)
+
+    def _view(self, shown, now):
+        hold = AXON_BANNER_SECONDS if shown["category"] == "axon" else BANNER_SECONDS
+        return {"alert": shown, "category": shown["category"], "fold": 1, "rssi": shown.get("rssi"),
+                "since": now, "hold": hold}
+
+    def _present(self, shown, now):
+        """One banner at a time. More of the same kind add to it; others wait their turn, and a few waiting
+        together become one summary."""
+        current = self._current(now)
+        if current is not None and current["category"] == shown["category"]:
+            return self._fold(current, shown, now)
+        category = shown["category"]
+        if now - self._card_at.get(category, -1e9) < CARD_REST.get(category, 0.0) and not any(
+                waiting["category"] == category for waiting in self._waiting):
+            return
+        self._card_at[category] = now
+        if current is None or _rank(shown["category"]) > _rank(current["category"]):
+            self._banner = self._view(shown, now)
+            self._banner["until"] = now + self._banner["hold"]
+            return
+        for waiting in self._waiting:
+            if waiting["category"] == shown["category"]:
+                return self._fold(waiting, shown, now)
+        self._waiting.append(self._view(shown, now))
+        del self._waiting[:-BANNER_WAITING]
+
+    @staticmethod
+    def _fold(view, shown, now):
+        view["fold"] += 1
+        rssi = shown.get("rssi")
+        if isinstance(rssi, (int, float)) and (view["rssi"] is None or rssi > view["rssi"]):
+            view["rssi"] = rssi
+        if "until" in view:
+            view["until"] = min(view["since"] + max(BANNER_MAX, view["hold"]), view["until"] + BANNER_EXTEND)
+
+    def _current(self, now):
+        banner = self._banner
+        if banner is not None and (now >= banner["until"] or self._waiting and now - banner["since"] >= BANNER_MIN
+                                   and max(_rank(v["category"]) for v in self._waiting) >= _rank(banner["category"])):
+            banner = self._banner = None
+        if banner is None and self._waiting:
+            waiting, self._waiting = self._waiting, []
+            if len(waiting) == 1:
+                banner = dict(waiting[0], since=now)
+            else:
+                waiting.sort(key=lambda v: _rank(v["category"]), reverse=True)
+                banner = {"summary": True, "category": waiting[0]["category"], "alert": waiting[0]["alert"],
+                          "fold": sum(v["fold"] for v in waiting), "rssi": None, "since": now,
+                          "hold": BANNER_SECONDS, "kinds": [v["category"] for v in waiting]}
+            banner["until"] = now + banner["hold"]
+            self._banner = banner
+        return banner
 
     def _sound(self, category, now):
         s = self.settings
         tone = s["sounds"].get(category, DEFAULT_TONES.get(category, "blip"))
         if not s["tones"] or category in s["mute"] or tone == "silent" or tone not in tones.TONES:
             return False
-        if now - self._tone_at.get(category, -1e9) < TONE_GAP.get(category, 300.0):
+        if self.started is not None and now - self.started < START_SILENCE:
+            return False
+        if now - self._kind_alert_at.get(category, -1e9) >= BACKOFF_WINDOW:
+            self._backoff[category] = 0
+            self._streak.pop(category, None)
+        self._kind_alert_at[category] = now
+        base = TONE_GAP.get(category, 300.0)
+        gap = min(base * 2 ** self._backoff.get(category, 0), max(base, BACKOFF_MAX))
+        if now - self._tone_at.get(category, -1e9) < gap:
             return False
         while self._tones and now - self._tones[0][0] > 3600:
             self._tones.popleft()
+        played = self._kind_tones.setdefault(category, deque())
         urgent = category in TONE_PRIORITY
-        if not urgent:
+        if urgent:
+            if sum(1 for at in played if now - at < 3600) >= URGENT_PER_HOUR:
+                return False
+        else:
             if self._tones and now - self._tones[-1][0] < TONE_SPACING:
                 return False
             if sum(1 for _, counted in self._tones if counted) >= TONES_PER_HOUR:
@@ -642,6 +843,16 @@ class DriveWatch:
             return False
         self._tone_at[category] = now
         self._tones.append((now, not urgent))
+        played.append(now)
+        while played and now - played[0] > 3600:
+            played.popleft()
+        streak = self._streak.setdefault(category, deque())
+        streak.append(now)
+        while streak and now - streak[0] > BACKOFF_WINDOW:
+            streak.popleft()
+        if len(streak) >= BACKOFF_TONES:
+            self._backoff[category] = min(self._backoff.get(category, 0) + 1, 2)
+            streak.clear()
         return True
 
     def _write(self, record):
@@ -661,13 +872,11 @@ class DriveWatch:
                 self.errors += 1
 
     def banner(self):
-        """The newest alert while it is still worth showing."""
+        """The banner to show now, or None: {"alert", "category", "fold", "rssi", "since"}, with "summary" and
+        "kinds" when it stands for several kinds at once."""
         with self._lock:
-            shown = self.alerts[0] if self.alerts else None
-        if shown is None:
-            return None
-        hold = AXON_BANNER_SECONDS if shown["category"] == "axon" else BANNER_SECONDS
-        return shown if self.monotonic() - shown["seen"] <= hold else None
+            banner = self._current(self.monotonic())
+            return dict(banner, age=self.monotonic() - banner["since"]) if banner is not None else None
 
     def alert_list(self):
         with self._lock:
@@ -686,6 +895,39 @@ class DriveWatch:
         return {"alerts": alerts, "urgent": urgent, "dropped": self.dropped, "errors": self.errors,
                 "log": str(self.log_path) if self.log_path else "",
                 "speaker": not (self.no_speaker or self.player.failed)}
+
+
+def _rank(category):
+    return category in TONE_PRIORITY, PRIORITY.get(category, 0)
+
+
+def _signature(item, name):
+    return (frozenset((item.get("manufacturer") or {}).keys()),
+            frozenset(str(u).lower() for u in item.get("uuids") or ()), (name or "").lower())
+
+
+def _same_device(mine, theirs):
+    if not mine or not theirs:
+        return False
+    if mine[2] or theirs[2]:
+        return mine[2] == theirs[2]
+    return bool(mine[0] or mine[1]) and mine[:2] == theirs[:2]
+
+
+def _near(one, other):
+    """Two addresses of one device: the first five octets alike and the last within four."""
+    try:
+        return one[:14].upper() == other[:14].upper() and abs(int(one[15:17], 16) - int(other[15:17], 16)) <= 4
+    except (TypeError, ValueError):
+        return False
+
+
+def silence_entry(shown):
+    """What keeps an alert's device silent in later drives: its address, or its name when the address changes.
+    "" when it has neither."""
+    transport = shown.get("transport")
+    lasting = transport == "dragon" or transport == "ble" and shown.get("address_type") in (1, 3)
+    return ((shown.get("name") if lasting else shown.get("address")) or "")[:64]
 
 
 def summary_text(counts, limit=3):

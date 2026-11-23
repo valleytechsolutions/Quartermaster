@@ -24,6 +24,7 @@ FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
 LOW, VERY_LOW, EMPTY = 20, 10, 3
 EMPTY_SECONDS, CLOSING_SECONDS = 15, 10
 BATTERY_SILENCE = 60
+BANNER_GRACE = 1.0
 REPEATING = ("UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "BACKSPACE", "DELETE")
 REC_FILL = (70, 12, 14)
 NODES_SECONDS = 1.0
@@ -249,6 +250,9 @@ class App:
         self._faults = []
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
         self._pressed = None
+        self.recon_hidden = None
+        self._banners, self._banners_gone, self._banners_on = (), None, None
+        self._banner_held = None
         self._deaf = False
         self._finisher = None
 
@@ -432,6 +436,25 @@ class App:
             self.change("drive_watch", (entries + [entry])[:config.MAX_WATCH])
             self.toast("%s will always alert" % entry)
 
+    def silence_alert(self, shown):
+        """No more alerts for the device of an alert. It is still logged, unlike an ignored network."""
+        watch = self.drive.watch if self.drive is not None else None
+        known = watch.silence(shown) if watch is not None else False
+        entry = drive_watch.silence_entry(shown)
+        if entry:
+            entries = [item for item in self.cfg.get("drive_alert_skip", []) if item != entry]
+            self.change("drive_alert_skip", (entries + [entry])[-config.MAX_SKIP:])
+            if config.is_mac(entry):
+                self.toast("No more alerts for %s" % (shown.get("name") or entry))
+            else:
+                self.toast("No more alerts for anything named %s" % entry)
+        elif known and shown.get("transport") == "ble" and shown.get("address_type") in (1, 3):
+            self.toast("No more alerts this drive. Its address keeps changing.")
+        elif known:
+            self.toast("No more alerts for it on this drive")
+        else:
+            self.toast("It has no name or address to go by", AMBER)
+
     def alert_defaults(self):
         self.change("drive_alert_types", list(drive_watch.DEFAULT_TYPES))
         self.change("drive_alert_sounds", dict(drive_watch.DEFAULT_TONES))
@@ -444,7 +467,7 @@ class App:
             return
         if not self.cfg.get("drive_alert_tones", True):
             return self.toast("Alert tones are off", AMBER)
-        if not self.player.play(tone, self.cfg.get("drive_alert_volume", "high"), preview=True):
+        if not self.player.play(tone, self.cfg.get("drive_alert_volume", "medium"), preview=True):
             self.toast("No speaker found", AMBER)
 
     def save_key(self, field, value):
@@ -617,7 +640,9 @@ class App:
         self.home()
         self.push(screens.Wardrive(self))
         if self.hw.stalled:
-            self.toast("%s is not starting. See Hardware" % self.hw.stalled[0]["label"], AMBER, 5)
+            text = "%s is not starting. See Hardware" % self.hw.stalled[0]["label"]
+            if not (screens.Wardrive.warning(self, drive.status()) or ("",))[0].startswith(text):
+                self.toast(text, AMBER, 5)
         return True
 
     def ask_country(self):
@@ -730,10 +755,16 @@ class App:
         if under.chrome:
             self.status_bar(c, under)
         under.render(c, self)
-        if under.chrome and not modal and not isinstance(under, recon_screens.Recon):
-            recon_screens.alert_banner(c, self)
-            if not isinstance(under, (recon_screens.DriveAlerts, recon_screens.DriveAlertDetail)):
-                recon_screens.drive_alert_banner(c, self)
+        shown = self.banners(under, modal)
+        if "recon" in shown:
+            recon_screens.alert_banner(c, self, under)
+        if "drive" in shown:
+            recon_screens.drive_alert_banner(c, self, under)
+        if shown:
+            self._banners, self._banners_gone, self._banners_on = shown, None, top
+        elif self._banners and self._banners_gone is None:
+            self._banners_gone = time.monotonic()
+        banner = bool(shown) and recon_screens.banner_y(self, under) == recon_screens.BANNER_TOP
         if modal:
             c.image.paste(self._shade, (0, 0), self._shade)
             top.render(c, self)
@@ -742,10 +773,50 @@ class App:
         if self.toast_text and time.monotonic() < self.toast_until:
             f = font("bold", 10)
             width = min(W - 16, int(c.text_width(self.toast_text, f)) + 24)
-            x, y = (W - width) // 2, H - FOOTER_H - 24
+            x, y = (W - width) // 2, recon_screens.BANNER_TOP - 22 if banner else H - FOOTER_H - 24
             c.rect((x, y, x + width, y + 18), fill=SURFACE, outline=self.toast_color, radius=9)
             c.text_center(W // 2, y + 3, c.fit(self.toast_text, width - 16, f), f, self.toast_color)
         return c.image
+
+    def banners(self, under=None, modal=False):
+        """Which alert banners the screen shows now: "recon", "drive" or both."""
+        if under is None:
+            modal = isinstance(self.stack[-1], screens.Modal)
+            under = next(s for s in reversed(self.stack) if not isinstance(s, screens.Modal))
+        if not under.chrome or modal or isinstance(under, recon_screens.Recon):
+            return ()
+        shown = ("recon",) if recon_screens.fresh_alert(self) else ()
+        if not isinstance(under, (recon_screens.DriveAlerts, recon_screens.DriveAlertDetail)) and \
+                recon_screens.drive_alert(self) is not None:
+            shown += ("drive",)
+        return shown
+
+    def banner_key(self, key):
+        """Del hides the banners on screen, Q makes wardrive alerts quiet for 10 minutes. A banner that went a
+        moment before the press still counts on the same screen, so the key does not fall through to it."""
+        if key.repeat:
+            return key.name == self._banner_held
+        self._banner_held = None
+        if key.name not in ("BACKSPACE", "DELETE", "Q") or self.screen.text_mode:
+            return False
+        shown = self.banners()
+        if not shown and self._banners and self._banners_gone is not None and self.stack[-1] is self._banners_on \
+                and time.monotonic() - self._banners_gone < BANNER_GRACE:
+            shown = self._banners
+        if key == "Q":
+            if "drive" not in shown or not recon_screens.toggle_quiet(self):
+                return False
+            self._banners, self._banner_held = (), key.name
+            return True
+        if not shown:
+            return False
+        watch = self.drive.watch if self.drive is not None and self.wardriving else None
+        if watch is not None:
+            watch.hide()
+        if self.recon.alerts:
+            self.recon_hidden = self.recon.alerts[0]
+        self._banners, self._banner_held = (), key.name
+        return True
 
     def status_bar(self, c, screen):
         c.rect((0, 0, W, STATUS_H - 1), fill=SURFACE)
@@ -917,10 +988,7 @@ class App:
             elif (self.screen, key.name) != self._pressed or \
                     (key.name not in REPEATING and not (self.screen.text_mode and key.char)):
                 continue
-            if key == "R" and not isinstance(self.screen, (recon_screens.Recon, screens.Modal)) \
-                    and recon_screens.fresh_alert(self):
-                self.open("Recon")
-            else:
+            if not self.banner_key(key):
                 self.screen.handle(key, self)
             self.dirty = True
             if self._deaf or not self.running:

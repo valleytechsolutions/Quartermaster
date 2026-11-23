@@ -286,8 +286,11 @@ def main():
     shot("wardrive")
     app.drive.watch._show({"time": NOW, "category": "flock", "label": drive_watch.LABELS["flock"],
                            "name": "Flock-3A1007", "address": "B4:1E:52:3A:10:07", "rssi": -71, "confidence": STRONG,
-                           "evidence": "Flock Safety OUI"}, False)
+                           "evidence": "Flock Safety OUI", "transport": "wifi"}, False)
     shot("wardrive-alert")
+    app.cfg["alert_place"] = "top"
+    shot("wardrive-alert-top")
+    app.cfg["alert_place"] = "bottom"
     press(app, "A")
     shot("drive-alerts")
     press(app, "ESC")

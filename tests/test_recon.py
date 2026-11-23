@@ -12,10 +12,11 @@ from tests.test_engine import ADAPTERS, FakeGPS
 
 
 class Sound:
-    played = 0
+    played, volume = 0, None
 
-    def play(self):
+    def play(self, volume="high"):
         Sound.played += 1
+        Sound.volume = volume
 
 
 def make(tmp_path, cfg=None, gps=None, clock=None):
@@ -65,7 +66,7 @@ def test_recon_flags_alerts_and_logs_only_flagged_devices(tmp_path):
     assert len(r.device_list(show_all=True)) == 3
     assert len(r.alerts) == 2 and r.alerts[-1]["category"] == "axon" and Sound.played == 2
     r.observe("wifi", wifi("00:25:DF:11:22:33", "", -40))
-    assert len(r.alerts) == 2                                  # one alert per device every five minutes
+    assert len(r.alerts) == 2 and Sound.volume == "medium"
     assert r.device("wifi", "00:25:DF:11:22:33")["best_rssi"] == -40
     r.stop()
     lines = [json.loads(line) for line in r.log_path.read_text().splitlines()]
@@ -97,6 +98,33 @@ def test_recon_notices_a_device_that_travels_with_you(tmp_path):
         r.observe("ble", dict(tag, rssi=-70 - minute % 3))
     device = r.device("ble", "11:22:33:44:55:66")
     assert device["follow"] and r.summary()["following"] == 1 and r.alerts[0]["follow"]
+    r.stop()
+
+
+def test_recon_alerts_once_about_devices_that_stay_and_again_when_they_come_back(tmp_path):
+    clock = [NOW]
+    gps = FakeGPS(dict(FIX))
+    r = make(tmp_path, {"drive_alert_volume": "low"}, gps=gps, clock=lambda: clock[0])
+    r.start()
+    for second in range(0, 3600, 10):
+        clock[0] = NOW + second
+        r.observe("wifi", wifi("B4:1E:52:00:00:01", "Flock-1"))
+        r.observe("wifi", wifi("00:25:DF:11:22:33"))
+    assert len(r.alerts) == 2 and Sound.played == 2 and Sound.volume == "low"
+    clock[0] += 899
+    r.observe("wifi", wifi("B4:1E:52:00:00:01", "Flock-1"))
+    assert len(r.alerts) == 2
+    clock[0] += 901
+    r.observe("wifi", wifi("B4:1E:52:00:00:01", "Flock-1"))
+    assert len(r.alerts) == 3
+    tag = {"address": "11:22:33:44:55:66", "address_type": 1, "rssi": -70, "name": "", "uuids": [],
+           "manufacturer": {0x004C: bytes([0x12, 0x19]) + bytes(25)}, "service_data": {}}
+    start = clock[0]
+    for minute in range(14):
+        clock[0] = start + minute * 60
+        gps.fix["latitude"] = FIX["latitude"] + minute * 0.001
+        r.observe("ble", tag)
+    assert [a["follow"] for a in r.alerts if a["address"] == tag["address"]] == [True, False]
     r.stop()
 
 

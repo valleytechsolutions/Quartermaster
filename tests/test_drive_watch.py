@@ -51,10 +51,12 @@ class Player:
         pass
 
 
-def watch(tmp_path, clock=None, player=None, **cfg):
+def watch(tmp_path, clock=None, player=None, fresh=False, **cfg):
     clock = clock or Clock()
     w = DriveWatch(cfg, Gps(FIX), tmp_path, player=player or Player(), clock=clock, monotonic=clock, threads=False)
     w.start(NOW)
+    if not fresh:
+        w.started -= drive_watch.START_SILENCE
     return w
 
 
@@ -170,19 +172,25 @@ def test_drive_alert_settings_are_saved_and_bad_values_dropped(tmp_path):
     assert loaded["drive_alert_sounds"]["glasses"] == "ping" and "nope" not in loaded["drive_alert_sounds"]
 
 
-def test_a_device_alerts_once_per_visit_and_again_after_it_has_gone(tmp_path):
+def test_a_device_alerts_once_per_visit_and_only_moving_ones_again_after_they_have_gone(tmp_path):
     clock = Clock()
     w = watch(tmp_path, clock)
     for _ in range(5):
         w.offer_wifi([wifi("B4:1E:52:00:00:01", "cam")])
+        w.offer_ble(AXON_BLE)
         w.drain()
         clock.advance(10)
-    assert len(w.alert_list()) == 1 and w.alert_list()[0]["count"] == 5
-    assert w.player.calls == [("chirp", "flock")]
-    clock.advance(901)
-    w.offer_wifi([wifi("B4:1E:52:00:00:01", "cam")])
-    w.drain()
-    assert len(w.alert_list()) == 2
+    assert [(a["category"], a["count"]) for a in w.alert_list()] == [("axon", 5), ("flock", 5)]
+    assert w.player.calls == [("chirp", "flock"), ("siren", "axon")]
+    for lap in range(2):
+        clock.advance(1201)
+        w.offer_wifi([wifi("B4:1E:52:00:00:01", "cam")])
+        w.offer_ble(AXON_BLE)
+        w.drain()
+    assert [a["category"] for a in w.alert_list()] == ["axon", "axon", "axon", "flock"]
+    w.stop()
+    rows = [json.loads(line) for line in w.log_path.read_text().splitlines()]
+    assert sum(1 for row in rows if row["category"] == "flock") == 3
 
 
 def test_time_with_bluetooth_down_is_not_time_away(tmp_path):
@@ -237,7 +245,7 @@ def test_evidence_signal_floor_and_ignore_list_hold_alerts_back(tmp_path):
     assert w2.alert_list() == [] and json.loads(w2.log_path.read_text())["ignored"] is True
 
 
-def test_tones_are_spaced_capped_and_follow_the_settings(tmp_path):
+def test_tones_are_spaced_capped_and_follow_the_settings(tmp_path, monkeypatch):
     clock = Clock()
     w = watch(tmp_path, clock)
     w.offer_wifi([wifi("B4:1E:52:00:00:01")])
@@ -250,7 +258,7 @@ def test_tones_are_spaced_capped_and_follow_the_settings(tmp_path):
     w.offer_ble(AXON_BLE)
     w.drain()
     assert w.player.calls == [("chirp", "flock"), ("siren", "axon")]
-    assert len(w.alert_list()) == 4 and w.alert_list()[2]["fold"] == 2
+    assert len(w.alert_list()) == 4
     muted = watch(tmp_path / "m", drive_alert_mute=["axon"])
     muted.offer_ble(AXON_BLE)
     muted.drain()
@@ -262,6 +270,7 @@ def test_tones_are_spaced_capped_and_follow_the_settings(tmp_path):
     chosen.drain()
     assert muted.player.calls == silent.player.calls == [] and len(muted.alert_list()) == len(silent.alert_list())
     assert chosen.player.calls == [("dd_axon", "axon")]
+    monkeypatch.setattr(drive_watch, "BACKOFF_TONES", 999)
     w = watch(tmp_path / "h", clock)
     for i in range(40):
         w.offer_wifi([wifi("B4:1E:52:00:01:%02X" % i)])
@@ -273,20 +282,21 @@ def test_tones_are_spaced_capped_and_follow_the_settings(tmp_path):
     assert w.player.calls[-1] == ("siren", "axon") and w.alert_list()[0]["tone"] is True
 
 
-def test_a_flood_of_new_devices_mutes_its_kind_but_never_cameras(tmp_path):
+def test_a_flood_of_new_devices_mutes_its_kind_but_cameras_only_get_a_summary(tmp_path):
     clock = Clock()
     w = watch(tmp_path, clock, drive_alert_types=["hacker", "axon"], drive_alert_min="low")
-    for i in range(30):
-        w.offer_ble(dict(FLIPPER_BLE, address="80:E1:26:44:56:%02X" % i))
-        w.offer_ble(dict(AXON_BLE, address="11:22:33:44:56:%02X" % i))
+    for i in range(31):
+        w.offer_ble(dict(FLIPPER_BLE, address="80:E1:26:44:56:%02X" % i, address_type=0))
+        w.offer_ble(dict(AXON_BLE, address="11:22:33:44:56:%02X" % i, address_type=0))
         w.drain()
         clock.advance(0.5)
     shown = w.alert_list()
-    assert [a["name"] for a in shown if a.get("flood")] == ["Flood: 16 new radio tools"]
+    assert [a["name"] for a in shown if a.get("flood")] == ["30 body cameras in 1 min", "Flood: 16 new radio tools"]
     assert sum(1 for a in shown if a["category"] == "hacker" and not a.get("flood")) == 15
-    assert sum(1 for a in shown if a["category"] == "axon") == 30
+    assert sum(1 for a in shown if a["category"] == "axon" and not a.get("flood")) == 31
+    assert w.player.calls == [("blip", "hacker"), ("siren", "axon")]
     w.stop()
-    assert sum(1 for _ in w.log_path.read_text().splitlines()) == 60
+    assert sum(1 for _ in w.log_path.read_text().splitlines()) == 62
 
 
 def test_apple_adverts_wait_only_when_an_apple_kind_is_on(tmp_path):
@@ -353,19 +363,71 @@ def test_alerts_from_a_dragon_detector_join_in(tmp_path):
     assert [a["category"] for a in w.alert_list()] == ["flock"] and w.alert_list()[0]["source"] == "dragon"
 
 
-def test_every_dragon_detector_alert_is_a_device_of_its_own(tmp_path):
+def test_dragon_detector_devices_are_told_apart_by_kind_and_name(tmp_path):
     clock = Clock()
     w = watch(tmp_path, clock, drive_alert_types=["flock", "raven", "skimmer", "tracker"])
     for line in ("ALERT Flock: -50 dBm / Flock Safety OUI", "ALERT Flock: -70 dBm / Flock Safety OUI",
+                 "ALERT Flock: Flock-3A / -70 dBm / Flock Safety OUI",
                  "ALERT Acoustic sensors: -60 dBm / Raven service UUID 0x3100",
                  "ALERT Serial module: HC-05 / -60 dBm / HC-05 name", "ALERT Tile: -60 dBm / Tile service UUID"):
         w.offer_external(dragon_link.parse(line))
         w.drain()
         clock.advance(120)
-    assert [a["category"] for a in w.alert_list()] == ["tracker", "skimmer", "raven", "flock", "flock"]
+    assert [a["category"] for a in w.alert_list()] == ["tracker", "skimmer", "raven", "flock", "flock", "flock"]
     w.stop()
     rows = [json.loads(line) for line in w.log_path.read_text().splitlines()]
-    assert len(rows) == 5 and all(row["alert"] for row in rows)
+    assert len(rows) == 6 and all(row["alert"] for row in rows)
+
+
+def test_unnamed_dragon_detector_lines_are_one_camera_per_pass(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    line = "ALERT Flock: -61 dBm / Flock Safety OUI; product/activity unverified"
+    for _ in range(8):
+        for _ in range(4):
+            w.offer_external(dragon_link.parse(line))
+            w.drain()
+            clock.advance(10)
+        clock.advance(200)
+    assert len(w.alert_list()) == 8
+    w.stop()
+    rows = [json.loads(line) for line in w.log_path.read_text().splitlines()]
+    assert sum(row["alert"] for row in rows) == 8
+
+
+def test_an_unnamed_dragon_detector_line_every_30_s_alerts_once(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    line = "ALERT Flock: -61 dBm / Flock Safety OUI; product/activity unverified"
+    for _ in range(60):
+        w.offer_external(dragon_link.parse(line))
+        w.drain()
+        clock.advance(30)
+    assert len(w.alert_list()) == 1 and w.player.calls == [("chirp", "flock")]
+
+
+def test_a_dragon_detector_parked_by_one_flock_alerts_once(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    line = "ALERT Flock: Flock-3A1007 / -61 dBm / Flock Safety OUI; product/activity unverified"
+    shown = 0
+    for second in range(0, 1800, 2):
+        if second % 30 == 0:
+            w.offer_external(dragon_link.parse(line))
+        w.offer_wifi([wifi("B4:1E:52:AA:BB:01", "Flock-3A1007", -61)])
+        w.drain()
+        shown += w.banner() is not None
+        clock.advance(2)
+    alerts = w.alert_list()
+    assert len(alerts) == 1 and w.player.calls == [("chirp", "flock")] and shown <= 6
+    assert alerts[0]["via"] == ["Dragon Detector", "Wi-Fi"] and alerts[0]["count"] > 900
+    nameless = watch(tmp_path / "n", clock)
+    for _ in range(30):
+        nameless.offer_external(dragon_link.parse("ALERT Flock: -61 dBm / Flock Safety OUI; product/activity "
+                                                  "unverified"))
+        nameless.drain()
+        clock.advance(20)
+    assert len(nameless.alert_list()) == 1 and len(nameless.player.calls) == 1
 
 
 def test_dragon_detector_lines_are_read_and_graded():
@@ -479,11 +541,12 @@ def test_every_tone_is_a_valid_wav_and_the_siren_rises_and_falls():
             assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (1, 2, tones.RATE)
             assert 0 < w.getnframes() < tones.RATE * 4
     samples = tones.render("siren").astype(float)
+    assert len(samples) <= tones.RATE * 1.25
     window = tones.RATE // 20
     pitches = [dominant(samples[i:i + window]) for i in range(0, len(samples) - window, window)]
     assert max(pitches) - min(pitches) > 600 and len(set(p // 100 for p in pitches)) > 5
-    rising = pitches[1] < pitches[len(pitches) // 4] and pitches[len(pitches) // 4 + 2] > pitches[len(pitches) // 2]
-    assert rising
+    middle = len(pitches) // 2
+    assert pitches[1] < pitches[middle - 2] < pitches[middle] and pitches[middle + 2] > pitches[-2]
     assert np.abs(tones.render("siren", "low")).max() < np.abs(tones.render("siren", "high")).max()
     assert set(tones.ORDER[:6]) == {"siren", "yelp", "chirp", "shutter", "ping", "blip"} and tones.ORDER[-1] == "silent"
 
@@ -563,7 +626,8 @@ def test_recon_asks_for_its_beep_without_waiting(monkeypatch):
         def play(self, *args, **kwargs):
             asked.append(args)
             return True
-    assert AlertSound(Queue()).play() and asked == [("beep", "high")]
+    assert AlertSound(Queue()).play() and AlertSound(Queue()).play("low")
+    assert asked == [("beep", "medium"), ("beep", "low")]
 
 
 def test_recon_knows_what_squachwatch_and_dragon_detector_know():
@@ -653,7 +717,7 @@ def test_the_wardrive_banner_never_takes_a_key(tmp_path, drawn):
     assert app.drive.watch.idle()
     drawn.clear()
     press(app)
-    assert "Flock / accessory candidate" in drawn and "!1" in drawn and "A to list" in drawn
+    assert "Flock / accessory candidate" in drawn and "!1" in drawn and "A to list" not in drawn
     press(app, "A")
     assert isinstance(app.screen, recon_screens.DriveAlerts)
     press(app, "ENTER")
@@ -701,3 +765,460 @@ def test_a_dragon_detector_plugged_in_feeds_the_drive_alerts(tmp_path):
     assert len(rig.manager.dragons) == 1 and len(rig.bus.ports) == 1
     rig.manager.stop()
     assert not rig.manager.dragons
+
+
+def test_a_body_camera_siren_is_short_spaced_and_capped(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    for i in range(28):
+        w.offer_ble(dict(AXON_BLE, address="11:22:33:44:57:%02X" % i, address_type=0))
+        w.drain()
+        clock.advance(130)
+    assert len(w.alert_list()) == 28 and w.player.calls == [("siren", "axon")] * drive_watch.URGENT_PER_HOUR
+    played = [a["seen"] for a in reversed(w.alert_list()) if a.get("tone")]
+    assert min(b - a for a, b in zip(played, played[1:])) >= 300
+    rendered = tones.render("siren")
+    assert len(rendered) <= tones.RATE * 1.25 and drive_watch.TONE_GAP["axon"] == 300
+    assert drive_watch.URGENT_PER_HOUR <= 6
+
+
+def test_body_cams_after_the_first_siren_fold_into_the_banner_silently(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    for i in range(12):
+        clock.advance(1)
+        w.offer_ble(dict(AXON_BLE, address="11:22:33:44:58:%02X" % i, address_type=0))
+        w.drain()
+    assert w.player.calls == [("siren", "axon")] and len(w.alert_list()) == 12
+    assert w.banner()["category"] == "axon" and w.banner()["fold"] > 1
+    assert [a.get("tone") for a in w.alert_list()].count(True) == 1
+    clock.advance(300)
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:59:01", address_type=0))
+    w.drain()
+    assert w.player.calls == [("siren", "axon")] * 2
+
+
+def test_chirps_back_off_in_a_town_full_of_cameras_and_recover(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    for i in range(40):
+        w.offer_wifi([wifi("B4:1E:52:00:02:%02X" % i)])
+        w.drain()
+        clock.advance(61)
+    played = [a["seen"] for a in reversed(w.alert_list()) if a.get("tone")]
+    gaps = [b - a for a, b in zip(played, played[1:])]
+    assert len(w.alert_list()) == 40 and gaps[:4] == [61] * 4
+    assert min(gaps[4:9]) >= 120 and min(gaps[9:]) >= 240 and len(played) <= 16
+    clock.advance(drive_watch.BACKOFF_WINDOW)
+    for i in range(2):
+        w.offer_wifi([wifi("B4:1E:52:00:03:%02X" % i)])
+        w.drain()
+        clock.advance(61)
+    assert [a.get("tone") for a in w.alert_list()[:2]] == [True, True]
+
+
+def test_a_changing_bluetooth_address_is_still_one_device(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    for second in range(0, 3600, 5):
+        w.offer_ble(dict(META_BLE, address="C1:22:33:44:%02X:77" % (second // 900)))
+        w.drain()
+        clock.advance(5)
+    alerts = w.alert_list()
+    assert len(alerts) == 1 and w.player.calls == [("ping", "glasses")] and alerts[0]["count"] == 720
+    flock = watch(tmp_path / "f", clock)
+    for i in range(8):
+        for _ in range(2):
+            flock.offer_ble(dict(FLOCK_BLE, address="D4:22:33:44:55:%02X" % i))
+            flock.drain()
+            clock.advance(0.5)
+        clock.advance(14)
+    assert len(flock.alert_list()) == 1 and flock.alert_list()[0]["count"] == 16
+    clock.advance(30)
+    flock.offer_ble(dict(FLOCK_BLE, address="D4:22:33:44:55:99"))
+    flock.drain()
+    assert len(flock.alert_list()) == 2
+    two = watch(tmp_path / "t", clock)
+    for _ in range(3):
+        for address in ("C1:22:33:44:59:01", "C1:22:33:44:59:02"):
+            two.offer_ble(dict(META_BLE, address=address))
+        two.drain()
+        clock.advance(1)
+    assert len(two.alert_list()) == 2
+
+
+def test_your_own_glasses_do_not_hide_glasses_passing_by(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    for second in range(600):
+        w.offer_ble(META_BLE)
+        w.drain()
+        if second in (100, 300):
+            w.offer_ble(dict(META_BLE, address="C9:00:00:00:00:%02X" % (second % 256), rssi=-80))
+            w.drain()
+        clock.advance(1)
+    alerts = w.alert_list()
+    assert len(alerts) == 3 and {a["address"] for a in alerts[:2]} == {"C9:00:00:00:00:64", "C9:00:00:00:00:2C"}
+    w.stop()
+    rows = [json.loads(line) for line in w.log_path.read_text().splitlines()]
+    assert sum(row["alert"] for row in rows) == 3
+
+
+def test_one_camera_on_wifi_and_bluetooth_is_one_alert(tmp_path, drawn):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    w.offer_wifi([wifi("B4:1E:52:AA:BB:01", "Flock-1")])
+    w.drain()
+    clock.advance(5)
+    w.offer_ble(dict(FLOCK_BLE, address="B4:1E:52:AA:BB:03", address_type=0))
+    w.drain()
+    alerts = w.alert_list()
+    assert len(alerts) == 1 and alerts[0]["count"] == 2 and alerts[0]["via"] == ["Wi-Fi", "BLE"]
+    from quartermaster.ui import recon_screens
+    rows = recon_screens.DriveAlertDetail(alerts[0]).rows(None)
+    assert ("Heard by", "Wi-Fi + BLE") in rows
+    w.offer_ble(dict(FLOCK_BLE, address="B4:1E:52:AA:CC:03", address_type=0))
+    w.drain()
+    assert len(w.alert_list()) == 2
+
+
+def test_the_banner_folds_one_kind_and_never_queues_a_chain(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock, drive_alert_types=["flock", "axon", "glasses", "ring"])
+    w.offer_wifi([wifi("B4:1E:52:00:04:00")])
+    w.drain()
+    for i in range(1, 6):
+        clock.advance(2)
+        w.offer_wifi([wifi("B4:1E:52:00:04:%02X" % i)])
+        w.drain()
+    banner = w.banner()
+    assert banner["category"] == "flock" and banner["fold"] == 6 and banner["alert"]["address"].endswith("04:00")
+    clock.advance(1.9)
+    assert w.banner() is not None
+    clock.advance(0.2)
+    assert w.banner() is None
+    w.offer_wifi([wifi("B4:1E:52:00:05:00")])
+    w.drain()
+    clock.advance(1)
+    w.offer_ble(dict(META_BLE, address="C1:22:33:44:58:01", address_type=0))
+    w.offer_ble(dict(META_BLE, address="C1:22:33:44:58:02", address_type=0))
+    w.drain()
+    assert w.banner()["category"] == "flock"
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:58:01", address_type=0))
+    w.drain()
+    assert w.banner()["category"] == "axon"
+    w.offer_wifi([wifi("B4:1E:52:00:05:01")])
+    w.drain()
+    clock.advance(drive_watch.BANNER_MIN)
+    assert w.banner()["category"] == "axon"
+    clock.advance(drive_watch.AXON_BANNER_SECONDS - drive_watch.BANNER_MIN)
+    banner = w.banner()
+    assert banner.get("summary") and banner["fold"] == 3 and banner["kinds"] == ["flock", "glasses"]
+    clock.advance(drive_watch.BANNER_SECONDS)
+    assert w.banner() is None and len(w.alert_list()) == 11
+
+
+def test_a_silenced_device_is_logged_but_never_alerts(tmp_path, drawn):
+    from tests.test_ui import make_app, press
+    from quartermaster.ui import recon_screens
+    Fleet.found = networks(30, seed=8) + [wifi("B4:1E:52:00:00:01", "Flock-1A")]
+    try:
+        app = make_app(tmp_path)
+        press(app, "W")
+        assert app.drive.watch.idle()
+        press(app, "A", "ENTER")
+        assert isinstance(app.screen, recon_screens.DriveAlertDetail) and "No alerts" in drawn
+        press(app, "N")
+    finally:
+        Fleet.found = None
+    assert app.cfg["drive_alert_skip"] == ["B4:1E:52:00:00:01"] and app.cfg["ignore"] == []
+    assert app.toast_text == "No more alerts for Flock-1A"
+    assert config.load(tmp_path / "config.json")["drive_alert_skip"] == ["B4:1E:52:00:00:01"]
+    w = watch(tmp_path / "w", drive_alert_skip=["B4:1E:52:00:00:01", "Penguin-1234567890"])
+    w.offer_wifi([wifi("B4:1E:52:00:00:01", "cam")])
+    w.offer_ble(FLOCK_BLE)
+    w.drain()
+    w.stop()
+    rows = [json.loads(line) for line in w.log_path.read_text().splitlines()]
+    assert w.alert_list() == [] and len(rows) == 2 and all(row["skipped"] for row in rows)
+    clock = Clock()
+    glasses = watch(tmp_path / "g", clock)
+    glasses.offer_ble(META_BLE)
+    glasses.drain()
+    shown = glasses.alert_list()[0]
+    assert drive_watch.silence_entry(shown) == "" and glasses.silence(shown)
+    clock.advance(10)
+    glasses.offer_ble(dict(META_BLE, address="C1:22:33:44:55:78"))
+    glasses.drain()
+    clock.advance(2000)
+    glasses.offer_ble(dict(META_BLE, address="C1:22:33:44:55:78"))
+    glasses.drain()
+    assert len(glasses.alert_list()) == 1
+
+
+def test_the_banner_sits_at_the_bottom_and_moves_toasts_and_rows_out_of_its_way(tmp_path, monkeypatch, drawn):
+    from tests.test_ui import make_app, placed, press
+    from quartermaster.ui import recon_screens, screens
+    Fleet.found = networks(30, seed=8) + [wifi("B4:1E:52:00:00:01", "Flock-1A")]
+    try:
+        app = make_app(tmp_path)
+        press(app, "W")
+    finally:
+        Fleet.found = None
+    assert ("A", "Alerts") in app.screen.hints(app)
+    assert app.drive.watch.idle()
+    app.toast("Saved")
+    found = placed(app, monkeypatch)
+    top = recon_screens.BANNER_TOP
+    assert top <= found["Flock / accessory candidate"][0] < found["Del hide · Q quiet"][0] < top + 26
+    assert found["Saved"][0] < top and found["WI-FI"][0] < 40
+    rows = [y for text, (y, _) in found.items() if text in ("2.4", "5", "BT") and y > 80]
+    assert rows and max(rows) + 13 <= top
+    image = app.compose()
+    assert image.getpixel((160, top + 24)) != image.getpixel((160, 40))
+    app.drive.watch._banner = None
+    found = placed(app, monkeypatch)
+    assert found["Saved"][0] > top and "Flock / accessory candidate" not in found
+    assert isinstance(app.screen, screens.Wardrive)
+
+
+def flock_drive(tmp_path, **settings):
+    from tests.test_ui import make_app, press
+    Fleet.found = networks(30, seed=8) + [wifi("B4:1E:52:00:00:01", "Flock-1A")]
+    try:
+        app = make_app(tmp_path, **settings)
+        press(app, "W")
+    finally:
+        Fleet.found = None
+    assert app.drive.watch.idle()
+    return app
+
+
+def test_del_hides_the_banner_so_the_whole_live_list_shows_and_a_new_alert_still_comes_up(tmp_path, monkeypatch, drawn):
+    from tests.test_ui import placed, press
+    from quartermaster.ui.keys import Key
+    from quartermaster.ui import recon_screens, screens
+    app = flock_drive(tmp_path)
+    found = placed(app, monkeypatch)
+    assert "Del hide · Q quiet" in found
+    rows = len([y for text, (y, _) in found.items() if text in ("2.4", "5", "BT") and y > 80])
+    press(app, "BACKSPACE")
+    assert isinstance(app.screen, screens.Wardrive) and recon_screens.drive_alert(app) is None
+    found = placed(app, monkeypatch)
+    assert "Del hide · Q quiet" not in found and "WI-FI" in found
+    assert len([y for text, (y, _) in found.items() if text in ("2.4", "5", "BT") and y > 80]) > rows
+    assert len(app.drive.watch.alert_list()) == 1
+    app.keyboard.queue.append(Key("BACKSPACE", repeat=True))
+    press(app)
+    assert isinstance(app.screen, screens.Wardrive)
+    app.drive.watch.offer_ble(dict(AXON_BLE, address_type=0))
+    assert app.drive.watch.idle()
+    assert recon_screens.drive_alert(app)["category"] == "axon"
+    press(app, "ESC")
+    assert isinstance(app.screen, screens.Home) and "Del hide · Q quiet" in placed(app, monkeypatch)
+    press(app, "DELETE")
+    assert isinstance(app.screen, screens.Home) and recon_screens.drive_alert(app) is None
+    app.drive.watch.offer_ble(dict(META_BLE, address_type=0))
+    assert app.drive.watch.idle()
+    press(app)
+    app.drive.watch._banner = None
+    press(app)
+    press(app, "BACKSPACE")
+    assert isinstance(app.screen, screens.Home)
+    press(app, "BACKSPACE")
+    assert isinstance(app.screen, screens.Confirm)
+
+
+def test_del_right_after_a_dialog_or_the_alert_list_covers_the_banner_goes_to_them(tmp_path, monkeypatch, drawn):
+    from tests.test_ui import press
+    from quartermaster.ui import recon_screens, screens
+    app = flock_drive(tmp_path)
+    press(app)
+    assert recon_screens.drive_alert(app) is not None
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Confirm)
+    press(app, "BACKSPACE")
+    assert isinstance(app.screen, screens.Wardrive) and app.wardriving
+    assert recon_screens.drive_alert(app) is not None
+    press(app, "A")
+    assert isinstance(app.screen, recon_screens.DriveAlerts)
+    press(app, "BACKSPACE")
+    assert isinstance(app.screen, screens.Wardrive)
+
+
+def test_the_banner_can_sit_at_the_top_and_never_covers_the_counters_or_a_toast(tmp_path, monkeypatch, drawn):
+    from tests.test_ui import placed, press
+    from quartermaster.ui import recon_screens, screens
+    assert config.DEFAULTS["alert_place"] == "bottom"
+    app = flock_drive(tmp_path)
+    press(app, "ESC", "S")
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "alert_place")
+    press(app, "RIGHT")
+    assert app.cfg["alert_place"] == "top" and config.load(tmp_path / "config.json")["alert_place"] == "top"
+    found = placed(app, monkeypatch)
+    assert found["Flock / accessory candidate"][0] == screens.TOP
+    press(app, "ESC", "W")
+    assert isinstance(app.screen, screens.Wardrive)
+    app.toast("Saved")
+    found = placed(app, monkeypatch)
+    banner = screens.Wardrive.BANNER_Y
+    title = found["Flock / accessory candidate"][0]
+    assert banner <= title < banner + recon_screens.BANNER_H
+    assert found["WI-FI"][0] < found["LOGGED"][0] + 30 < banner
+    assert found["Saved"][0] > recon_screens.BANNER_TOP
+    rows = [y for text, (y, _) in found.items() if text in ("2.4", "5", "BT") and y > 80]
+    assert rows and min(rows) > banner + recon_screens.BANNER_H and max(rows) + 11 <= screens.CONTENT_BOTTOM
+    press(app, "BACKSPACE")
+    assert "Flock / accessory candidate" not in placed(app, monkeypatch)
+
+
+def test_q_makes_alerts_quiet_for_ten_minutes_and_again_ends_it(tmp_path, monkeypatch, drawn):
+    from tests.test_ui import placed, press
+    from quartermaster.ui import recon_screens, screens
+    app = flock_drive(tmp_path)
+    w = app.drive.watch
+    press(app, "Q")
+    assert isinstance(app.screen, screens.Wardrive) and recon_screens.drive_alert(app) is None
+    assert app.toast_text == "Quiet for 10 min. Alerts are still listed."
+    found = placed(app, monkeypatch)
+    assert "Q 10m" in found and "Flock / accessory candidate" not in found
+    assert ("Q", "End quiet") in app.screen.hints(app) and ("Esc", "Menu") in app.screen.hints(app)
+    w.started -= drive_watch.START_SILENCE
+    w.offer_ble(dict(AXON_BLE, address_type=0))
+    assert w.idle()
+    assert recon_screens.drive_alert(app) is None and len(w.alert_list()) == 2 and not w.alert_list()[0].get("tone")
+    w.quiet_until -= 61
+    found = placed(app, monkeypatch)
+    assert "Q 9m" in found and "!2" not in found
+    press(app, "A")
+    assert ("Q", "End quiet (9m)") in app.screen.hints(app)
+    press(app, "Q")
+    assert w.quiet_left() == 0 and app.toast_text == "Alert tones and banners are back"
+    assert ("Q", "Quiet 10 min") in app.screen.hints(app)
+    press(app, "ESC", "ESC")
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:55:77", address_type=0))
+    assert w.idle() and recon_screens.drive_alert(app) is not None
+    press(app, "Q")
+    assert isinstance(app.screen, screens.Home) and w.quiet_left() > 0
+    press(app, "Q")
+    assert isinstance(app.screen, screens.Confirm)
+
+
+def test_quiet_cuts_off_a_tone_and_drops_the_waiting_ones(tmp_path, monkeypatch):
+    monkeypatch.setattr(tones, "find_player", lambda: "/usr/bin/aplay")
+    started = []
+
+    def popen(argv, **kwargs):
+        started.append(Child(argv))
+        return started[-1]
+    player = tones.Player(tmp_path, popen, Clock())
+    player._thread = object()
+    assert player.play("siren", kind="axon", priority=99) and player.step() == "axon"
+    assert player.play("chirp", kind="flock", priority=60)
+    w = watch(tmp_path, player=player)
+    assert w.quiet() and started[0].ended and not player.queue.pending
+    assert not w.quiet() and w.quiet_left() == 0
+
+
+def test_no_tones_in_the_first_minute_of_a_wardrive(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock, fresh=True)
+    w.offer_ble(dict(AXON_BLE, address_type=0))
+    w.offer_wifi([wifi("B4:1E:52:00:00:01", "cam")])
+    w.drain()
+    assert len(w.alert_list()) == 2 and w.banner() is not None and w.player.calls == []
+    clock.advance(drive_watch.START_SILENCE - 1)
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:55:01", address_type=0))
+    w.drain()
+    assert w.player.calls == []
+    clock.advance(1)
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:55:02", address_type=0))
+    w.drain()
+    assert w.player.calls == [("siren", "axon")]
+
+
+def test_tone_volume_starts_at_medium_and_a_saved_one_stays(tmp_path):
+    assert config.DEFAULTS["drive_alert_volume"] == "medium"
+    assert config.load(tmp_path / "none.json")["drive_alert_volume"] == "medium"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"drive_alert_volume": "high", "alert_place": "bottom"}))
+    assert config.load(path)["drive_alert_volume"] == "high"
+    assert DriveWatch({}, Gps(FIX), tmp_path, player=Player(), threads=False).settings["volume"] == "medium"
+
+
+def test_loud_saved_by_the_first_test_build_becomes_medium_once(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"drive_alert_volume": "high", "drive_alerts": True}))
+    cfg = config.load(path)
+    assert cfg["drive_alert_volume"] == "medium"
+    cfg["drive_alert_volume"] = "high"
+    config.save(cfg, path)
+    assert config.load(path)["drive_alert_volume"] == "high"
+    path.write_text(json.dumps({"drive_alert_volume": "low"}))
+    assert config.load(path)["drive_alert_volume"] == "low"
+
+
+def test_banner_icons_blink_only_at_first():
+    from quartermaster.ui import gfx, recon_screens
+    shots = []
+    for age in (0.6, 3.1, 3.6, 9.0):
+        c = gfx.Canvas()
+        recon_screens.banner_box(c, recon_screens.BANNER_TOP, (70, 12, 14), (255, 0, 0), age)
+        shots.append(c.image.tobytes())
+    assert shots[0] != shots[1] and shots[1] == shots[2] == shots[3]
+
+
+def test_a_new_preview_cuts_off_the_one_playing(tmp_path, monkeypatch):
+    monkeypatch.setattr(tones, "find_player", lambda: "/usr/bin/aplay")
+    started = []
+
+    def popen(argv, **kwargs):
+        started.append(Child(argv))
+        return started[-1]
+    clock = Clock()
+    player = tones.Player(tmp_path, popen, clock)
+    player._thread = object()
+    assert player.play("siren", preview=True) and player.step() == "preview"
+    clock.advance(0.2)
+    assert player.play("chirp", preview=True) and player.step() == "preview"
+    assert started[0].ended and started[1].argv[-1].endswith("chirp-high.wav")
+    assert player.play("ping", kind="axon", priority=99) and player.step() is None and not started[1].ended
+
+
+def test_the_no_alerts_list_is_saved_checked_and_managed_in_settings(tmp_path, drawn):
+    from tests.test_ui import make_app, press
+    from quartermaster.ui import recon_screens, screens
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"drive_alert_skip": [" Glasses ", 4, "", "x" * 90] + ["n%d" % i for i in range(40)]}))
+    loaded = config.load(path)
+    assert len(loaded["drive_alert_skip"]) == config.MAX_SKIP and "Glasses" not in loaded["drive_alert_skip"]
+    path.write_text(json.dumps({"drive_alert_skip": [" Glasses ", 4, "x" * 90]}))
+    assert config.load(path)["drive_alert_skip"] == ["Glasses", "x" * 64]
+    app = make_app(tmp_path)
+    press(app, "S")
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "drive_alert_skip")
+    press(app)
+    assert "2 devices" in drawn and "No alerts for" in drawn
+    press(app, "ENTER")
+    assert isinstance(app.screen, recon_screens.SkipList) and "Glasses" in drawn
+    press(app, "D")
+    assert isinstance(app.screen, screens.Confirm)
+    press(app, "Y")
+    assert app.cfg["drive_alert_skip"] == ["x" * 64]
+
+
+def test_more_body_cams_within_five_minutes_only_add_to_the_count(tmp_path):
+    clock = Clock()
+    w = watch(tmp_path, clock)
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:59:01", address_type=0))
+    w.drain()
+    assert w.banner()["category"] == "axon"
+    clock.advance(30)
+    assert w.banner() is None
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:59:02", address_type=0))
+    w.drain()
+    assert w.banner() is None and len(w.alert_list()) == 2
+    clock.advance(300)
+    w.offer_ble(dict(AXON_BLE, address="11:22:33:44:59:03", address_type=0))
+    w.drain()
+    assert w.banner()["category"] == "axon"

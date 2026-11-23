@@ -411,7 +411,10 @@ Logs shows mesh files with a **MESH** tag, and what each site took.
 | **Space** | Start or stop a wardrive from the menu |
 | **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
 | **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
-| **A** | On the wardrive screen, once something has alerted: the alerts of this wardrive |
+| **A** | On the wardrive screen: the alerts of this wardrive |
+| **N** | On an alert from that list: no more alerts for that device |
+| **Del** | While an alert banner shows: hide it |
+| **Q** | On the wardrive screen, the alert list or an alert banner: no alert tones or banners for 10 minutes. Again to end it |
 | **Sym**, then a key | In a text box: the symbol printed on that key |
 
 Every screen shows its own keys along the bottom.
@@ -445,11 +448,13 @@ Every screen shows its own keys along the bottom.
 | Drive alerts | Alerts while wardriving | On, Off | On |
 | | Alert me about | Each kind of device: alert on or off, tone on or off, and its tone | Flock, body cameras, camera glasses, My alerts |
 | | Alert tones | On, Off | On |
-| | Tone volume | Loud, Medium, Quiet | Loud |
+| | Tone volume | Medium, Loud, Quiet. Also the Recon beep | Medium |
+| | Alert position | Bottom, Top. Also Recon alerts | Bottom |
 | | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
-| | Alert again | After 15 min away, After 1 h away, Once per drive | After 15 min away |
+| | Alert again (moving devices) | After 15 min, After 1 h, Once per drive. Fixed cameras alert once per drive | After 15 min |
 | | Only when signal is above | Any, -85 dBm, -75 dBm | Any |
 | | My alerts | Up to 8 names, patterns or addresses that always alert | |
+| | No alerts for | Up to 32 devices silenced from an alert with **N**. Still logged | |
 | Recon | Show devices from | Weak hints, Medium evidence, Strong only | Weak hints |
 | | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
 | | Alert sound | On, Off | On |
@@ -492,6 +497,8 @@ To copy logs off the Cardputer, open the phone setup page and tap a log, or use 
 
 Recon listens on every radio for devices that look like surveillance or tracking equipment. Each match is graded as a weak hint, medium evidence or a strong signature, and the details screen shows exactly what was matched. Press **OK** on a device and **OK** again to open the signal finder, then walk toward the stronger signal.
 
+On other screens, a Recon alert shows as a card at the bottom, where Drive Alerts show theirs, or at the top with **Alert position**. **Del** hides it. A device that stays nearby alerts once, and again only after it has been gone for 15 minutes, or when it starts to follow you.
+
 A match is broadcast evidence. It is not proof that a device is recording, who owns it, or what it is for. Many products share radio parts, so weak hints are common.
 
 Recon also knows dashcams and fleet cameras, in-car fleet routers (a kind of their own, never counted as body cameras, and off until you turn them on), smart speakers with microphones (off until you turn them on), AirTags with or without their owner and AirTags not set up yet, and the Dragon Detector fox test beacon (off until you turn it on).
@@ -507,8 +514,11 @@ While you wardrive, Quartermaster can warn you about the devices you pick, from 
 
 - **What alerts.** Out of the box: Flock cameras, body cameras such as Axon, and camera glasses such as Ray-Ban Meta. **Settings > Alert me about** turns every other kind on or off, from ALPR and doorbell cameras to trackers, an open twin of a protected network, and bursts of fake Bluetooth adverts.
 - **Tones.** Siren for body cameras, Chirp for Flock and Ping for camera glasses. Every kind can have its own: Siren, Yelp, Chirp, Shutter, Ping, Blip, any of the Dragon Detector melodies, or Silent. In **Alert me about**, **Z** and **C** pick a tone and play it, **P** plays it again, **T** turns the tone of one kind off and **D** restores the defaults. **Alert tones** turns every tone off.
-- **The banner.** A card at the top for 6 seconds, 10 for a body camera. It takes no key, so **OK** still stops the wardrive. The wardrive screen counts the alerts, and **A** lists them.
-- **Not too many.** A device alerts once while it is around, and again only after it has been gone for 15 minutes. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, camera glasses, drones, radio tools and My alerts alert at once. Tones are spaced out, at most 30 an hour, though a body camera or My alert always sounds. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, camera glasses and My alerts are never muted.
+- **The banner.** A card at the bottom, just above the key hints, for 6 seconds, 10 for a body camera. **Alert position** can put it at the top instead; on the wardrive screen it then sits just under the counters. It never covers the counters, and **OK** still stops the wardrive. **Del** hides it at once; the alert stays in the list and the next new alert still shows. The icon pulses once a second for the first 3 seconds, then stays still. More of the same kind add to the card (×3) instead of replacing it. A more urgent kind takes its place at once; others wait their turn, and several waiting together show as one card, such as "3 new alerts". The wardrive screen counts the alerts, and **A** lists them.
+- **Not too many.** A device alerts once while it is around. Flock and other fixed cameras alert once per drive, however often you pass them; body cameras and other moving devices alert again after they have been gone for 15 minutes (**Alert again (moving devices)**). The log still notes every pass. One camera heard on Wi-Fi and Bluetooth, a Bluetooth device that changes its address, and a Dragon Detector line about a camera the scan just heard are each one alert. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, camera glasses, drones, radio tools and My alerts alert at once.
+- **Quiet for 10 minutes.** **Q** on the wardrive screen, on the alert list or while a banner shows: no tones and no banners for 10 minutes. Alerts are still listed and logged, and the wardrive screen shows how long is left, such as Q 9m, in place of the alert count. **Q** again ends it.
+- **Calm tones.** No tones in the first minute of a wardrive; those alerts still show and are not sounded later. A Flock camera tone plays at most once a minute, a My alert every 30 seconds, camera glasses every 2 minutes, and body cameras and other kinds every 5 minutes. More body cameras in between add to the banner without a sound. In a busy town a kind sounds less often: after 5 tones in 10 minutes its gap doubles, up to 4 minutes. Tones are spaced 8 seconds apart, at most 30 an hour. A body camera or My alert sounds even then, up to 6 times an hour each. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, camera glasses and My alerts are never muted, and a flood of them shows one card such as "30 flock cameras in 1 min". **Tone volume** sets the volume of Drive Alerts and of the Recon beep.
+- **No alerts for this.** Open an alert from the list and press **N**: that device does not alert again, but it is still logged and uploaded, unlike an ignored network. Its address is kept, or its name when its Bluetooth address keeps changing; then anything with that name stops alerting. A device whose Bluetooth address keeps changing and that has no name, such as most Meta glasses, is silenced for this drive only. **Settings > No alerts for** lists the kept ones.
 - **My alerts.** Names or addresses that always alert, whatever kind of device: `veh*` catches every network whose name starts with veh.
 - **Dragon Detector.** Plug a [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) into USB and its alerts join in, graded the same way. Its radar hears what scanning cannot, such as Flock cameras that only send probe requests.
 
@@ -536,15 +546,11 @@ The package lands in `build/`. That last step needs `dpkg-deb`, so run it on Deb
 
 On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see, and whether the Cap LoRa-1262 answers.
 
-## Thanks
-
-Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://hackergadgets.com).
-
 ## Credits
 
 Recon and Drive Alerts build on this work and research:
 
-- [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts.
+- SquachWatch, created by Talking Sasquach, through [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts.
 - [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its melodies and tone queue, and the alerts it sends over USB.
 - Flock Noir (Your Pal Kal, MIT): Flock facts.
 - [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg.
@@ -552,6 +558,17 @@ Recon and Drive Alerts build on this work and research:
 - [nyanBOX](https://github.com/jbohack/nyanBOX) by jbohack, MIT: AirTag and Find My adverts.
 - ESP32 Marauder by justcallmekoko: Pwnagotchi and DULT details.
 - The IEEE registration authority (address prefixes), the Bluetooth SIG assigned numbers, the Google Find Hub specification and OpenDroneID (ASTM F3411).
+
+### Thanks
+
+- [justcallmekoko](https://github.com/justcallmekoko)
+- [Code_Hedge](https://github.com/CodeHedge)
+- Ekoms_Savior
+- Jesse Hale
+- Vileer from [Hacker Gadgets](https://hackergadgets.com)
+- LocoSp
+- Awok ([AWOK Dynamics](https://awokdynamics.com))
+- Talking Sasquach, creator of SquachWatch
 
 ## Made by Valleytech Solutions
 

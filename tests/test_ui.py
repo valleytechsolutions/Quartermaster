@@ -393,6 +393,14 @@ def test_a_logs_folder_that_cannot_be_used_is_said_and_no_wardrive_starts(tmp_pa
     assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == [leftover.name]
 
 
+def test_a_stalled_adapter_is_told_once_at_wardrive_start(tmp_path, drawn):
+    stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
+    app = make_app(tmp_path, hw=Hardware(stalled=stalled))
+    press(app, "W")
+    assert "MT7921AU tri-band is not starting. See Hardware." in screen_text(app, drawn)
+    assert "not starting" not in app.toast_text
+
+
 def test_wardrive_without_gps_says_why_nothing_is_logged(tmp_path, drawn):
     stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
     app = make_app(tmp_path, fix=NO_FIX, hw=Hardware(stalled=stalled))
@@ -601,10 +609,14 @@ def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn, monk
     assert isinstance(app.screen, recon_screens.Finder) and "-48" in screen_text(app, drawn)
     press(app, "R", "ESC", "ESC", "ESC")
     assert isinstance(app.screen, screens.Home) and "1 flagged" in screen_text(app, drawn)
-    app.recon.unseen_alerts = 1
-    assert "R to view" in screen_text(app, drawn)
+    app.recon.unseen_alerts = 2
+    text = screen_text(app, drawn)
+    assert "Body-camera candidate  +1" in text and "Del hide" in text
+    press(app, "BACKSPACE")
+    text = screen_text(app, drawn)
+    assert isinstance(app.screen, screens.Home) and "Del hide" not in text and "Body-camera" not in text
     press(app, "H", "R")
-    assert isinstance(app.screen, recon_screens.Recon)       # R jumps to a fresh alert from any screen
+    assert isinstance(app.screen, screens.Hardware)
     press(app, "ESC", "W")
     assert isinstance(app.screen, screens.Confirm) and not app.wardriving
     press(app, "ENTER")
@@ -2086,3 +2098,16 @@ def test_every_word_about_the_lora_cap_fits_on_its_card():
     title = canvas.text_width("Cap LoRa-1262 for mesh nodes", gfx.font("ui", 10))
     for country in lora.COUNTRY_REGION:
         assert title + canvas.text_width(lora.region_name(country), small) + 8 <= gfx.W - 40, country
+
+
+def test_the_about_screen_thanks_the_people_who_helped(tmp_path, monkeypatch):
+    app = make_app(tmp_path)
+    press(app, "A")
+    found = placed(app, monkeypatch)
+    lines = [text for text in found if text.startswith("Thanks to") or "Ekoms_Savior" in text or "Awok" in text]
+    assert len(lines) == 3 and " ".join(lines) == screens.THANKS
+    for name in ("justcallmekoko", "Code_Hedge", "Ekoms_Savior", "Jesse Hale", "Vileer from Hacker Gadgets", "LocoSp",
+                 "Awok", "Talking Sasquach"):
+        assert name in screens.THANKS.replace("\u00a0", " ")
+    assert any("Hacker\u00a0Gadgets" in line for line in lines)
+    assert all(found[line][0] + 9 < screens.CONTENT_BOTTOM - 37 for line in lines)

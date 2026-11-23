@@ -20,7 +20,7 @@ RATE = 22050
 VOLUMES = {"high": 0.7, "medium": 0.4, "low": 0.2}
 TEXT_MAX, NOTES_MAX, TOTAL_MS = 512, 96, 15000
 REPEAT_SECONDS, EXPIRE_SECONDS = 4.0, 10.0
-PREEMPT = 95
+PREEMPT, PREVIEW = 95, 1000
 RETRY_SECONDS = (2.0, 10.0, 60.0)
 _OCTAVE4 = (262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494)
 _SEMITONE = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11, "p": -1}
@@ -173,7 +173,7 @@ def _melody(text):
 
 
 TONES = {
-    "siren": ("Siren", [_seg(620, 1480, 600, "tri", 1.0, "exp"), _seg(1480, 620, 600, "tri", 1.0, "exp")] * 2),
+    "siren": ("Siren", [_seg(620, 1480, 600, "tri", 1.0, "exp"), _seg(1480, 620, 600, "tri", 1.0, "exp")]),
     "yelp": ("Yelp", [_seg(650, 1650, 170, "tri"), _seg(1650, 650, 170, "tri")] * 4),
     "chirp": ("Chirp", [_seg(2000, 3400, 55), _rest(45)] * 3 + [_seg(3300, 1900, 180, curve="exp")]),
     "shutter": ("Shutter", [_seg(0, 0, 10, "noise"), _rest(45), _seg(0, 0, 14, "noise", 0.8), _rest(70),
@@ -298,7 +298,7 @@ class Player:
             if preview:
                 self.queue.pending.pop("preview", None)
             accepted = self.queue.request("preview" if preview else (kind or tone), (tone, volume),
-                                          1000 if preview else priority, self.clock(), force=preview)
+                                          PREVIEW if preview else priority, self.clock(), force=preview)
             if accepted and self._thread is None:
                 self._stopping = False
                 self._thread = threading.Thread(target=self._run, daemon=True, name="tones")
@@ -314,6 +314,12 @@ class Player:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2)
         self._end_child()
+
+    def hush(self):
+        """Drop the tones waiting and cut off the one playing."""
+        with self._lock:
+            self.queue.pending.clear()
+            self._end_child()
 
     def _end_child(self):
         child, self._child = self._child, None
@@ -350,7 +356,7 @@ class Player:
             if best is None or self.failed or now < self.retry_at:
                 return None
             if running:
-                if best < PREEMPT or best <= self._child_priority:
+                if best < PREEMPT or best <= self._child_priority and best < PREVIEW:
                     return None
                 self._end_child()
             kind, priority, (tone, volume) = self.queue.take(now)

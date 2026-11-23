@@ -17,6 +17,9 @@ CATEGORY_COLOR = {
 BANNER_FILL = {"flock": ((70, 12, 14), RED), "alpr": ((70, 12, 14), RED), "axon": ((70, 12, 14), RED),
                "mine": ((60, 44, 8), GOLD), "glasses": ((40, 28, 70), VIOLET)}
 GRADE_COLOR = {recon.LOW: MUTED, recon.MEDIUM: AMBER, recon.STRONG: RED}
+BANNER_H = 26
+BANNER_TOP = CONTENT_BOTTOM - BANNER_H - 1
+BLINK_SECONDS = 3.0
 ADDRESS_KIND = {0: "public", 1: "random", 2: "public identity", 3: "random identity"}
 OPERATOR_KIND = {0: "take-off point", 1: "live operator", 2: "fixed point"}
 
@@ -375,33 +378,56 @@ class Categories(Screen, ListMixin):
 
 
 def fresh_alert(app):
-    """The newest Recon alert while it is still worth interrupting for."""
+    """The newest Recon alert while it is still worth showing."""
     r = app.recon
     if r.state != "running" or not r.alerts or not r.unseen_alerts:
         return None
     alert = r.alerts[0]
-    return alert if r.clock() - alert["time"] <= 10 else None
+    return alert if r.clock() - alert["time"] <= 10 and alert is not app.recon_hidden else None
 
 
-def alert_banner(c, app):
-    """A fresh Recon alert, shown over every screen except Recon itself."""
+def banner_y(app, screen):
+    """Where alert banners go: just above the key hints, or at the top. On the Wardrive screen the top one sits
+    under the counters, so they stay in view."""
+    from .screens import Wardrive
+    if app.cfg.get("alert_place", "bottom") != "top":
+        return BANNER_TOP
+    return Wardrive.BANNER_Y if isinstance(screen, Wardrive) else TOP - 2
+
+
+def banner_box(c, y, fill, edge, age):
+    """The frame of an alert banner. Its icon blinks once a second for the first seconds only."""
+    c.rect((4, y, W - 4, y + BANNER_H), fill=fill, outline=edge, radius=6)
+    lit = age >= BLINK_SECONDS or int(age * 2) % 2 == 0
+    icons.draw(c, "alert", 10, y + 4, 18, edge if lit else tuple(v * 2 for v in fill))
+
+
+def banner_text(c, y, title, detail, right, edge, note):
+    small = font("mono", 8)
+    room = W - 46 - (int(c.text_width(note, small)) + 8 if note else 0)
+    c.text((34, y + 2), title, font("bold", 10), TEXT, width=W - 110)
+    c.text((34, y + 14), detail, font("ui", 8), (230, 220, 210), width=room)
+    if right:
+        c.text_right(W - 12, y + 2, right, font("monob", 9), edge)
+    if note:
+        c.text_right(W - 12, y + 14, note, small, MUTED)
+
+
+def alert_banner(c, app, screen=None):
+    """A fresh Recon alert, shown over every screen except Recon itself. Del hides it."""
     r = app.recon
     alert = fresh_alert(app)
     if alert is None:
-        return
+        return False
     strong = alert["confidence"] >= recon.STRONG or alert.get("follow")
     fill, edge = ((70, 12, 14), RED) if strong else ((60, 44, 8), AMBER)
-    y = TOP - 2
-    c.rect((4, y, W - 4, y + 28), fill=fill, outline=edge, radius=6)
-    blink = int(time.monotonic() * 3) % 2 == 0
-    icons.draw(c, "alert", 10, y + 5, 18, edge if blink else tuple(v * 2 for v in fill))
-    c.text((34, y + 3), ("FOLLOWING?  " if alert.get("follow") else "") + alert["label"], font("bold", 10), TEXT,
-           width=W - 110)
+    y = banner_y(app, screen)
+    banner_box(c, y, fill, edge, r.clock() - alert["time"])
     detail = "%s  ·  %s" % (alert.get("name") or alert["address"], recon.CONFIDENCE_NAMES[alert["confidence"]])
-    c.text((34, y + 15), detail, font("ui", 8), (230, 220, 210), width=W - 110)
-    c.text_right(W - 12, y + 3, "%s dBm" % fmt_rssi(alert.get("rssi")), font("monob", 9), edge)
     more = r.unseen_alerts - 1
-    c.text_right(W - 12, y + 15, "R to view" if more < 1 else "+%d  ·  R" % more, font("mono", 8), MUTED)
+    title = ("FOLLOWING?  " if alert.get("follow") else "") + alert["label"] + ("  +%d" % more if more > 0 else "")
+    banner_text(c, y, title, detail, "%s dBm" % fmt_rssi(alert.get("rssi")), edge, "Del hide")
+    return True
 
 
 def tone_of(app, kind):
@@ -521,38 +547,98 @@ class MyAlerts(Screen, ListMixin):
         return True
 
 
+class SkipList(Screen, ListMixin):
+    title = "NO ALERTS FOR"
+    VISIBLE = 7
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    def hints(self, app):
+        return [("D", "Remove"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        entries = app.cfg.get("drive_alert_skip", [])
+        if not entries:
+            empty_state(c, "alert", "Nothing is silenced",
+                        "Open an alert from the wardrive alert list and press N to stop alerts for that device. "
+                        "It is still logged.")
+            return
+        self.clamp(len(entries), self.VISIBLE)
+        for row, entry in enumerate(entries[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 16
+            if self.top + row == self.index:
+                c.select(y, 15)
+            c.text((11, y + 2), entry, font("ui", 10), TEXT, width=W - 110)
+            c.text_right(W - 14, y + 3, "address" if config.is_mac(entry) else "name", font("mono", 9), MUTED)
+        self.scrollbar(c, len(entries), self.VISIBLE)
+        c.text((10, CONTENT_BOTTOM - 13), "Still logged and uploaded. They just make no alert.",
+               font("ui", 8), FAINT, width=W - 20)
+
+    def handle(self, key, app):
+        entries = list(app.cfg.get("drive_alert_skip", []))
+        self.clamp(len(entries), self.VISIBLE)
+        if self.move(key, len(entries), self.VISIBLE):
+            return True
+        if key == "D" and entries:
+            entry = entries[self.index]
+            app.confirm("Remove it?", "%s can alert again." % entry, "Remove",
+                        lambda: app.change("drive_alert_skip", [item for item in entries if item != entry]))
+        else:
+            return super().handle(key, app)
+        return True
+
+
 def drive_alert(app):
-    """The newest wardrive alert while it is still worth showing."""
+    """The wardrive banner to show now, or None."""
     drive = app.drive
     watch = drive.watch if drive is not None and app.wardriving else None
     return watch.banner() if watch is not None else None
 
 
-def drive_alert_banner(c, app):
-    """A fresh wardrive alert, over every screen. It takes no key, so OK still stops the wardrive."""
-    shown = drive_alert(app)
-    if shown is None:
-        return
-    fill, edge = BANNER_FILL.get(shown["category"], ((60, 44, 8), AMBER))
-    y = TOP - 2
-    c.rect((4, y, W - 4, y + 28), fill=fill, outline=edge, radius=6)
-    blink = shown["category"] != "axon" or int(time.monotonic() * 3) % 2 == 0
-    icons.draw(c, "alert", 10, y + 5, 18, edge if blink else tuple(v * 2 for v in fill))
-    if shown.get("flood"):
+def drive_alert_banner(c, app, screen=None):
+    """The wardrive banner, over every screen. OK still stops the wardrive; Del hides it and Q makes alerts quiet
+    for 10 minutes."""
+    view = drive_alert(app)
+    if view is None:
+        return False
+    shown = view["alert"]
+    fill, edge = BANNER_FILL.get(view["category"], ((60, 44, 8), AMBER))
+    y = banner_y(app, screen)
+    banner_box(c, y, fill, edge, view["age"] if view["category"] == "axon" else BLINK_SECONDS)
+    fold = view["fold"]
+    if view.get("summary"):
+        title = "%d new alerts" % fold
+        detail = ", ".join(drive_watch.NAMES.get(kind, kind) for kind in view["kinds"])
+    elif shown.get("flood"):
         title, detail = shown["name"], shown["evidence"]
     else:
-        fold = shown.get("fold", 1)
-        title = shown["label"] + (" ×%d" % fold if fold > 1 else "")
+        title = shown["label"] + ("  ×%d" % fold if fold > 1 else "")
         detail = "%s  ·  %s" % (shown.get("name") or shown.get("address") or "—",
                                 recon.CONFIDENCE_NAMES.get(shown["confidence"], ""))
         if shown.get("owner"):
             detail += "  ·  " + shown["owner"]
-    c.text((34, y + 3), title, font("bold", 10), TEXT, width=W - 110)
-    c.text((34, y + 15), detail, font("ui", 8), (230, 220, 210), width=W - 110)
-    c.text_right(W - 12, y + 3, "%s dBm" % fmt_rssi(shown.get("rssi")), font("monob", 9), edge)
-    from .screens import Wardrive
-    if isinstance(app.screen, Wardrive):
-        c.text_right(W - 12, y + 15, "A to list", font("mono", 8), MUTED)
+    rssi = view.get("rssi")
+    banner_text(c, y, title, detail, "%s dBm" % fmt_rssi(rssi) if rssi is not None else "", edge,
+                "Del hide · Q quiet")
+    return True
+
+
+def quiet_text(watch):
+    """"9m" while alerts are quiet, or ""."""
+    left = watch.quiet_left() if watch is not None else 0
+    return "%dm" % max(1, -(-int(left) // 60)) if left > 0 else ""
+
+
+def toggle_quiet(app):
+    watch = app.drive.watch if app.drive is not None and app.wardriving else None
+    if watch is None:
+        return False
+    if watch.quiet():
+        app.toast("Quiet for 10 min. Alerts are still listed.")
+    else:
+        app.toast("Alert tones and banners are back")
+    return True
 
 
 class DriveAlerts(Screen, ListMixin):
@@ -570,7 +656,9 @@ class DriveAlerts(Screen, ListMixin):
         return watch.alert_list() if watch is not None else []
 
     def hints(self, app):
-        return [("OK", "Details"), ("F/X", "Move"), ("Esc", "Back")]
+        watch = app.drive.watch if app.drive is not None else None
+        quiet = quiet_text(watch)
+        return [("OK", "Details"), ("Q", "End quiet (%s)" % quiet if quiet else "Quiet 10 min"), ("Esc", "Back")]
 
     def render(self, c, app):
         alerts = self.alerts(app)
@@ -601,6 +689,8 @@ class DriveAlerts(Screen, ListMixin):
         if key == "ENTER" and alerts:
             app.push(DriveAlertDetail(alerts[min(self.index, len(alerts) - 1)]))
             return True
+        if key == "Q" and toggle_quiet(app):
+            return True
         return super().handle(key, app)
 
 
@@ -608,6 +698,19 @@ class DriveAlertDetail(Details):
     def __init__(self, shown):
         super().__init__("ALERT")
         self.shown = shown
+
+    def silenceable(self):
+        return not self.shown.get("flood") and self.shown["category"] not in ("burst", "deauth")
+
+    def hints(self, app):
+        hints = super().hints(app)
+        return [("N", "No alerts")] + hints if self.silenceable() else hints
+
+    def handle(self, key, app):
+        if key == "N" and self.silenceable():
+            app.silence_alert(self.shown)
+            return True
+        return super().handle(key, app)
 
     def rows(self, app):
         shown = self.shown
@@ -629,6 +732,8 @@ class DriveAlertDetail(Details):
             rows.append(("Signal", "best %s dBm" % fmt_rssi(shown["rssi"]), rssi_color(shown["rssi"])))
         rows.append(("Heard", "%s, %s" % (plural(shown.get("count", 1), "time"),
                                           time.strftime("%H:%M:%S", time.localtime(shown["time"])))))
+        if len(shown.get("via", ())) > 1:
+            rows.append(("Heard by", " + ".join(shown["via"])))
         receiver = shown.get("receiver")
         if receiver:
             rows.append(("You were at", "%.5f, %.5f" % (receiver["latitude"], receiver["longitude"])))

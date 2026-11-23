@@ -81,17 +81,22 @@ SECTIONS = [
         ("drive_alert_types", "Alert me about", None, "Which kinds of device alert, and the tone of each."),
         ("drive_alert_tones", "Alert tones", ON_OFF, "Off shows alerts on screen without a sound."),
         ("drive_alert_volume", "Tone volume", [("high", "Loud"), ("medium", "Medium"), ("low", "Quiet")],
-         "How loud alert tones play."),
+         "How loud alert tones play, in wardrive alerts and in Recon."),
+        ("alert_place", "Alert position", [("bottom", "Bottom"), ("top", "Top")],
+         "Where alert banners show, in wardrive alerts and in Recon. Del hides one, Q is quiet for 10 min."),
         ("drive_alert_min", "Alert from", [("medium", "Medium evidence"), ("high", "Strong only"),
                                            ("low", "Weak hints")],
          "Evidence needed before a wardrive alert. Weaker finds are still saved."),
-        ("drive_alert_again", "Alert again", [(900, "After 15 min away"), (3600, "After 1 h away"),
-                                              (0, "Once per drive")],
-         "When the same device may alert again after it has gone."),
+        ("drive_alert_again", "Alert again (moving devices)", [(900, "After 15 min"), (3600, "After 1 h"),
+                                                               (0, "Once per drive")],
+         "When a body camera or other moving device may alert again after it has gone. Fixed cameras alert once "
+         "per drive."),
         ("drive_alert_floor", "Only when signal is above", [(-100, "Any"), (-85, "-85 dBm"), (-75, "-75 dBm")],
          "Weaker finds are saved but do not alert."),
         ("drive_watch", "My alerts", None, "Wi-Fi names or addresses that always alert, such as veh* for patrol "
          "cars."),
+        ("drive_alert_skip", "No alerts for", None, "Devices you silenced from an alert, such as your own glasses. "
+         "They are still logged."),
     ]),
     ("RECON", [
         ("recon_display_min", "Show devices from", [("low", "Weak hints"), ("medium", "Medium evidence"),
@@ -115,10 +120,13 @@ SECTIONS = [
 ]
 SETTINGS = [item for _, items in SECTIONS for item in items]
 DEFAULTS = {key: choices[0][0] for key, _, choices, _ in SETTINGS if choices}
-DEFAULTS.update(min_rssi=-100, rssi_step=4, relog_meters=25, relog_seconds=30, ble_interval=1.0)
-LISTS = ("ignore", "recon_categories", "nodes", "drive_alert_types", "drive_alert_mute", "drive_watch")
+DEFAULTS.update(min_rssi=-100, rssi_step=4, relog_meters=25, relog_seconds=30, ble_interval=1.0,
+                drive_alert_volume="medium")
+LISTS = ("ignore", "recon_categories", "nodes", "drive_alert_types", "drive_alert_mute", "drive_watch",
+         "drive_alert_skip")
 MAX_IGNORED = 64
 MAX_WATCH, WATCH_LENGTH = 8, 32
+MAX_SKIP, SKIP_LENGTH = 32, 64
 MAX_NODES = 8
 MAX_WIRELESS = 8
 NODE_NAME_MAX = 16
@@ -137,7 +145,7 @@ def default_lists():
     from .drive_watch import DEFAULT_TYPES
     from .recon import CATEGORIES, OFF_BY_DEFAULT
     return {"ignore": [], "recon_categories": [c for c in CATEGORIES if c not in OFF_BY_DEFAULT], "nodes": [],
-            "drive_alert_types": list(DEFAULT_TYPES), "drive_alert_mute": [], "drive_watch": []}
+            "drive_alert_types": list(DEFAULT_TYPES), "drive_alert_mute": [], "drive_watch": [], "drive_alert_skip": []}
 
 
 def default_sounds():
@@ -201,6 +209,8 @@ def load(path=PATH):
     for key, _, choices, _ in SETTINGS:
         if choices and key in data and any(data[key] == v and type(data[key]) is type(v) for v, _ in choices):
             cfg[key] = data[key]
+    if "alert_place" not in data and cfg["drive_alert_volume"] == "high":
+        cfg["drive_alert_volume"] = "medium"
     ignore = data.get("ignore")
     if isinstance(ignore, list):
         cfg["ignore"] = [str(item)[:64] for item in ignore if isinstance(item, str) and item.strip()][:MAX_IGNORED]
@@ -217,6 +227,10 @@ def load(path=PATH):
     if isinstance(watch, list):
         cfg["drive_watch"] = list(dict.fromkeys(item.strip()[:WATCH_LENGTH] for item in watch
                                                 if isinstance(item, str) and item.strip()))[:MAX_WATCH]
+    skip = data.get("drive_alert_skip")
+    if isinstance(skip, list):
+        cfg["drive_alert_skip"] = list(dict.fromkeys(item.strip()[:SKIP_LENGTH] for item in skip
+                                                     if isinstance(item, str) and item.strip()))[-MAX_SKIP:]
     sounds = data.get("drive_alert_sounds")
     if isinstance(sounds, dict):
         cfg["drive_alert_sounds"].update((k, v) for k, v in sounds.items() if k in TYPES and v in ORDER)
