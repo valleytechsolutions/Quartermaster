@@ -1,42 +1,108 @@
 <p align="center">
-  <img src="packaging/icon.png" width="128" alt="Quartermaster: a brass spyglass on black">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/quartermaster-logo-dark.png">
+    <img src="assets/brand/quartermaster-logo.png" width="150" alt="Quartermaster logo: a brass spyglass">
+  </picture>
 </p>
 
 <h1 align="center">Quartermaster</h1>
 
 <p align="center">
-  <b>The Wi-Fi and Bluetooth wardriver for the M5Stack CardputerZero.</b><br>
-  Every USB adapter at once. Clean WiGLE logs. Automatic uploads. Recon.
+  <b>The wardriver for the M5Stack CardputerZero.</b><br>
+  Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
+  Clean WiGLE logs. Automatic uploads. Recon.
 </p>
 
 <p align="center">
   <a href="https://github.com/valleytechsolutions/Quartermaster/releases/latest"><img src="https://img.shields.io/github/v/release/valleytechsolutions/Quartermaster?color=f5b301&label=release" alt="Latest release"></a>
   <a href="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml"><img src="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f5b301" alt="MIT license"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/AppStore-share%20code%20WARD-f5b301" alt="On the CardputerZero AppStore: share code WARD"></a>
 </p>
 
 <p align="center">
   <img src="docs/screens/boot.gif" width="320" alt="Boot animation: a black and gold ship drops three sails">
-  <img src="docs/screens/wardrive.png" width="320" alt="Live wardrive: 412 Wi-Fi networks, 187 Bluetooth devices, 1,677 rows logged">
+  <img src="docs/screens/wardrive-mesh.png" width="320" alt="Live wardrive: 412 Wi-Fi networks, 187 Bluetooth devices, 23 aircraft and 9 mesh nodes">
 </p>
 
-Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermaster finds your hardware by itself, scans on every radio at the same time, counts each network once, and writes logs in exactly the format WiGLE expects. When the Cardputer is back online, the log goes to WiGLE, WDGWars and Wardrift on its own.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#your-first-wardrive">First wardrive</a> ·
+  <a href="#nodes">Nodes</a> ·
+  <a href="#aircraft">Aircraft</a> ·
+  <a href="#mesh-nodes">Mesh nodes</a> ·
+  <a href="#settings">Settings</a>
+</p>
+
+Plug in your radios and a GPS, press one key, and drive. Quartermaster finds your hardware by itself and scans on every radio at the same time. It counts each device once and writes logs in exactly the format WiGLE expects. When the Cardputer is back online, the logs go to WiGLE, WDGWars and Wardrift on their own.
+
+## Install
+
+### From the CardputerZero AppStore
+
+<p align="center">
+  <img src="packaging/icon.png" width="88" alt="The Quartermaster app icon: look for it in the AppStore">
+</p>
+
+Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Cardputer and search for **Quartermaster**, or enter the share code **WARD**.
+
+Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
+
+### With one command
+
+New versions reach GitHub first, and the AppStore after its review. To get the newest one now, open a terminal on the CardputerZero, or connect to it with SSH, and paste this:
+
+```sh
+wget -qO /tmp/quartermaster.deb https://github.com/valleytechsolutions/Quartermaster/releases/latest/download/quartermaster.deb && sudo apt install -y /tmp/quartermaster.deb
+```
+
+The same command updates it. To remove it: `sudo apt remove quartermaster`. Your logs and settings stay where they are.
+
+### After you install
+
+Restart the Cardputer once after the first install, then open **Quartermaster** from the launcher. The restart lets Quartermaster reach an RTL-SDR stick and the Cap LoRa-1262.
+
+**Settings > Check for updates** tells you when a newer version is out. It only asks the AppStore and GitHub, and never downloads anything.
 
 ## What it does
 
-- **Every adapter at once.** Single, dual or tri-band, on the USB-A or the USB-C port, through a hub or not. Each adapter scans in its own thread across 2.4, 5 and 6 GHz, next to the built-in radio and Bluetooth. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
-- **A full wardriver with no adapter at all.** The built-in 2.4 GHz radio, Bluetooth and a GPS are enough.
-- **GPS from anything.** A USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd. It is found by itself, and the cap and Grove port are powered on when a GPS is needed there.
-- **The closest and the furthest sighting, and nothing else.** Each device is listed once. Its strongest and its weakest sighting are written with their exact positions, and by default no other rows, so a log holds no pile of repeats.
-- **Logs WiGLE accepts.** WigleWifi-1.6 CSV, written only with a fresh GPS fix and a real clock, split into files every upload site takes. Each log names Quartermaster in its header.
-- **Uploads by themselves.** Finished logs go to WiGLE, WDGWars and Wardrift whenever the Cardputer is online. Every log shows what each site did with it.
-- **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
+**Radios**
+
+- **Every Wi-Fi adapter at once.** Built-in and USB, single, dual or tri-band, across 2.4, 5 and 6 GHz. On either USB port, through a hub or not. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
+- **Bluetooth beside it.** The built-in radio logs Bluetooth LE and classic devices in every wardrive.
+- **No adapter needed.** The built-in 2.4 GHz radio, Bluetooth and a GPS make a full wardriver.
+- **Nodes.** Small ESP32-C5 boards scan Wi-Fi beside your adapters. Quartermaster shares the channels out between them.
+- **Wireless nodes.** One node stays plugged in as a hub. Up to 8 more run on a battery and send what they hear to it by radio.
+- **Aircraft.** Plug in an RTL-SDR stick and the aircraft around you are logged.
+- **LoRa mesh.** Fit the Cap LoRa-1262 and the Meshtastic and MeshCore nodes around you are logged. It only listens, and never sends.
+- **GPS from anything.** A USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd, found by itself.
+
+**Logs and uploads**
+
+- **The closest and the furthest sighting.** Each device is logged once at its strongest and once at its weakest sighting, with exact positions. No pile of repeats.
+- **Logs WiGLE accepts.** WigleWifi-1.6 CSV, written only with a fresh GPS fix and a real clock, split into files every upload site takes.
+- **Uploads by themselves.** Wi-Fi and Bluetooth go to WiGLE, WDGWars and Wardrift. Aircraft and mesh nodes go to WDGWars and Wardrift. Every log shows what each site did with it.
+- **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard, and test each one from the device.
+
+**And more**
+
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
-- **Nodes.** Small ESP32-C5 boards scan beside your adapters, on USB or wireless through a hub node. Quartermaster shares the channels out between them.
-- **Aircraft.** Plug in an RTL-SDR stick and the aircraft around you are logged for WDGWars and Wardrift.
-- **Mesh nodes.** Fit the Cap LoRa-1262 and the Meshtastic and MeshCore nodes around you are logged for WDGWars and Wardrift.
-- **One at a time.** Recon and a wardrive never run together, so every radio is always doing one job well.
-- **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %. When the battery is almost empty, it saves a running wardrive and closes, so that the Cardputer can switch off safely.
+- **One job at a time.** Recon and a wardrive never run together, so every radio does one job well.
+- **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
+
+<table>
+  <tr>
+    <td><img src="docs/screens/hardware-mesh.png" width="270" alt="The Hardware screen with the RTL-SDR stick, the Cap LoRa-1262, a GPS and Bluetooth"></td>
+    <td><img src="docs/screens/nodes.png" width="270" alt="Nodes: a new node found and one scanning"></td>
+    <td><img src="docs/screens/recon.png" width="270" alt="Recon with four flagged devices"></td>
+  </tr>
+  <tr>
+    <td align="center">Every radio on one screen</td>
+    <td align="center">Nodes</td>
+    <td align="center">Recon</td>
+  </tr>
+</table>
 
 ## Plug in and go
 
@@ -45,8 +111,10 @@ Quartermaster looks for your hardware by itself. There is nothing to set up for 
 - **Wi-Fi adapters.** Every USB adapter and the built-in radio scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
 - **Bluetooth.** The Cardputer's own radio scans in every wardrive. If Bluetooth is not ready yet, Quartermaster tries again every few seconds.
 - **GPS.** A USB GPS, the GPS on the Cap LoRa-1262, a Grove GPS unit or gpsd. Quartermaster tries each one and powers the cap and the Grove port only when it needs them. Plug a GPS in at any time, also during a wardrive.
-- **Aircraft.** Plug in an RTL-SDR stick, before or during a wardrive, and Quartermaster listens for aircraft. Restart the Cardputer once after the first install.
-- **Mesh nodes.** Fit the Cap LoRa-1262 before you switch on, and every wardrive listens for Meshtastic and MeshCore nodes. Restart the Cardputer once after the first install.
+- **Aircraft.** Plug in an RTL-SDR stick, before or during a wardrive, and Quartermaster listens for aircraft.
+- **Mesh nodes.** Fit the Cap LoRa-1262 before you switch on, and every wardrive listens for Meshtastic and MeshCore nodes.
+
+For aircraft and mesh nodes, restart the Cardputer once after the first install.
 
 These still need a press:
 
@@ -54,6 +122,15 @@ These still need a press:
 - **Nodes.** Flash the board, then add it with **OK** in **Settings > Nodes**. Wireless nodes are added there too. See [Nodes](#nodes).
 - **Upload keys.** Enter them once. See [Upload keys](#upload-keys).
 - **Country.** Set it once if you use nodes or the Cap LoRa-1262. With the cap, the first wardrive asks.
+
+## Your first wardrive
+
+1. Plug in your GPS, and any Wi-Fi adapters you have.
+2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
+3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
+4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
+
+Rows are only written while the GPS has a fix. Without one, the screen tells you and keeps counting.
 
 ## Screens
 
@@ -99,35 +176,6 @@ These still need a press:
     <td align="center">Signal finder</td>
   </tr>
 </table>
-
-## Install
-
-### From the CardputerZero AppStore
-
-Search for **Quartermaster**, or enter the share code **WARD**. The listing is in review. Until it is approved, use the command below.
-
-### With one command
-
-Open a terminal on the CardputerZero, or connect to it with SSH, and paste this:
-
-```sh
-wget -qO /tmp/quartermaster.deb https://github.com/valleytechsolutions/Quartermaster/releases/latest/download/quartermaster.deb && sudo apt install -y /tmp/quartermaster.deb
-```
-
-Restart the Cardputer once after the first install, then open **Quartermaster** from the launcher.
-
-The same command updates it. To remove it: `sudo apt remove quartermaster`. Your logs and settings stay where they are.
-
-**Settings > Check for updates** tells you when a newer version is out. It only asks the AppStore and GitHub, and never downloads anything. An app from the AppStore is updated in the AppStore app on the Cardputer: it lists the apps with a newer version, and key 7 updates them.
-
-## Your first wardrive
-
-1. Plug in your GPS, and any Wi-Fi adapters you have.
-2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
-3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
-4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
-
-Rows are only written while the GPS has a fix. Without one, the screen tells you and keeps counting.
 
 ## Upload keys
 
@@ -424,9 +472,26 @@ On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the ada
 
 Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://hackergadgets.com).
 
+## Made by Valleytech Solutions
+
+<p align="center">
+  <img src="assets/brand/vts-logo-tile.png" width="140" alt="Valleytech Solutions logo">
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/brand/bwm-logo-tile.png" width="140" alt="BWM logo">
+</p>
+
+<p align="center">
+  Quartermaster is made by <a href="https://github.com/valleytechsolutions">Valleytech Solutions</a>.<br>
+  The same two logos sail on the ship at start-up and sit on the About screen.
+</p>
+
+<p align="center">
+  <img src="docs/screens/about.png" width="320" alt="The About screen: Quartermaster version 1.2.0, with the Valleytech Solutions and BWM logos">
+</p>
+
 ## License
 
-MIT. Made by [Valleytech Solutions](https://github.com/valleytechsolutions).
+MIT. See [LICENSE](LICENSE).
 
 The Inter and JetBrains Mono fonts are included under the SIL Open Font License. Their license files are next to the fonts.
 
