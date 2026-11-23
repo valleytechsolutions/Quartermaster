@@ -681,3 +681,66 @@ def test_uploads_screen_reports_each_site(tmp_path, drawn):
     app.cfg["auto_upload"] = False
     app.stale()
     assert "Manual" in screen_text(app, drawn)
+
+
+class Typist(ScriptedInput):
+    """Keys that wait to be read, as they do while the screen thread is busy, and can be forgotten."""
+
+    def flush(self):
+        del self.queue[:]
+
+
+def test_keys_pressed_while_the_wardrive_is_saved_are_not_acted_on(tmp_path):
+    app = make_app(tmp_path, keys=KEYS)
+    app.keyboard = Typist()
+    press(app, "W", "ENTER")
+    press(app, "ENTER", "ESC", "ESC", "Y")
+    assert app.running and not app.wardriving and isinstance(app.screen, screens.Summary)
+
+
+def test_a_key_after_quit_in_the_same_read_is_not_acted_on(tmp_path):
+    app = make_app(tmp_path)
+
+    class Burst(ScriptedInput):
+        def poll(self, timeout):
+            keys, self.queue = self.queue, []
+            return keys
+    app.keyboard = Burst()
+    press(app, "ESC", "Y", "W")
+    assert not app.running and not app.wardriving
+
+
+def test_quitting_does_not_start_an_upload_it_would_cut_off(tmp_path):
+    app = make_app(tmp_path, keys=KEYS)
+    kicks = []
+    app.uploader.kick = lambda: kicks.append(1)
+    press(app, "W", "ENTER", "ENTER")
+    assert kicks == [1]
+    press(app, "ESC", "W")
+    assert app.wardriving
+    press(app, "ESC", "ESC", "Y")
+    assert not app.running and not app.wardriving and kicks == [1]
+
+
+def test_a_new_reason_found_as_the_wardrive_ends_is_shown_before_quartermaster_closes(tmp_path, drawn, later):
+    app = losing_rows(tmp_path, later)
+    press(app, "ESC", "ESC")
+    assert "The scan stops. %s." % LOST in screen_text(app, drawn).replace("\n", " ")
+    other = "Cannot write the log: Input/output error"
+    app.drive.failed = other
+    press(app, "Y")
+    assert app.running and isinstance(app.screen, screens.Summary) and other in screen_text(app, drawn)
+
+
+def test_a_wardrive_without_a_log_is_never_called_saved(tmp_path, drawn):
+    app = make_app(tmp_path, fix=NO_FIX)
+    press(app, "W")
+    assert app.wardriving and app.drive.log_path is None
+    press(app, "ESC", "ESC")
+    assert "The scan stops. Nothing has been logged yet." in screen_text(app, drawn).replace("\n", " ")
+    press(app, "ESC", "R", "SPACE")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "The wardrive stops and Recon starts. Nothing has been logged yet." in text and "saved" not in text
+    press(app, "ESC", "ESC", "W", "ENTER")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "The wardrive stops. Nothing has been logged yet." in text and "saved" not in text

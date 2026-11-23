@@ -178,19 +178,26 @@ class Wardrive:
         Call this with the lock held.
         """
         self.error = self.failed = "Cannot write the log: %s" % (exc.strerror or exc)
-        writer, self.writer = self.writer, None
-        if writer is not None:
+        writer = self.writer
+        if writer is None:
+            return
+        try:
             lost = writer.abandon(exc)
-            self.rows -= lost
-            if lost == writer.rows:
-                self._drop(writer.path)
+        finally:
+            self.writer = None
+        self.rows -= lost
+        if lost == writer.rows:
+            self._drop(writer.path)
 
     def _drop(self, path):
-        """A part left without a single row is no log. The list is replaced, for whoever is reading it."""
+        """A part left without a single row is no log, even where it cannot be removed: the next start clears it.
+
+        The list is replaced, for whoever is reading it.
+        """
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            return
+            pass
         self.log_paths = [kept for kept in self.log_paths if kept != path]
 
     def _tidy(self):
@@ -371,6 +378,7 @@ class Wardrive:
             return
         try:
             path = _summary_path(log)
+            _mend(path.with_name("." + path.name + ".part"))
             fd = os.open(str(path.with_name("." + path.name + ".part")), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8", newline="") as out:
                 csv.writer(out, lineterminator="\n").writerows(_summary_row(d) for d in devices)
@@ -390,6 +398,7 @@ class Wardrive:
                 writer = csv.writer(out, lineterminator="\n")
                 writer.writerow(SUMMARY_COLUMNS)
                 if aside.exists():
+                    _mend(aside)
                     with open(aside, encoding="utf-8", newline="") as earlier:
                         shutil.copyfileobj(earlier, out)
                 writer.writerows(_summary_row(d) for d in self.tracker.found() if not d.ignored)
@@ -404,6 +413,17 @@ class Wardrive:
             except OSError:
                 pass
         _settle(path.parent)
+
+
+def _mend(path):
+    """Cut off a last line that a full card left half written, so that the next line does not join it."""
+    try:
+        with open(path, "rb+") as part:
+            data = part.read()
+            if data and not data.endswith(b"\n"):
+                part.truncate(data.rfind(b"\n") + 1)
+    except FileNotFoundError:
+        pass
 
 
 def _extreme(point):

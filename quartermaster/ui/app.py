@@ -108,6 +108,7 @@ class App:
         self._faults = []
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
         self._pressed = None
+        self._deaf = False
 
     @property
     def screen(self):
@@ -195,15 +196,19 @@ class App:
     def leave(self, said=""):
         """Quit as asked. A wardrive that turns out not to be saved, when nothing has said so yet, shows why first."""
         drive = self.drive if self.wardriving else None
-        self.stop_wardrive(show=False)
-        if drive is None or said or not drive.failed:
+        self.stop_wardrive(show=False, upload=False)
+        if drive is None or drive.failed in ("", said):
             return self.quit()
         self.push(screens.Summary(drive.status()))
 
     def ending(self, saved, stops):
         """What a dialog says of the wardrive it would end: once rows were lost, why, and never that it is saved."""
         failed = self.drive.failed if self.wardriving else ""
-        return "%s %s." % (stops, failed) if failed else saved
+        if failed:
+            return "%s %s." % (stops, failed)
+        if self.wardriving and self.drive.log_path is None:
+            return "%s Nothing has been logged yet." % stops
+        return saved
 
     def toast(self, text, color=GOLD, seconds=3.0):
         self.toast_text, self.toast_color, self.toast_until = text, color, time.monotonic() + seconds
@@ -225,6 +230,7 @@ class App:
         c.rect((50, 68, W - 50, 102), fill=SURFACE, outline=GOLD, radius=8)
         c.text_center(W // 2, 78, text, font("bold", 11), GOLD)
         self.display.show(c.image)
+        self._deaf = True
 
     def save(self):
         try:
@@ -341,14 +347,15 @@ class App:
                                                        "The wardrive stops."), "Stop + save",
                      self.stop_wardrive, default=1)
 
-    def stop_wardrive(self, show=True):
+    def stop_wardrive(self, show=True, upload=True):
         if not self.wardriving:
             return
         self.busy("Saving the wardrive…")
         self.drive.stop()
         status = self.drive.status()
         self.stale()
-        self.uploader.kick()
+        if upload:
+            self.uploader.kick()
         if show:
             self.home()
             self.push(screens.Summary(status))
@@ -594,6 +601,7 @@ class App:
             self.booted()
         if self._booted:
             self.watch_battery()
+        self._listen()
         for key in self.keyboard.poll(timeout):
             if not self.screen.text_mode:
                 key = navigation(key)
@@ -608,6 +616,15 @@ class App:
             else:
                 self.screen.handle(key, self)
             self.dirty = True
+            if self._deaf or not self.running:
+                break
+        self._listen()
+
+    def _listen(self):
+        """Keys pressed while a notice held the screen were meant for nothing on it."""
+        if self._deaf:
+            self._deaf = False
+            getattr(self.keyboard, "flush", lambda: None)()
 
     def run(self):
         self.hw.start()

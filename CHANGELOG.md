@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.5
+
+Small fixes. Nothing changes in how Quartermaster looks or is used.
+
+- When storage refuses a write, the log being repaired is never uploaded half way through the repair.
+- A log started at the very moment the uploader looks at the folder waits for the next pass instead of being sent while it is written.
+- When the first part of a log has no rows and cannot be removed, the summary is named after the part that holds the rows.
+- A summary line left half written by full storage no longer joins the next device into one line.
+- Quitting shows the end screen when the wardrive turns out to be lost for a reason other than the one the question gave.
+- Quitting during a wardrive no longer starts an upload that would be cut off as Quartermaster closes. The log uploads next time.
+- Keys pressed while "Saving the wardrive…" shows, or right after Quit, are no longer acted on.
+- A wardrive that has logged nothing yet, for example without a GPS fix, is no longer called saved when it is stopped.
+
 ## 1.0.4
 
 The first update since 1.0.1. Versions 1.0.2 and 1.0.3 were test builds.

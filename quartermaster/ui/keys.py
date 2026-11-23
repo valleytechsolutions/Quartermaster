@@ -191,6 +191,16 @@ class EvdevInput:
                     keys.append(key)
         return keys
 
+    def flush(self):
+        """Forget what was typed while the app could not listen."""
+        for fd in list(self.devices):
+            try:
+                while os.read(fd, EVENT.size * 32):
+                    pass
+            except OSError:
+                pass
+        self.look()
+
     def translate(self, code, value, built_in=False):
         if code in SHIFTS and not (built_in and code in self.symbols):
             self.shift = value != 0

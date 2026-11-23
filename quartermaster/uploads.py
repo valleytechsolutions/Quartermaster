@@ -357,12 +357,13 @@ class Uploader:
 
     def logs(self):
         """Finished logs with at least one row, oldest first. The file still being written is left out."""
-        active = self.active()
+        before = self.active()
         try:
             files = sorted(self.logs_dir.glob(wigle.LOG_GLOB))
         except OSError:
             return []
-        return [path for path in files if path != active and self._has_rows(path)]
+        active = {before, self.active()}
+        return [path for path in files if path not in active and self._has_rows(path)]
 
     def _has_rows(self, path):
         if path.name not in self._with_rows and wigle.data_rows(path, limit=1):
