@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3
+
+The same app as 1.2.2 under a new number, so a CardputerZero that installed an early 1.2.2 test build also gets the calmer alerts: the banner at the bottom, Del to hide, Q for quiet, Alert position and the credits.
+
 ## 1.2.2
 
 - A new home screen icon, drawn at the size the home screen shows it, with a bolder outline and no black square.
