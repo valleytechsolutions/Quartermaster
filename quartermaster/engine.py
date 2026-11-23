@@ -12,6 +12,7 @@ import time
 from . import adsb, faults, hardware, lora, mesh, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
+from .drive_watch import DriveWatch
 from .tracker import BLE, BT, WIFI, Tracker
 from .wifi import ScanUnavailable, WifiFleet
 
@@ -160,8 +161,11 @@ def _record(device):
 
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
-                 nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener):
+                 nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
+                 player=None):
         self.cfg = dict(cfg)
+        self.alerts, self.player = alerts, player
+        self.watch = None
         self.sdr = sdr
         self.cap, self.listener = cap, listener
         self.mesh = None
@@ -254,6 +258,7 @@ class Wardrive:
         self._started, self._stopped = time.monotonic(), None
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
+        self._watch_on()
         self.fleet.start()
         if self._sky_wanted():
             self._listen_sky()
@@ -269,6 +274,37 @@ class Wardrive:
             self._threads.append(threading.Thread(target=self._ble_loop, daemon=True, name="ble"))
         for thread in self._threads:
             thread.start()
+
+    def _watch_on(self):
+        if self.watch is not None or self.alerts is None or not self.cfg.get("drive_alerts", True):
+            return
+        try:
+            watch = self.alerts(self.cfg, self.gps, self.root, player=self.player, clock=self.clock)
+            watch.start(gps_epoch(self.gps.snapshot(), self.clock()))
+            self.watch = watch
+            if self.nodes is not None:
+                self.nodes.dragon_sink = watch.offer_external
+        except Exception:
+            faults.note("Starting drive alerts")
+
+    def _unhook(self, watch):
+        if self.nodes is not None and getattr(self.nodes, "dragon_sink", None) == watch.offer_external:
+            self.nodes.dragon_sink = None
+
+    def set_alerts(self, cfg):
+        """Drive alert settings take effect at once, also during a wardrive."""
+        for key, value in cfg.items():
+            if key.startswith("drive_") or key == "ignore":
+                self.cfg[key] = value
+        watch = self.watch
+        if watch is not None and not self.cfg.get("drive_alerts", True):
+            self.watch = None
+            self._unhook(watch)
+            watch.stop()
+        elif watch is not None:
+            watch.configure(self.cfg)
+        elif self.state == "running":
+            self._watch_on()
 
     def _sky_wanted(self):
         """Whether aircraft are listened for now: On always, Auto while an RTL-SDR stick is plugged in."""
@@ -487,6 +523,9 @@ class Wardrive:
             self.mesh.stop()
         if self.ble is not None:
             self.ble.close()
+        if self.watch is not None:
+            self._unhook(self.watch)
+            self.watch.stop()
         self._flush_extremes()
         self._parts_done()
         with self._lock:
@@ -606,6 +645,9 @@ class Wardrive:
                 self._wifi_seen(net, *self._placed(net, now, fix), min_rssi)
             except Exception:
                 faults.note("Logging a Wi-Fi network")
+        watch = self.watch
+        if watch is not None:
+            watch.offer_wifi(networks)
 
     def _wifi_seen(self, net, now, fix, min_rssi):
         if net["rssi"] < min_rssi or (self._bands and net["band"] not in self._bands):
@@ -629,19 +671,27 @@ class Wardrive:
             try:
                 seen = self.ble.scan()
                 self.ble_error = ""
+                self._listening(True)
                 self._ble_sink(seen, last_rssi)
             except ScanUnavailable as exc:
                 self.ble_error = str(exc)
+                self._listening(False)
                 self._stop.wait(5)
                 continue
             except Exception:
                 faults.note("Bluetooth scan")
                 self.ble_error = "Bluetooth scan failed. Trying again."
+                self._listening(False)
                 self._stop.wait(5)
                 continue
             if len(last_rssi) > 20000:
                 last_rssi.clear()
             self._stop.wait(interval)
+
+    def _listening(self, on):
+        watch = self.watch
+        if watch is not None:
+            watch.listening("ble", on)
 
     def _node_ble(self, seen):
         """A node reports a device again only when it has something new to say."""
@@ -663,6 +713,9 @@ class Wardrive:
         if not is_mac(mac) or last_rssi.get(mac) == item["rssi"]:
             return
         last_rssi[mac] = item["rssi"]
+        watch = self.watch
+        if watch is not None:
+            watch.offer_ble(item)
         if item["rssi"] < min_rssi or (item.get("address_type", 1) != 0 and not include_random):
             return
         kind = BT if item.get("classic") else BLE
@@ -690,6 +743,7 @@ class Wardrive:
                        mesh=self.mesh.count if self.mesh is not None else None,
                        lora=self.mesh.status() if self.mesh is not None else None,
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
+                       watch=self.watch.status() if self.watch is not None else None,
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))

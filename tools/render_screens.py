@@ -9,7 +9,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quartermaster import accounts, adsb, config, lora, mesh, uploads, wigle  # noqa: E402
+from quartermaster import accounts, adsb, config, drive_watch, lora, mesh, tones, uploads, wigle  # noqa: E402
+from quartermaster.recon import STRONG  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
 from quartermaster.nodes import NodeManager  # noqa: E402
 from quartermaster.recon_engine import Recon  # noqa: E402
@@ -239,6 +240,7 @@ def listen(app, root, shot):
 
 
 def main():
+    tones.find_player = lambda: None
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(ROOT / "screenshots"))
     parser.add_argument("--scale", type=int, default=1)
@@ -282,6 +284,13 @@ def main():
     app.drive.tracker.counts["BLE"] = 187
     app.drive.rows = 1263
     shot("wardrive")
+    app.drive.watch._show({"time": NOW, "category": "flock", "label": drive_watch.LABELS["flock"],
+                           "name": "Flock-3A1007", "address": "B4:1E:52:3A:10:07", "rssi": -71, "confidence": STRONG,
+                           "evidence": "Flock Safety OUI"}, False)
+    shot("wardrive-alert")
+    press(app, "A")
+    shot("drive-alerts")
+    press(app, "ESC")
     press(app, "ENTER")
     shot("confirm")
     press(app, "ENTER")
@@ -319,6 +328,13 @@ def main():
     app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "ignore")
     press(app, "ENTER")
     shot("ignore-list")
+    press(app, "ESC")
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "drive_alerts")
+    press(app)
+    shot("settings-alerts")
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "drive_alert_types")
+    press(app, "ENTER")
+    shot("alert-types")
     press(app, "ESC")
     plug_in_nodes(app, root)
     app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "nodes")

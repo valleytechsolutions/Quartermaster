@@ -6,6 +6,14 @@
 - More USB Wi-Fi adapters work as soon as they are plugged in. Adapters that first show up as a driver disc switch by themselves.
 - When an adapter is plugged in but not scanning, the Hardware screen says why: setup mode, no driver on this system yet, a model too new for the driver, missing firmware, or not enough power.
 - The README lists which Wi-Fi chips work, which do not yet, and which adapters to buy.
+- Drive Alerts: during a wardrive, Quartermaster can warn you about Flock cameras, Axon body cameras, Meta camera glasses and the other kinds Recon knows. A banner shows for about 6 seconds and takes no key, the Wardrive screen counts the alerts, and A lists them. Alerts are checked off the scan path, so scanning never waits, and the WiGLE log is the same with alerts on or off. Settings, Drive Alerts turns them on and off, picks the kinds, the tone for each kind, the volume, and My alerts, a list of names or MAC addresses of your own. Axon, Flock and Meta glasses alert by default.
+- Alert tones: Siren, Yelp, Chirp, Shutter, Ping, Blip, the Dragon Detector melodies, or Silent. Settings, Drive Alerts plays each tone as you pick it. Tones play one at a time, the most important first, never the same tone twice within 4 seconds, and a tone that waits more than 10 seconds is dropped.
+- A Dragon Detector on USB: its alerts join the wardrive's alerts, graded the same way as Recon's.
+- Recon knows more: fleet routers, dashcams and Wi-Fi cameras by their network names, Sonos and other listening speakers, the Flipper Zero's company ID, and whether an AirTag is away from its owner. Fleet routers, speakers and foxes start off in Settings.
+- Recon no longer calls BC:DD:C2 a Flock device: that prefix belongs to another maker.
+- Recon's alert sound no longer holds up scanning.
+- Quartermaster is now GPL-3.0 from this version. Earlier releases stay MIT. The README credits SquachWatch, Dragon Detector and the other projects it learns from.
+- The install adds Quartermaster to the audio group, so alert tones can play.
 
 ## 1.2.1
 

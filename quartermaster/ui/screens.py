@@ -344,7 +344,11 @@ class Wardrive(Screen):
         self.filter = app.cfg.get("live_list", "all")
 
     def hints(self, app):
-        return [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
+        hints = [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
+        watch = app.drive.watch if app.drive is not None else None
+        if watch is not None and watch.alert_list():
+            hints.insert(2, ("A", "Alerts"))
+        return hints
 
     @staticmethod
     def warning(app, s):
@@ -390,6 +394,13 @@ class Wardrive(Screen):
         for band in ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
+        watch = s.get("watch")
+        if watch and watch["alerts"]:
+            x += c.pill(x, y, "!%d" % watch["alerts"], font("monob", 8), BG, RED if watch["urgent"] else AMBER,
+                        height=11) + 4
+        if watch and watch["speaker"] is False and not drive.watch.speaker_said:
+            drive.watch.speaker_said = True
+            app.toast("No speaker found: alerts show on screen only", AMBER, 5)
         small = font("ui", 8)
         extra = []
         if s.get("aircraft") is not None:
@@ -439,6 +450,9 @@ class Wardrive(Screen):
     def handle(self, key, app):
         if key in ("ENTER", "S"):
             app.ask_stop_wardrive()
+        elif key == "A" and app.drive is not None and app.drive.watch is not None:
+            from .recon_screens import DriveAlerts
+            app.push(DriveAlerts())
         elif key.name in ("TAB", "LEFT", "RIGHT"):
             if not key.repeat:
                 self.filter = self.NEXT[self.filter]
@@ -1123,6 +1137,12 @@ class Settings(Screen, ListMixin):
             return plural(len(app.cfg.get("ignore", ())), "name")
         if key == "recon_categories":
             return "%d of %d" % (len(app.cfg.get(key, ())), len(recon.CATEGORIES))
+        if key == "drive_alert_types":
+            from ..drive_watch import TYPES
+            return "%d of %d" % (len(app.cfg.get(key, ())), len(TYPES))
+        if key == "drive_watch":
+            count = len(app.cfg.get(key, ()))
+            return "%d %s" % (count, "entry" if count == 1 else "entries")
         if key == "nodes":
             found = len(app.nodes.found())
             return plural(len(app.cfg.get("nodes", ())), "node") + (", %d new" % found if found else "")
@@ -1180,6 +1200,12 @@ class Settings(Screen, ListMixin):
         elif name == "recon_categories":
             from .recon_screens import Categories
             app.push(Categories())
+        elif name == "drive_alert_types":
+            from .recon_screens import AlertTypes
+            app.push(AlertTypes())
+        elif name == "drive_watch":
+            from .recon_screens import MyAlerts
+            app.push(MyAlerts())
         elif name == "nodes":
             app.push(Nodes())
             if not app.cfg.get("country_set") and not self.locked(app, "country"):
@@ -1812,7 +1838,7 @@ class About(Screen):
         c.paste(image("bwm-logo.png", (28, 28)), (16, y + 3))
         c.paste(image("vts-logo.png", (28, 28)), (W - 42, y + 3))
         c.text_center(W // 2, y + 5, "Valleytech Solutions", font("bold", 11), (0, 0, 0))
-        c.text_center(W // 2, y + 19, "MIT open source", font("ui", 9), (90, 90, 90))
+        c.text_center(W // 2, y + 19, "GPL-3.0 open source", font("ui", 9), (90, 90, 90))
 
     def handle(self, key, app):
         if key == "T":

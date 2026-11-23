@@ -2,24 +2,27 @@
 
 import time
 
-from .. import recon
+from .. import config, drive_watch, recon, tones
 from . import icons
 from .gfx import (AMBER, BG, CONTENT_BOTTOM, CYAN, FAINT, GOLD, GOLD_INK, GREEN, LINE, MUTED, RED, SURFACE, SURFACE_2,
-                  TEXT, W, ago, bearing, clock, compass, distance_m, font, human_distance, rssi_color)
-from .screens import TOP, Details, ListMixin, Screen, empty_state, fmt_rssi, gps_text, plural
+                  TEXT, VIOLET, W, ago, bearing, clock, compass, distance_m, font, human_distance, rssi_color)
+from .screens import TOP, Details, ListMixin, Screen, TextInput, empty_state, fmt_rssi, gps_text, plural
 
 PINK = (255, 120, 200)
 CATEGORY_COLOR = {
     "flock": RED, "alpr": RED, "axon": RED, "ring": AMBER, "camera": AMBER, "glasses": AMBER, "drone": CYAN,
     "airtag": PINK, "tracker": PINK, "ibeacon": MUTED, "raven": AMBER, "skimmer": AMBER, "hacker": (180, 140, 255),
+    "fleet": MUTED, "listener": MUTED, "fox": CYAN, "eviltwin": AMBER, "burst": AMBER, "deauth": AMBER, "mine": GOLD,
 }
+BANNER_FILL = {"flock": ((70, 12, 14), RED), "alpr": ((70, 12, 14), RED), "axon": ((70, 12, 14), RED),
+               "mine": ((60, 44, 8), GOLD), "glasses": ((40, 28, 70), VIOLET)}
 GRADE_COLOR = {recon.LOW: MUTED, recon.MEDIUM: AMBER, recon.STRONG: RED}
 ADDRESS_KIND = {0: "public", 1: "random", 2: "public identity", 3: "random identity"}
 OPERATOR_KIND = {0: "take-off point", 1: "live operator", 2: "fixed point"}
 
 
 def category_pill(c, x, y, category, width=None):
-    label = recon.CATEGORY_SHORT.get(category, "?")
+    label = drive_watch.SHORT.get(category, "?")
     f = font("bold", 7)
     w = width or int(c.text_width(label, f)) + 8
     c.rect((x, y, x + w, y + 11), fill=CATEGORY_COLOR.get(category, MUTED), radius=3)
@@ -399,3 +402,237 @@ def alert_banner(c, app):
     c.text_right(W - 12, y + 3, "%s dBm" % fmt_rssi(alert.get("rssi")), font("monob", 9), edge)
     more = r.unseen_alerts - 1
     c.text_right(W - 12, y + 15, "R to view" if more < 1 else "+%d  ·  R" % more, font("mono", 8), MUTED)
+
+
+def tone_of(app, kind):
+    return app.cfg.get("drive_alert_sounds", {}).get(kind, drive_watch.DEFAULT_TONES.get(kind, "blip"))
+
+
+class AlertTypes(Screen, ListMixin):
+    """Which kinds of device alert during a wardrive, and the tone of each."""
+
+    title = "ALERT ME ABOUT"
+    VISIBLE = 8
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    def hints(self, app):
+        return [("OK", "On / off"), ("Z/C", "Tone"), ("T", "Mute"), ("P", "Play"), ("D", "Defaults")]
+
+    def render(self, c, app):
+        enabled = set(app.cfg.get("drive_alert_types", drive_watch.DEFAULT_TYPES))
+        muted = set(app.cfg.get("drive_alert_mute", ()))
+        sounding = app.cfg.get("drive_alert_tones", True)
+        names = drive_watch.TYPES
+        self.clamp(len(names), self.VISIBLE)
+        for row, name in enumerate(names[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 16
+            selected = self.top + row == self.index
+            if selected:
+                c.select(y, 15)
+            on = name in enabled
+            category_pill(c, 10, y + 2, name, width=56)
+            c.text((72, y + 2), drive_watch.NAMES[name], font("ui", 10), TEXT if on else FAINT, width=112)
+            tone = "Tone off" if name in muted else tones.name(tone_of(app, name))
+            quiet = not on or not sounding or name in muted
+            c.text_right(W - 50, y + 3, c.fit(tone, 82, font("mono", 8)), font("mono", 8),
+                         FAINT if quiet else GOLD if selected else MUTED)
+            c.rect((W - 44, y + 3, W - 18, y + 12), fill=GOLD if on else SURFACE_2, radius=5)
+            c.draw.ellipse((W - 30 if on else W - 43, y + 4, W - 21 if on else W - 34, y + 11),
+                           fill=GOLD_INK if on else MUTED)
+        self.scrollbar(c, len(names), self.VISIBLE)
+
+    def handle(self, key, app):
+        names = drive_watch.TYPES
+        if self.move(key, len(names), self.VISIBLE):
+            return True
+        chosen = names[self.index]
+        enabled = app.cfg.get("drive_alert_types", drive_watch.DEFAULT_TYPES)
+        if key in ("ENTER", "SPACE"):
+            app.change("drive_alert_types", [k for k in names if (k in enabled) != (k == chosen)])
+        elif key.name in ("LEFT", "RIGHT"):
+            order = tones.ORDER
+            current = tone_of(app, chosen)
+            step = -1 if key.name == "LEFT" else 1
+            tone = order[(order.index(current) + step) % len(order)] if current in order else order[0]
+            app.change("drive_alert_sounds", dict(app.cfg.get("drive_alert_sounds", {}), **{chosen: tone}))
+            app.preview(tone)
+        elif key == "T":
+            muted = app.cfg.get("drive_alert_mute", [])
+            app.change("drive_alert_mute", [k for k in names if (k in muted) != (k == chosen)])
+        elif key == "P":
+            app.preview(tone_of(app, chosen))
+        elif key == "D":
+            app.confirm("Restore the defaults?", "Flock, body cameras, camera glasses and My alerts alert, each "
+                        "with its own tone. Everything else is saved without an alert.", "Restore", app.alert_defaults)
+        else:
+            return super().handle(key, app)
+        return True
+
+
+class MyAlerts(Screen, ListMixin):
+    title = "MY ALERTS"
+    VISIBLE = 7
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    def hints(self, app):
+        return [("A", "Add"), ("D", "Remove"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        entries = app.cfg.get("drive_watch", [])
+        if not entries:
+            empty_state(c, "alert", "Nothing on your list",
+                        "Press A to add a Wi-Fi or Bluetooth name or address. veh matches every name that starts "
+                        "with veh, and * or ? match any text. A match always alerts.")
+            return
+        self.clamp(len(entries), self.VISIBLE)
+        for row, entry in enumerate(entries[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 16
+            if self.top + row == self.index:
+                c.select(y, 15)
+            c.text((11, y + 2), entry, font("ui", 10), TEXT, width=W - 110)
+            kind = "address" if config.is_mac(entry) else "pattern" if "*" in entry or "?" in entry else "name"
+            c.text_right(W - 14, y + 3, kind, font("mono", 9), MUTED)
+        self.scrollbar(c, len(entries), self.VISIBLE)
+        c.text((10, CONTENT_BOTTOM - 13), "Alerts in every wardrive, whatever kind of device it is.",
+               font("ui", 8), FAINT, width=W - 20)
+
+    def handle(self, key, app):
+        entries = list(app.cfg.get("drive_watch", []))
+        self.clamp(len(entries), self.VISIBLE)
+        if self.move(key, len(entries), self.VISIBLE):
+            return True
+        if key == "A":
+            if len(entries) >= config.MAX_WATCH:
+                app.toast("The list is full (%d entries)" % config.MAX_WATCH, AMBER)
+            else:
+                app.push(TextInput("Name, pattern or address", app.watch_add,
+                                   hint="Such as veh* or a MAC address. Capitals do not matter.",
+                                   limit=config.WATCH_LENGTH))
+        elif key == "D" and entries:
+            entry = entries[self.index]
+            app.confirm("Remove it?", "%s will not alert by itself any more." % entry, "Remove",
+                        lambda: app.change("drive_watch", [item for item in entries if item != entry]))
+        else:
+            return super().handle(key, app)
+        return True
+
+
+def drive_alert(app):
+    """The newest wardrive alert while it is still worth showing."""
+    drive = app.drive
+    watch = drive.watch if drive is not None and app.wardriving else None
+    return watch.banner() if watch is not None else None
+
+
+def drive_alert_banner(c, app):
+    """A fresh wardrive alert, over every screen. It takes no key, so OK still stops the wardrive."""
+    shown = drive_alert(app)
+    if shown is None:
+        return
+    fill, edge = BANNER_FILL.get(shown["category"], ((60, 44, 8), AMBER))
+    y = TOP - 2
+    c.rect((4, y, W - 4, y + 28), fill=fill, outline=edge, radius=6)
+    blink = shown["category"] != "axon" or int(time.monotonic() * 3) % 2 == 0
+    icons.draw(c, "alert", 10, y + 5, 18, edge if blink else tuple(v * 2 for v in fill))
+    if shown.get("flood"):
+        title, detail = shown["name"], shown["evidence"]
+    else:
+        fold = shown.get("fold", 1)
+        title = shown["label"] + (" ×%d" % fold if fold > 1 else "")
+        detail = "%s  ·  %s" % (shown.get("name") or shown.get("address") or "—",
+                                recon.CONFIDENCE_NAMES.get(shown["confidence"], ""))
+        if shown.get("owner"):
+            detail += "  ·  " + shown["owner"]
+    c.text((34, y + 3), title, font("bold", 10), TEXT, width=W - 110)
+    c.text((34, y + 15), detail, font("ui", 8), (230, 220, 210), width=W - 110)
+    c.text_right(W - 12, y + 3, "%s dBm" % fmt_rssi(shown.get("rssi")), font("monob", 9), edge)
+    from .screens import Wardrive
+    if isinstance(app.screen, Wardrive):
+        c.text_right(W - 12, y + 15, "A to list", font("mono", 8), MUTED)
+
+
+class DriveAlerts(Screen, ListMixin):
+    """The alerts of the wardrive running now, newest first. Read only."""
+
+    title = "DRIVE ALERTS"
+    VISIBLE = 7
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    @staticmethod
+    def alerts(app):
+        watch = app.drive.watch if app.drive is not None else None
+        return watch.alert_list() if watch is not None else []
+
+    def hints(self, app):
+        return [("OK", "Details"), ("F/X", "Move"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        alerts = self.alerts(app)
+        if not alerts:
+            empty_state(c, "alert", "No alerts yet", "Alerts of this wardrive are listed here, newest first.")
+            return
+        self.clamp(len(alerts), self.VISIBLE)
+        for row, shown in enumerate(alerts[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 16
+            if self.top + row == self.index:
+                c.select(y, 15)
+            c.text((9, y + 3), time.strftime("%H:%M", time.localtime(shown["time"])), font("mono", 8), MUTED)
+            category_pill(c, 40, y + 2, shown["category"], width=50)
+            title = shown["name"] if shown.get("flood") else shown.get("name") or shown.get("address") or "—"
+            c.text((96, y + 2), title, font("ui", 10), AMBER if shown.get("flood") else TEXT, width=W - 210)
+            if not shown.get("flood"):
+                grade_dots(c, W - 108, y + 4, shown["confidence"])
+                if shown.get("count", 1) > 1:
+                    c.text_right(W - 58, y + 3, "×%d" % shown["count"], font("mono", 8), MUTED)
+                c.text_right(W - 14, y + 3, "%s dBm" % fmt_rssi(shown.get("rssi")), font("mono", 8),
+                             rssi_color(shown.get("rssi")))
+        self.scrollbar(c, len(alerts), self.VISIBLE)
+
+    def handle(self, key, app):
+        alerts = self.alerts(app)
+        if self.move(key, len(alerts), self.VISIBLE):
+            return True
+        if key == "ENTER" and alerts:
+            app.push(DriveAlertDetail(alerts[min(self.index, len(alerts) - 1)]))
+            return True
+        return super().handle(key, app)
+
+
+class DriveAlertDetail(Details):
+    def __init__(self, shown):
+        super().__init__("ALERT")
+        self.shown = shown
+
+    def rows(self, app):
+        shown = self.shown
+        rows = [("Kind", shown["label"], CATEGORY_COLOR.get(shown["category"], TEXT))]
+        if not shown.get("flood"):
+            rows.append(("Evidence", recon.CONFIDENCE_NAMES.get(shown["confidence"], ""),
+                         GRADE_COLOR.get(shown["confidence"], TEXT)))
+        if shown.get("evidence"):
+            rows.append(("", shown["evidence"], MUTED))
+        if shown.get("vendor"):
+            rows.append(("Vendor", shown["vendor"]))
+        if shown.get("name"):
+            rows.append(("Name", shown["name"]))
+        if shown.get("address"):
+            rows.append(("Address", shown["address"]))
+        if shown.get("owner"):
+            rows.append(("Owner", shown["owner"], PINK))
+        if shown.get("rssi") is not None:
+            rows.append(("Signal", "best %s dBm" % fmt_rssi(shown["rssi"]), rssi_color(shown["rssi"])))
+        rows.append(("Heard", "%s, %s" % (plural(shown.get("count", 1), "time"),
+                                          time.strftime("%H:%M:%S", time.localtime(shown["time"])))))
+        receiver = shown.get("receiver")
+        if receiver:
+            rows.append(("You were at", "%.5f, %.5f" % (receiver["latitude"], receiver["longitude"])))
+        if shown.get("source") == "dragon":
+            rows.append(("From", "Dragon Detector on USB"))
+        rows.append(("", "A match is broadcast evidence, not proof of recording, intent or ownership.", FAINT))
+        return rows

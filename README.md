@@ -10,13 +10,13 @@
 <p align="center">
   <b>The wardriver for the M5Stack CardputerZero.</b><br>
   Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
-  Clean WiGLE logs. Automatic uploads. Recon.
+  Clean WiGLE logs. Automatic uploads. Drive Alerts. Recon.
 </p>
 
 <p align="center">
   <a href="https://github.com/valleytechsolutions/Quartermaster/releases/latest"><img src="https://img.shields.io/github/v/release/valleytechsolutions/Quartermaster?color=f5b301&label=release" alt="Latest release"></a>
   <a href="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml"><img src="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f5b301" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-f5b301" alt="GPL-3.0 license"></a>
   <a href="#install"><img src="https://img.shields.io/badge/AppStore-share%20code%20WARD-f5b301" alt="On the CardputerZero AppStore: share code WARD"></a>
 </p>
 
@@ -87,8 +87,9 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **And more**
 
+- **Drive Alerts.** While you wardrive, a banner and a tone warn you about Flock cameras, body cameras, camera glasses and any other kind you pick, from what the wardrive already hears. Each kind can have its own tone, such as a siren for body cameras. See [Drive Alerts](#drive-alerts).
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
-- **One job at a time.** Recon and a wardrive never run together, so every radio does one job well.
+- **One job at a time.** Recon and a wardrive never run together, so every radio does one job well. Drive Alerts use no radio of their own.
 - **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
 
 <table>
@@ -410,6 +411,7 @@ Logs shows mesh files with a **MESH** tag, and what each site took.
 | **Space** | Start or stop a wardrive from the menu |
 | **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
 | **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
+| **A** | On the wardrive screen, once something has alerted: the alerts of this wardrive |
 | **Sym**, then a key | In a text box: the symbol printed on that key |
 
 Every screen shows its own keys along the bottom.
@@ -440,6 +442,14 @@ Every screen shows its own keys along the bottom.
 | | GPS accuracy needed | Any fix, Fair, Good, Best | Any fix |
 | | Cap and Grove power | When needed, Leave off | When needed |
 | Uploads | Send logs | Automatic, Only when asked | Automatic |
+| Drive alerts | Alerts while wardriving | On, Off | On |
+| | Alert me about | Each kind of device: alert on or off, tone on or off, and its tone | Flock, body cameras, camera glasses, My alerts |
+| | Alert tones | On, Off | On |
+| | Tone volume | Loud, Medium, Quiet | Loud |
+| | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
+| | Alert again | After 15 min away, After 1 h away, Once per drive | After 15 min away |
+| | Only when signal is above | Any, -85 dBm, -75 dBm | Any |
+| | My alerts | Up to 8 names, patterns or addresses that always alert | |
 | Recon | Show devices from | Weak hints, Medium evidence, Strong only | Weak hints |
 | | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
 | | Alert sound | On, Off | On |
@@ -462,6 +472,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 | `logs/quartermaster_<date>-<time>.mesh.json.gz` | The Meshtastic and MeshCore nodes of the wardrive, each with its closest and furthest sighting, for WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.mesh.csv` | One line per mesh node: name, role, first and last seen, signal, hops, the closest and furthest sighting with position and time, and the position the node gives out. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
+| `recon/drive_<date>-<time>.jsonl` | What Drive Alerts found during a wardrive, alerted or not. Never uploaded. |
 
 Every log starts with a header that names the app:
 
@@ -482,6 +493,26 @@ To copy logs off the Cardputer, open the phone setup page and tap a log, or use 
 Recon listens on every radio for devices that look like surveillance or tracking equipment. Each match is graded as a weak hint, medium evidence or a strong signature, and the details screen shows exactly what was matched. Press **OK** on a device and **OK** again to open the signal finder, then walk toward the stronger signal.
 
 A match is broadcast evidence. It is not proof that a device is recording, who owns it, or what it is for. Many products share radio parts, so weak hints are common.
+
+Recon also knows dashcams and fleet cameras, in-car fleet routers (a kind of their own, never counted as body cameras, and off until you turn them on), smart speakers with microphones (off until you turn them on), AirTags with or without their owner and AirTags not set up yet, and the Dragon Detector fox test beacon (off until you turn it on).
+
+## Drive Alerts
+
+While you wardrive, Quartermaster can warn you about the devices you pick, from what the wardrive already hears. It never scans more, never slows a sweep, and never changes a WiGLE log: the logs are the same with alerts on or off. Each sighting gets a quick look-up, and only the few that may matter go to a low-priority thread that grades them with Recon's classifier.
+
+<p align="center">
+  <img src="docs/screens/wardrive-alert.png" width="320" alt="A Flock alert banner over the wardrive screen">
+  <img src="docs/screens/alert-types.png" width="320" alt="Alert me about: each kind with its tone and switch">
+</p>
+
+- **What alerts.** Out of the box: Flock cameras, body cameras such as Axon, and camera glasses such as Ray-Ban Meta. **Settings > Alert me about** turns every other kind on or off, from ALPR and doorbell cameras to trackers, an open twin of a protected network, and bursts of fake Bluetooth adverts.
+- **Tones.** Siren for body cameras, Chirp for Flock and Ping for camera glasses. Every kind can have its own: Siren, Yelp, Chirp, Shutter, Ping, Blip, any of the Dragon Detector melodies, or Silent. In **Alert me about**, **Z** and **C** pick a tone and play it, **P** plays it again, **T** turns the tone of one kind off and **D** restores the defaults. **Alert tones** turns every tone off.
+- **The banner.** A card at the top for 6 seconds, 10 for a body camera. It takes no key, so **OK** still stops the wardrive. The wardrive screen counts the alerts, and **A** lists them.
+- **Not too many.** A device alerts once while it is around, and again only after it has been gone for 15 minutes. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, camera glasses, drones, radio tools and My alerts alert at once. Tones are spaced out, at most 30 an hour, though a body camera or My alert always sounds. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, camera glasses and My alerts are never muted.
+- **My alerts.** Names or addresses that always alert, whatever kind of device: `veh*` catches every network whose name starts with veh.
+- **Dragon Detector.** Plug a [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) into USB and its alerts join in, graded the same way. Its radar hears what scanning cannot, such as Flock cameras that only send probe requests.
+
+Without a Dragon Detector, a Flock camera alerts when it shows its own Wi-Fi network or Bluetooth signal. Detection is best effort: a device may be quiet as you pass it.
 
 ## Good to know
 
@@ -509,6 +540,19 @@ On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the ada
 
 Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://hackergadgets.com).
 
+## Credits
+
+Recon and Drive Alerts build on this work and research:
+
+- [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts.
+- [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its melodies and tone queue, and the alerts it sends over USB.
+- Flock Noir (Your Pal Kal, MIT): Flock facts.
+- [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg.
+- OUI Spy, Unified Blue and AXEOFF by colonelpanichacks, MIT: body camera research.
+- [nyanBOX](https://github.com/jbohack/nyanBOX) by jbohack, MIT: AirTag and Find My adverts.
+- ESP32 Marauder by justcallmekoko: Pwnagotchi and DULT details.
+- The IEEE registration authority (address prefixes), the Bluetooth SIG assigned numbers, the Google Find Hub specification and OpenDroneID (ASTM F3411).
+
 ## Made by Valleytech Solutions
 
 <p align="center">
@@ -528,7 +572,9 @@ Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Quartermaster is licensed under the GNU General Public License version 3 (GPL-3.0) from version 1.2.2. See [LICENSE](LICENSE). Releases before 1.2.2 remain under the MIT License.
+
+Copyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal).
 
 The Inter and JetBrains Mono fonts are included under the SIL Open Font License. Their license files are next to the fonts.
 

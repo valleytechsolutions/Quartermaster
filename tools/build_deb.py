@@ -16,6 +16,8 @@ import tempfile
 HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
+COPYRIGHT = ("Quartermaster\nCopyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal)\n"
+             "License: GPL-3.0-only from 1.2.2. Earlier releases are MIT.\n\n")
 # The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
 # rtl-sdr brings rtl_adsb for aircraft, the stick's udev rules and the TV driver blacklist, and starts no service.
 # usb-modeswitch turns adapters that first show a driver disc into Wi-Fi adapters. The firmware packages are the ones
@@ -55,7 +57,7 @@ def build(out):
         doc = stage / "usr/share/doc" / pkg
         doc.mkdir(parents=True)
         notices = HERE / "quartermaster" / "assets" / "node-firmware-notices.txt"
-        (doc / "copyright").write_text((HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
+        (doc / "copyright").write_text(COPYRIGHT + (HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
                                        notices.read_text(encoding="utf-8"), encoding="utf-8")
         control = stage / "DEBIAN"
         control.mkdir()

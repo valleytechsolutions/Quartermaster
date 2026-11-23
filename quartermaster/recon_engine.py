@@ -8,17 +8,13 @@ Lines log.
 
 from collections import deque
 import json
-import math
 import os
 from pathlib import Path
 import shutil
-import subprocess
-import tempfile
 import threading
 import time
-import wave
 
-from . import faults, hardware, radios, recon
+from . import faults, hardware, radios, recon, tones
 from .ble import BleScanner
 from .engine import DEFAULT_ROOT, MIN_FREE_BYTES, gps_epoch
 from .tracker import distance_m
@@ -33,38 +29,14 @@ MAX_DEVICES = 3000
 ACTIVE_SECONDS = 60
 
 
-def _tone(path):
-    rate = 22050
-    with wave.open(str(path), "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(rate)
-        frames = bytearray()
-        for freq, length in ((1760, 0.09), (0, 0.04), (2349, 0.12)):
-            for i in range(int(rate * length)):
-                value = int(9000 * math.sin(2 * math.pi * freq * i / rate)) if freq else 0
-                frames += value.to_bytes(2, "little", signed=True)
-        out.writeframes(bytes(frames))
-
-
 class AlertSound:
-    def __init__(self):
-        self.path = None
-        self.player = shutil.which("aplay")
+    """Recon's beep. Asking only queues it: the tone player's own thread renders and plays it."""
+
+    def __init__(self, player=None):
+        self.player = player if player is not None else tones.Player()
 
     def play(self):
-        if not self.player:
-            return False
-        try:
-            if self.path is None:
-                directory = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
-                self.path = directory / ("quartermaster-alert-%d.wav" % os.getuid())
-                _tone(self.path)
-            subprocess.Popen([self.player, "-q", str(self.path)], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            return True
-        except OSError:
-            return False
+        return self.player.play("beep", "high", kind="recon")
 
 
 class Recon:

@@ -8,11 +8,11 @@ import time
 
 from PIL import Image
 
-from .. import accounts, adsb, config, faults, flasher, hardware, lora, mesh, power, updates_check, uploads, wigle
-from .. import engine
+from .. import accounts, adsb, config, drive_watch, faults, flasher, hardware, lora, mesh, power, tones, updates_check
+from .. import engine, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
-from ..recon_engine import Recon
+from ..recon_engine import AlertSound, Recon
 from ..setup_server import SetupServer
 from . import icons, recon_screens, screens
 from .gfx import (AMBER, FOOTER_H, GOLD, GREEN, H, LINE, MUTED, RED, STATUS_H, SURFACE, TEXT, W, Canvas, clock,
@@ -218,8 +218,10 @@ class App:
         self.nodes.on_key = lambda key: self.call_soon(lambda: self.change("cluster_key", key))
         self.cap = cap if cap is not None else lora.Cap(getattr(gps, "rails", None))
         self.country_asked = False
-        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes, cap=self.cap))
-        self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes)
+        self.player = tones.Player()
+        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes, cap=self.cap,
+                                                                   player=self.player))
+        self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes, sound=AlertSound(self.player))
         self.flasher_class = flasher_class
         self.flash_job = None
         self.updates = updates
@@ -404,6 +406,8 @@ class App:
             self.gps.power = value
         if key == "ignore" and self.drive is not None:
             self.drive.set_ignore(value)
+        if (key == "ignore" or key.startswith("drive_")) and self.drive is not None and self.wardriving:
+            self.drive.set_alerts(self.cfg)
         if key == "auto_upload" and value:
             self.uploader.kick()
         if key == "country":
@@ -420,6 +424,28 @@ class App:
         if entry and entry not in entries:
             self.change("ignore", (entries + [entry])[:config.MAX_IGNORED])
             self.toast("%s will not be logged" % entry)
+
+    def watch_add(self, entry):
+        entry = entry.strip()[:config.WATCH_LENGTH]
+        entries = list(self.cfg.get("drive_watch", []))
+        if entry and entry not in entries:
+            self.change("drive_watch", (entries + [entry])[:config.MAX_WATCH])
+            self.toast("%s will always alert" % entry)
+
+    def alert_defaults(self):
+        self.change("drive_alert_types", list(drive_watch.DEFAULT_TYPES))
+        self.change("drive_alert_sounds", dict(drive_watch.DEFAULT_TONES))
+        self.change("drive_alert_mute", [])
+        self.toast("Alert types and tones restored")
+
+    def preview(self, tone):
+        """Play a tone as it would sound in an alert, at once."""
+        if tone == "silent":
+            return
+        if not self.cfg.get("drive_alert_tones", True):
+            return self.toast("Alert tones are off", AMBER)
+        if not self.player.play(tone, self.cfg.get("drive_alert_volume", "high"), preview=True):
+            self.toast("No speaker found", AMBER)
 
     def save_key(self, field, value):
         try:
@@ -467,6 +493,11 @@ class App:
         if self._nodes_at is not None and now - self._nodes_at < NODES_SECONDS:
             return
         self._nodes_at = now
+        with self.nodes.lock:
+            dragons = [real for real in self.nodes.dragons if real not in self._announced]
+        if dragons:
+            self._announced.update(dragons)
+            self.toast("Dragon Detector found. Its alerts join wardrive alerts.", GOLD, 5)
         fresh = [node["id"] for node in self.nodes.found() if node["id"] not in self._announced]
         if fresh:
             self._announced.update(fresh)
@@ -624,6 +655,9 @@ class App:
         if show:
             self.home()
             self.push(screens.Summary(status))
+            counts = self.drive.watch.summary() if self.drive.watch is not None else {}
+            if counts:
+                self.toast("Alerts on this drive: %s" % drive_watch.summary_text(counts), GOLD, 5)
 
     def toggle_recon(self):
         if self.recon_running:
@@ -698,6 +732,8 @@ class App:
         under.render(c, self)
         if under.chrome and not modal and not isinstance(under, recon_screens.Recon):
             recon_screens.alert_banner(c, self)
+            if not isinstance(under, (recon_screens.DriveAlerts, recon_screens.DriveAlertDetail)):
+                recon_screens.drive_alert_banner(c, self)
         if modal:
             c.image.paste(self._shade, (0, 0), self._shade)
             top.render(c, self)
@@ -955,3 +991,4 @@ class App:
         self.uploader.stop()
         self.nodes.stop()
         self.hw.stop()
+        self.player.stop()
