@@ -8,6 +8,10 @@
 - Settings, Country: the nodes only use the Wi-Fi channels allowed there. It waits for a wardrive to stop, like the other scanning settings.
 - The Hardware screen has a card for each node, with the channels it scans. The Wardrive screen counts the nodes next to the radios.
 - Settings, Check for updates asks the App Store and GitHub whether a newer version is out. It never downloads anything.
+- Wireless nodes: one node stays plugged in as the hub, and up to 8 more scan on a battery and send what they hear to it by radio. Turn on Hub for wireless nodes on a node's screen, then Settings, Nodes, Add a wireless node and hold BOOT on the new node for 2 seconds. They start and stop with the wardrive and get their own share of the channels, a little smaller because they stop to hand over what they heard.
+- Wireless nodes are listed in Settings, Nodes. Their screen and the Hardware screen say when they were last heard and how well the hub hears them. One not heard for 30 seconds hands its channels to the others until it is back. When the hub is unplugged they wait, and the nodes on USB take every channel. Moving the hub to another node asks first, because every wireless node must then be added again.
+- Aircraft: with an RTL-SDR stick and readsb (`sudo apt install readsb`), Settings, Aircraft (ADS-B) logs the aircraft around you during a wardrive. Each is kept once, with its closest and furthest position. They go to WDGWars and Wardrift as an aircraft.json.gz file beside the log, never to WiGLE. A readsb that already runs is used as it is; otherwise one is started for the wardrive at low priority and stopped with it.
+- The Hardware screen shows the stick and why it is not listening, the Wardrive screen and the summary count the aircraft, and Logs lists each aircraft file with what each site did with it. Aircraft are saved every 30 seconds, so a crash or a power cut loses at most the last 30 seconds.
 
 ## 1.0.5
 

@@ -2,6 +2,7 @@ import http.client
 import os
 from pathlib import Path
 import shutil
+import signal
 import threading
 import time
 
@@ -14,10 +15,10 @@ from quartermaster.recon_engine import Recon
 from quartermaster.ui import gfx, recon_screens, screens
 from quartermaster.ui.app import App, serial_ports
 from quartermaster.ui.keys import ScriptedInput
-from tests.fakes import (ADAPTERS, FIX, NO_FIX, Boards, Display, FakeFlasher, FakeNode, Fleet, Gps, Hardware, NoBle,
-                         QuietFleet, Silent, Talker, networks, on_a_card, usb_serial)
+from tests.fakes import (ADAPTERS, FIX, NO_FIX, Boards, Display, FakeAir, FakeFlasher, FakeHub, FakeNode, Fleet, Gps,
+                         Hardware, NoBle, QuietFleet, Silent, Talker, networks, on_a_card, plane, usb_serial)
 from tests.test_core import NOW
-from tests.test_nodes import BRIDGE, NATIVE, ONE, THREE, TWO, Rig, node_cfg
+from tests.test_nodes import AIR1, AIR2, BRIDGE, HUB, HUB_LINK, NATIVE, ONE, THREE, TWO, Rig, node_cfg
 from tests.test_uploads import KEYS
 
 
@@ -1294,3 +1295,335 @@ def test_the_port_of_the_gps_named_in_the_settings_is_never_offered_for_flashing
     assert [target["path"] for target in screens.flash_targets(app)] == [str(rig.by_id / BRIDGE)]
     app.cfg["gps_source"] = rig.path("ttyUSB0")
     assert screens.flash_targets(app) == []
+
+
+def hub_app(tmp_path):
+    """ONE on USB, HUB on USB with the firmware for wireless nodes, both in the settings, and two wireless nodes near
+    it that are not paired yet."""
+    hub = FakeHub(HUB, airs=[FakeAir(AIR1, board="stamp-c5"), FakeAir(AIR2)], firmware=screens.bundled_firmware())
+    ports = {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE, firmware=screens.bundled_firmware())),
+             "ttyACM1": ("303a:1001", HUB_LINK, hub)}
+    app, rig = node_app(tmp_path, ports=ports, configured=(ONE, HUB))
+    return app, rig, hub
+
+
+def open_node(app, node_id):
+    open_setting(app, "nodes")
+    app.screen.index = next(i for i, (kind, node) in enumerate(app.screen.rows(app))
+                            if kind == "known" and node["id"] == node_id)
+    press(app, "ENTER")
+
+
+def test_a_node_is_made_the_hub_and_wireless_nodes_are_added_by_pairing(tmp_path, drawn, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    open_setting(app, "nodes")
+    assert "Add a wireless node" not in screen_text(app, drawn)
+    press(app, "ENTER", "ESC")
+    open_node(app, ONE)
+    assert "Hub for wireless nodes" not in screen_text(app, drawn)
+    press(app, "ESC", "ESC")
+    open_node(app, HUB)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(HUB))].index("hub")
+    press(app, "ENTER")
+    rig.settle()
+    key = config.load(tmp_path / "config.json")["cluster_key"]
+    assert len(key) == 32 and hub.role == "hub" and hub.saved_key == key and app.cfg["cluster_key"] == key
+    assert app.toast_text == "It is the hub now. It does not scan."
+    assert config.load(tmp_path / "config.json")["nodes"][1] == {"id": HUB, "name": "N1", "ble": False, "hub": True}
+    text = screen_text(app, drawn)
+    assert "Hub for 0 wireless nodes" in text and key not in text and "Bluetooth" not in text
+    press(app, "ESC")
+    text = screen_text(app, drawn)
+    assert "Add a wireless node" in text and "hub" in text.split("\n")
+    app.screen.index = len(app.screen.rows(app)) - 1
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Pairing) and hub.hub_commands[-1][0] == "HUB"
+    rig.settle(2)
+    assert hub.hub_commands[-1] == ("PAIR", "60")
+    text = screen_text(app, drawn)
+    assert "Hold BOOT on the new node for 2 seconds." in text and "0:5" in text
+    assert text.count("New wireless node") == 2 and "Stamp-C5 E4F5" in text and "ESP32-C5 E4F6" in text
+    press(app, "ENTER")
+    rig.settle(2)
+    text = screen_text(app, drawn)
+    assert "Added" in text and text.count("New wireless node") == 1
+    added = {"id": AIR1, "name": "Stamp-C5 E4F5", "ble": False, "wireless": True}
+    assert config.load(tmp_path / "config.json")["nodes"][2] == added
+    rig.settle(60 + 30)
+    assert "Pairing is closed." in screen_text(app, drawn) and "Pair again" in drawn
+    assert "New wireless node" not in drawn
+    press(app, "ENTER")
+    rig.settle()
+    assert hub.hub_commands[-1] == ("PAIR", "60")
+    press(app, "ESC")
+    rig.settle()
+    assert hub.hub_commands[-1] == ("PAIR", "0") and isinstance(app.screen, screens.Nodes)
+    words = screen_text(app, drawn).split("\n")
+    assert "wireless" in words and "Stamp-C5 E4F5" in words
+
+
+def test_wireless_nodes_show_on_the_hardware_screen_and_say_when_the_hub_is_unplugged(tmp_path, drawn, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.manager.admit(AIR1, "Bow")
+    rig.settle(3)
+    press(app, "H", "DOWN", "DOWN")
+    text = screen_text(app, drawn)
+    assert "Bow  wireless" in text and "-52 dBm" in text and "heard" in text and "AIR" in text
+    assert "Hub for 1 wireless node. It does not scan." in text and "HUB" in text
+    assert [t["node"] for t in screens.flash_targets(app)] == [ONE, HUB]
+    press(app, "ESC")
+    open_node(app, AIR1)
+    text = screen_text(app, drawn)
+    assert "wireless" in text and "-52 dBm" in text and "Update firmware" not in text and "Hub for" not in text
+    hub.unplug()
+    rig.settle()
+    text = screen_text(app, drawn)
+    assert "Waiting for the hub. Plug it in." in text and "Waiting" in text
+    press(app, "ESC")
+    text = screen_text(app, drawn)
+    assert "The hub is unplugged. Wireless nodes wait for it." in text and "Add a wireless node" not in text
+
+
+def test_a_wireless_node_is_removed_and_the_hub_forgets_it(tmp_path, drawn, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.manager.admit(AIR1, "Bow")
+    rig.settle(3)
+    open_node(app, AIR1)
+    actions = [action for action, _, _ in app.screen.actions(rig.manager.node(AIR1))]
+    assert actions == ["name", "ble", "identify", "forget"]
+    app.screen.index = 3
+    press(app, "ENTER")
+    assert "Hold BOOT on it for 2 seconds" in screen_text(app, drawn)
+    press(app, "Y")
+    rig.settle()
+    assert ("FORGET", AIR1) in hub.hub_commands and AIR1 not in hub.admitted and app.toast_text == "Bow removed"
+    assert [entry["id"] for entry in config.load(tmp_path / "config.json")["nodes"]] == [ONE, HUB]
+
+
+def test_moving_the_hub_asks_first_when_its_wireless_nodes_must_be_added_again(tmp_path, drawn, ports_let_go):
+    hub = FakeHub(HUB, airs=[FakeAir(AIR1)], firmware=screens.bundled_firmware())
+    other = FakeHub(TWO, firmware=screens.bundled_firmware())
+    ports = {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE, firmware=screens.bundled_firmware())),
+             "ttyACM1": ("303a:1001", HUB_LINK, hub), "ttyACM2": ("303a:1001", "", other)}
+    app, rig = node_app(tmp_path, ports=ports, configured=(ONE, HUB, TWO))
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.manager.admit(AIR1, "Bow")
+    rig.settle(3)
+    open_node(app, TWO)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(TWO))].index("hub")
+    press(app, "ENTER")
+    text = screen_text(app, drawn)
+    assert "Move the hub here?" in text and "Your 1 wireless node must be added again." in text
+    press(app, "ESC")
+    rig.settle()
+    assert rig.manager.hub()["id"] == HUB and hub.role == "hub" and other.role == "usb"
+    press(app, "ENTER", "Y")
+    rig.settle()
+    assert rig.manager.hub()["id"] == TWO and other.role == "hub" and hub.role == "usb"
+    assert app.toast_text == "It is the hub now. It does not scan."
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(TWO))].index("hub")
+    press(app, "ENTER")
+    rig.settle()
+    assert rig.manager.hub() is None and app.toast_text == "It scans again"
+
+
+def test_the_pairing_screen_says_when_the_hub_is_plugged_in_but_not_answering_yet(tmp_path, drawn, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    app.push(screens.Pairing())
+    rig.manager.hub_ok = False
+    text = screen_text(app, drawn)
+    assert "Waiting for the hub to answer." in text and "unplugged" not in text
+    hub.unplug()
+    rig.settle()
+    assert "The hub is unplugged." in screen_text(app, drawn)
+
+
+def test_a_node_added_by_the_hub_is_saved_on_the_screen_thread(tmp_path, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    rig.manager.configured.append({"id": AIR1, "name": "Bow", "ble": False, "wireless": True})
+    worker = threading.Thread(target=rig.manager.on_change, args=(rig.manager.entries(),))
+    worker.start()
+    worker.join()
+    assert len(app.cfg["nodes"]) == 2 and len(config.load(tmp_path / "config.json")["nodes"]) < 3
+    rig.manager.rename(ONE, "Roof")
+    app.step(0)
+    entries = rig.manager.entries()
+    assert [entry["name"] for entry in entries][0::2] == ["Roof", "Bow"]
+    assert app.cfg["nodes"] == entries and config.load(tmp_path / "config.json")["nodes"] == entries
+
+
+def sky_app(tmp_path, hw=None, sdr=True, **settings):
+    """An app whose wardrives start a stand-in for readsb."""
+    import functools
+    import subprocess
+    from quartermaster import adsb
+    from tests.fakes import FakeReadsb, SkyHardware
+    app = make_app(tmp_path, hw=hw or SkyHardware(), **settings)
+    fake = FakeReadsb(lambda: NOW)
+    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+                                 dongles=lambda: [{"usb_id": "0bda:2838"}] if sdr else [], feeds=(),
+                                 out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
+                                 runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""),
+                                 tools=lambda name: None)
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=Fleet,
+                                                 clock=lambda: NOW, receiver=receiver)
+    app.readsb = fake
+    return app
+
+
+def hear(app, *planes):
+    fake = app.readsb
+    wait_for(lambda: fake.processes)
+    fake.air(*planes)
+    wait_for(lambda: app.drive.status()["aircraft"] == len(planes))
+
+
+def test_the_aircraft_setting_starts_off_and_waits_for_the_wardrive_to_stop(tmp_path, drawn):
+    assert config.load(tmp_path / "none.json")["adsb"] is False
+    app = sky_app(tmp_path)
+    press(app, "S")
+    settings = app.screen
+    settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "adsb")
+    press(app)
+    text = screen_text(app, drawn)
+    assert "Aircraft (ADS-B)\nOff" in text and "Sent to WDGWars" in text
+    press(app, "ENTER")
+    assert app.cfg["adsb"] is True and config.load(tmp_path / "config.json")["adsb"] is True
+    press(app, "ESC", "W", "ESC", "S")
+    settings = app.screen
+    settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "adsb")
+    press(app, "ENTER")
+    assert app.cfg["adsb"] is True and "Stop the wardrive" in app.toast_text
+
+
+def hardware_text(app, drawn):
+    app.open("Hardware")
+    return screen_text(app, drawn)
+
+
+def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
+    from tests.fakes import SkyHardware
+    title = "Radio for aircraft (RTL-SDR)"
+    assert title not in hardware_text(sky_app(tmp_path / "a", hw=SkyHardware(sdr=False)), drawn)
+    assert "Off in Settings" in hardware_text(sky_app(tmp_path / "b"), drawn)
+    for hw, words in ((SkyHardware(sdr=False), "Not plugged in"),
+                      (SkyHardware(readsb=False), "Install readsb: sudo apt install readsb"),
+                      (SkyHardware(), "Ready. It listens in the next wardrive.")):
+        text = hardware_text(sky_app(tmp_path / words[:6], hw=hw, adsb=True), drawn)
+        assert title in text and words in text
+    app = sky_app(tmp_path / "c", adsb=True)
+    press(app, "W")
+    hear(app, plane("a1b2c3", 25.2, -77.7))
+    text = hardware_text(app, drawn)
+    assert "Running" in text and "1 aircraft" in text
+    app.readsb.processes[0].exit("usb_claim_interface error -6\n")
+    wait_for(lambda: app.drive.status()["adsb"]["state"] == "busy")
+    assert "In use by another program" in hardware_text(app, drawn)
+
+
+def test_the_wardrive_and_its_summary_count_aircraft_only_when_they_are_on(tmp_path, drawn, monkeypatch):
+    off = sky_app(tmp_path / "off")
+    press(off, "W")
+    assert "aircraft" not in screen_text(off, drawn)
+    press(off, "ENTER", "ENTER")
+    assert "Aircraft" not in screen_text(off, drawn) and off.readsb.started == []
+    app = sky_app(tmp_path / "on", adsb=True)
+    press(app, "W")
+    hear(app, plane("a1b2c3", 25.2, -77.7), plane("c0ffee"))
+    texts = placed(app, monkeypatch)
+    assert "2 aircraft" in texts and "3 radios" in texts and texts["2 aircraft"][0] == texts["3 radios"][0]
+    assert "WI-FI" in texts and "LOGGED" in texts
+    press(app, "ENTER", "ENTER")
+    text = screen_text(app, drawn)
+    assert "WARDRIVE SAVED" in text and "Aircraft\n2" in text
+    assert app.readsb.processes[0].signals == [signal.SIGTERM]
+
+
+def test_aircraft_files_are_listed_with_their_own_marks_and_are_never_for_wigle(tmp_path, drawn):
+    app = sky_app(tmp_path, adsb=True, keys=KEYS)
+    press(app, "W")
+    hear(app, plane("a1b2c3", 25.2, -77.7))
+    press(app, "ENTER", "ENTER")
+    app.uploader.run_pass()
+    assert sorted(app.sent) == sorted([("wigle", "quartermaster_20261118-110640.wigle.csv"),
+                                       ("wdgwars", "quartermaster_20261118-110640.wigle.csv"),
+                                       ("wardrift", "quartermaster_20261118-110640.wigle.csv"),
+                                       ("wdgwars", "quartermaster_20261118-110640.aircraft.json.gz"),
+                                       ("wardrift", "quartermaster_20261118-110640.aircraft.json.gz")])
+    app.stale()
+    press(app, "ESC", "L")
+    text = screen_text(app, drawn)
+    assert "2 logs" in text and "AIR" in text
+    files = app.log_files()
+    assert [f["aircraft"] for f in files] == [False, True]
+    press(app, "DOWN", "ENTER")
+    text = screen_text(app, drawn)
+    assert "quartermaster_20261118-110640.aircraft.j\nson.gz" in text and "Aircraft\n1" in text
+    assert "Not for WiGLE" in text and "WDGWars has it" in text and "WDGWars and Wardrift only" in text
+    press(app, "D", "RIGHT", "ENTER")
+    assert sorted(p.name for p in (tmp_path / "logs").iterdir()) == [
+        "quartermaster_20261118-110640.summary.csv", "quartermaster_20261118-110640.wigle.csv"]
+    assert "quartermaster_20261118-110640.aircraft.json.gz" not in app.uploader.ledger.data
+
+
+def test_readsb_is_stopped_when_quartermaster_closes_during_a_wardrive(tmp_path):
+    app = sky_app(tmp_path, adsb=True)
+    press(app, "W")
+    wait_for(lambda: app.readsb.processes)
+    app.shutdown()
+    assert app.readsb.processes[0].signals == [signal.SIGTERM] and app.drive.aircraft_path is None
+
+
+def test_the_aircraft_card_is_amber_when_the_stick_cannot_listen_and_says_who_holds_it(tmp_path):
+    from quartermaster import adsb
+    from tests.fakes import SkyHardware
+    cards = {}
+    for name, hw in (("ready", SkyHardware()), ("gone", SkyHardware(sdr=False)), ("bare", SkyHardware(readsb=False)),
+                     ("system", SkyHardware(readsb=False, sky_use=adsb.SYSTEM)),
+                     ("busy", SkyHardware(sky_use=adsb.BUSY))):
+        cards[name] = screens.Hardware.aircraft_card(sky_app(tmp_path / name, hw=hw, adsb=True), None)
+    assert cards["ready"]["color"] == gfx.GOLD and "edge" not in cards["ready"]
+    for name in ("gone", "bare", "busy"):
+        assert cards[name]["color"] == cards[name]["edge"] == cards[name]["detail_color"] == gfx.AMBER
+    assert cards["busy"]["detail"] == "In use by another program"
+    assert (cards["system"]["detail"], cards["system"]["detail_color"], cards["system"]["right"]) == \
+        ("Uses the readsb that already runs", gfx.GREEN, "")
+
+
+def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_does_not_fit(tmp_path, monkeypatch):
+    from quartermaster import adsb
+    app = sky_app(tmp_path / "gone", sdr=False, adsb=True)
+    press(app, "W")
+    wait_for(lambda: app.drive.status()["adsb"]["state"] == adsb.NO_DONGLE)
+    assert placed(app, monkeypatch)["0 aircraft"][1] == gfx.AMBER
+    press(app, "ENTER", "ENTER")
+    live = sky_app(tmp_path / "live", adsb=True)
+    press(live, "W")
+    hear(live, plane("a1b2c3", 25.2, -77.7))
+    assert placed(live, monkeypatch)["1 aircraft"][1] == gfx.MUTED
+    monkeypatch.setattr(adsb.Receiver, "count", property(lambda self: 10 ** 16))
+    texts = placed(live, monkeypatch)
+    assert "3 radios" in texts and not any(text.endswith(" aircraft") for text in texts)
+    press(live, "ENTER", "ENTER")
+
+
+def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn):
+    app = sky_app(tmp_path, fix=NO_FIX, adsb=True, keys=KEYS)
+    press(app, "W")
+    hear(app, plane("a1b2c3", 25.2, -77.7))
+    press(app, "ENTER", "ENTER")
+    text = screen_text(app, drawn)
+    assert "WARDRIVE SAVED" in text and "Uploading to WDGWars, Wardrift." in text and "GPS fix" not in text

@@ -68,6 +68,9 @@ USB_GPS = {
     "1ffb:0092": "LC29H USB GPS",
 }
 
+# USB vendor:product of RTL2832U sticks, the usual radio for aircraft.
+RTL_SDR = ("0bda:2838", "0bda:2832")
+
 
 def _read(path):
     try:
@@ -304,6 +307,23 @@ def stalled_usb_adapters(sys_usb=Path("/sys/bus/usb/devices")):
         stalled.append({"usb_id": usb_id, "label": USB_ADAPTERS.get(usb_id) or product or "USB Wi-Fi adapter",
                         "port": node.name})
     return stalled
+
+
+def rtl_sdr_dongles(sys_usb=Path("/sys/bus/usb/devices")):
+    """RTL2832U sticks on USB, the radio readsb hears aircraft with."""
+    found = []
+    try:
+        nodes = sorted(Path(sys_usb).iterdir())
+    except OSError:
+        return found
+    for node in nodes:
+        if not (node / "idVendor").is_file():
+            continue
+        usb_id = "%s:%s" % (_read(node / "idVendor").lower(), _read(node / "idProduct").lower())
+        if usb_id in RTL_SDR:
+            product = " ".join(x for x in (_read(node / "manufacturer"), _read(node / "product")) if x)
+            found.append({"usb_id": usb_id, "label": product or "RTL-SDR", "port": node.name})
+    return found
 
 
 def local_addresses(runner=subprocess.run):

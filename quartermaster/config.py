@@ -36,11 +36,13 @@ SECTIONS = [
          "Phones rotate random addresses. Skip keeps logs smaller."),
         ("ble_interval", "Bluetooth check", [(0.5, "0.5 s"), (1.0, "1 s"), (2.0, "2 s"), (5.0, "5 s")],
          "How often Bluetooth results are read."),
+        ("adsb", "Aircraft (ADS-B)", [(False, "Off"), (True, "On")],
+         "Logs aircraft with an RTL-SDR stick and readsb. Sent to WDGWars and Wardrift only."),
         ("country", "Country", COUNTRIES, "Where you are. Nodes use only the Wi-Fi channels allowed here."),
     ]),
     ("NODES", [
-        ("nodes", "Nodes", None, "ESP32-C5 boards on USB that scan Wi-Fi beside your adapters. Add, name or "
-         "update them here."),
+        ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
+         "name or update them here."),
         ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5 board, or update a node."),
     ]),
     ("LOGGING", [
@@ -94,10 +96,12 @@ DEFAULTS.update(min_rssi=-100, rssi_step=4, relog_meters=25, relog_seconds=30, b
 LISTS = ("ignore", "recon_categories", "nodes")
 MAX_IGNORED = 64
 MAX_NODES = 8
+MAX_WIRELESS = 8
 NODE_NAME_MAX = 16
 _MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
 _NODE_ID = re.compile(r"[0-9a-f]{12}")
 _LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
+_KEY = re.compile(r"[0-9a-f]{32}")
 
 
 def is_mac(text):
@@ -109,9 +113,17 @@ def default_lists():
     return {"ignore": [], "recon_categories": list(CATEGORIES), "nodes": []}
 
 
+def cluster_key(value):
+    """The key of the hub and its wireless nodes, or None when it is not one."""
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if _KEY.fullmatch(value) and value.strip("0") else None
+
+
 def node_entries(items):
-    """The nodes of a settings file that make sense: {"id", "name", "ble"} and an optional "led", each id once."""
-    nodes, seen = [], set()
+    """The nodes of a settings file that make sense: {"id", "name", "ble"} and an optional "led", each id once.
+
+    A node on USB may be the hub ("hub": True), only one; a node heard through the hub has "wireless": True."""
+    nodes, seen, hub = [], set(), False
     for item in items if isinstance(items, list) else ():
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             continue
@@ -123,9 +135,17 @@ def node_entries(items):
                  "ble": item.get("ble") is True}
         if isinstance(item.get("led"), str) and _LED.fullmatch(item["led"]):
             entry["led"] = item["led"]
+        wireless = item.get("wireless") is True
+        if sum(1 for other in nodes if other.get("wireless", False) == wireless) >= \
+                (MAX_WIRELESS if wireless else MAX_NODES):
+            continue
+        if wireless:
+            entry["wireless"] = True
+        elif item.get("hub") is True and not hub:
+            entry["hub"] = hub = True
         nodes.append(entry)
         seen.add(node_id)
-    return nodes[:MAX_NODES]
+    return nodes
 
 
 def load(path=PATH):
@@ -147,6 +167,8 @@ def load(path=PATH):
     if isinstance(categories, list):
         cfg["recon_categories"] = [c for c in default_lists()["recon_categories"] if c in categories]
     cfg["nodes"] = node_entries(data.get("nodes"))
+    if cluster_key(data.get("cluster_key")):
+        cfg["cluster_key"] = cluster_key(data["cluster_key"])
     return cfg
 
 
@@ -154,8 +176,11 @@ def save(cfg, path=PATH):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name("." + path.name)
-    keys = list(DEFAULTS) + list(LISTS)
-    tmp.write_text(json.dumps({k: cfg[k] for k in keys if k in cfg}, indent=1) + "\n", encoding="utf-8")
+    keys = list(DEFAULTS) + list(LISTS) + ["cluster_key"]
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        out.write(json.dumps({k: cfg[k] for k in keys if k in cfg}, indent=1) + "\n")
     os.replace(tmp, path)
 
 

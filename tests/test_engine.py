@@ -1,7 +1,10 @@
 import csv
+import functools
 import io
 import os
+import signal
 import stat
+import subprocess
 import time
 
 import pytest
@@ -1239,3 +1242,111 @@ def test_a_part_that_cannot_be_compacted_counts_no_rows_and_loses_no_summary_lin
     for row in summary[12:]:
         assert int(row["LogRows"]) == len(rows.get(("WIFI", row["MAC"]), [])), row["MAC"]
     assert {row["LogRows"] for row in summary[12:20]} == {"0"}
+
+
+def sky_drive(tmp_path, gps=None, sdr=True, **cfg):
+    from quartermaster import adsb
+    from tests.fakes import FakeReadsb
+    fake = FakeReadsb(lambda: NOW)
+    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+                                 dongles=lambda: [{"usb_id": "0bda:2838"}] if sdr else [], feeds=(),
+                                 out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
+                                 runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
+    drive = Wardrive(dict(TRACK, adsb=True, **cfg), gps or FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS,
+                     fleet=FakeFleet, clock=lambda: NOW, receiver=receiver)
+    drive.start()
+    return drive, fake
+
+
+def wait_for(test, seconds=5):
+    deadline = time.monotonic() + seconds
+    while not test() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert test()
+
+
+def test_aircraft_are_heard_beside_wifi_and_written_beside_the_wigle_log_at_the_stop(tmp_path):
+    from quartermaster import adsb
+    from tests.fakes import plane
+    drive, fake = sky_drive(tmp_path)
+    wait_for(lambda: fake.processes)
+    fake.air(plane("a1b2c3", 25.2, -77.7), plane("c0ffee"))
+    wait_for(lambda: drive.status()["aircraft"] == 2)
+    assert drive.status()["adsb"] == {"state": adsb.RUNNING, "aircraft": 2, "detail": "Running"}
+    assert drive.status()["wifi"] == 3
+    drive.stop()
+    assert fake.processes[0].signals == [signal.SIGTERM] and len(fake.processes) == 1
+    path = tmp_path / "logs" / "quartermaster_20261118-110640.aircraft.json.gz"
+    assert drive.aircraft_path == path and drive.status()["aircraft_log"] == str(path)
+    assert [a["hex"] for a in adsb.load(path)["aircraft"]] == ["a1b2c3", "c0ffee"]
+    assert drive.log_path.name == "quartermaster_20261118-110640.wigle.csv" and not drive.failed
+    assert sorted(p.name for p in (tmp_path / "logs").iterdir()) == [
+        "quartermaster_20261118-110640.aircraft.csv", "quartermaster_20261118-110640.aircraft.json.gz",
+        "quartermaster_20261118-110640.summary.csv", "quartermaster_20261118-110640.wigle.csv"]
+
+
+def test_with_aircraft_off_no_receiver_is_made(tmp_path):
+    def never(*args, **kwargs):
+        raise AssertionError("made a receiver")
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=FakeFleet,
+                     clock=lambda: NOW, receiver=never)
+    drive.start()
+    drive.stop()
+    status = drive.status()
+    assert status["aircraft"] is None and status["adsb"] is None and status["aircraft_log"] == ""
+
+
+def test_without_the_stick_the_wardrive_logs_wifi_as_ever_and_says_why_no_aircraft(tmp_path):
+    from quartermaster import adsb
+    drive, fake = sky_drive(tmp_path, sdr=False)
+    wait_for(lambda: drive.status()["adsb"]["state"] == adsb.NO_DONGLE)
+    assert drive.status()["rows"] == 3 and fake.started == []
+    drive.stop()
+    assert drive.aircraft_path is None and not drive.failed
+    assert not list((tmp_path / "logs").glob("*.aircraft*"))
+
+
+def test_aircraft_heard_without_a_wigle_log_are_saved_under_the_time_the_wardrive_started(tmp_path):
+    from tests.fakes import plane
+    drive, fake = sky_drive(tmp_path, gps=FakeGPS({"valid": False}))
+    wait_for(lambda: fake.processes)
+    fake.air(plane("a1b2c3", 25.2, -77.7))
+    wait_for(lambda: drive.status()["aircraft"] == 1)
+    drive.stop()
+    assert drive.log_path is None and drive.aircraft_path.name == "quartermaster_20261118-110640.aircraft.json.gz"
+
+
+def test_aircraft_left_in_a_journal_by_a_power_cut_are_finished_at_the_next_start(tmp_path):
+    from quartermaster import adsb
+    from tests.fakes import plane
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    sky = adsb.Sky()
+    sky.update({"aircraft": [plane("a1b2c3", 25.2, -77.7)]}, NOW - 600, (FIX["latitude"], FIX["longitude"]))
+    adsb.save_journal(logs / ".quartermaster_20261118-105640.aircraft.json.part", sky,
+                      "quartermaster_20261118-105640.aircraft.json.gz", NOW - 590)
+    drive, _ = sky_drive(tmp_path)
+    finished = logs / "quartermaster_20261118-105640.aircraft.json.gz"
+    assert finished.exists() and not list(logs.glob(adsb.JOURNAL_GLOB))
+    assert adsb.load(finished)["now"] == NOW - 590 and drive.aircraft.target.name != finished.name
+    drive.stop()
+
+
+def test_with_aircraft_on_a_wardrive_starts_without_wifi_or_bluetooth(tmp_path):
+    from quartermaster import adsb
+    from tests.fakes import FakeReadsb
+    fake = FakeReadsb(lambda: NOW)
+    receiver = functools.partial(adsb.Receiver, launcher=fake, which=lambda name: "/usr/bin/readsb",
+                                 dongles=lambda: [{"usb_id": "0bda:2838"}], feeds=(), out=tmp_path / "run",
+                                 cpus=lambda: 4, kill=fake.kill, poll=0.01, tools=lambda name: None,
+                                 runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
+    bare = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=[], fleet=FakeFleet, clock=lambda: NOW,
+                    receiver=receiver)
+    with pytest.raises(RuntimeError):
+        bare.start()
+    drive = Wardrive(dict(TRACK, adsb=True), FakeGPS(FIX), root=tmp_path, adapters=[], fleet=FakeFleet,
+                     clock=lambda: NOW, receiver=receiver)
+    drive.start()
+    wait_for(lambda: fake.processes)
+    assert drive.state == "running"
+    drive.stop()

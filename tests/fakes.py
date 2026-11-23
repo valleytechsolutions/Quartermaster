@@ -3,10 +3,14 @@
 import functools
 import hashlib
 import io
+import json
 import operator
 import os
+from pathlib import Path
 import random
+import signal
 import struct
+import subprocess
 import zlib
 
 from quartermaster.wifi import band_of, channel_of
@@ -747,3 +751,285 @@ class FakeFlasher:
         from quartermaster.flasher import FlashError
         if self.at == step and self.error:
             raise FlashError(self.error)
+
+
+REMOTE = ("HELLO", "PLAN", "IDENT", "LED", "REBOOT")
+
+
+class FakeAir(FakeNode):
+    """A wireless node as firmware/PROTOCOL.md describes it. Nothing reads its serial port: what it says reaches the
+    host only through a FakeHub that has admitted it, while it is in reach. reach: in radio range of the hub."""
+
+    def __init__(self, node_id="b0b1c2d3e4f5", clock=None, caps="wifi24+wifi5+ble+espnow", firmware="1.1.0",
+                 **kwargs):
+        super().__init__(node_id, clock, caps=caps, firmware=firmware, **kwargs)
+        self.out.clear()
+        self.reach, self.hub, self.rssi = True, None, -52
+
+
+class FakeHub(FakeNode):
+    """A node that becomes a hub on #HUB, with the FakeAir nodes around it. It relays the lines of the nodes it has
+    admitted in @R lines and passes #TO commands on at their next contact. garble_air: the next @R lines carry a
+    wrong checksum. The role is lost on a reset; the key and the admitted nodes are kept."""
+
+    def __init__(self, node_id="c0b1c2d3e4f5", clock=None, caps="wifi24+wifi5+ble+espnow", firmware="1.1.0",
+                 airs=(), **kwargs):
+        self.airs = {air.node_id: air for air in airs}
+        self.saved_key, self.admitted, self.asked, self.told = None, {}, {}, {}
+        self.garble_air = self.relayed = 0
+        self.hub_commands = []
+        super().__init__(node_id, clock, caps=caps, firmware=firmware, **kwargs)
+
+    def _boot(self):
+        self.role, self.home, self.pair_until, self.queues = "usb", None, 0.0, {}
+        self.last_cluster = self.clock()
+        super()._boot()
+
+    def tick(self):
+        if self.role != "hub":
+            super().tick()
+            return
+        now = self.clock()
+        if self.running and now - self.last_host >= 30:
+            self.running = False
+            self._emit("L", "no host for 30 s_ stopped")
+        if self.running and now - self.last_status >= 2:
+            self.last_status = now
+            self._emit("S", str(int(now * 1000) % 100000000), "0", "0", "0", "0", str(self.dropped), "0", "120000",
+                       "run")
+        if now - self.last_hello >= (30 if self.running else 10):
+            self._hello()
+        if now - self.last_cluster >= 5:
+            self._report()
+        for air in self.airs.values():
+            self._contact(air, now)
+
+    def _contact(self, air, now):
+        if not air.reach:
+            return
+        if air.clock is not self.clock:
+            air.clock = self.clock
+            air.last_host = air.last_status = air.last_hello = now
+        if air.hub != self.node_id or air.node_id not in self.admitted:
+            if air.hub is None and self.pair_until > now:
+                self.asked[air.node_id] = now
+                if now - self.told.get(air.node_id, -1e9) >= 5:
+                    self.told[air.node_id] = now
+                    self._emit("J", air.node_id, str(air.rssi), air.firmware[:8], air.board[:8])
+            return
+        first = self.admitted[air.node_id] is None
+        self.admitted[air.node_id] = now
+        air.last_host = now
+        if self.running and not air.running:
+            if air.plan is None:
+                air.plan = {"version": 0, "country": air.country, "ghz2": 0x7FFE, "ghz5": 0x1FFFFFFE, "ble": False}
+            air.running, air.sweeps, air.last_status = True, 0, now
+        elif not self.running and air.running:
+            air.running = False
+        for line in self.queues.pop(air.node_id, []):
+            air.receive(line.encode("ascii"))
+        air.tick()
+        if first:
+            self._node_line(air.node_id, now)
+        data, air.out = bytes(air.out), bytearray()
+        for raw in data.split(b"\n"):
+            line = raw.decode("ascii", "replace").rstrip("\r")
+            if line.startswith("@") and "*" in line:
+                self.relay(air.node_id, line[:line.rindex("*")])
+
+    def relay(self, node_id, inner):
+        """Put one line of a wireless node, without its checksum, on the serial line in an @R line."""
+        body = "R,%s,%s" % (node_id, inner)
+        check = line_xor(body)
+        if self.garble_air:
+            self.garble_air -= 1
+            check ^= 0x5A
+        self.relayed += 1
+        self.out += ("@%s*%02X\n" % (body, check)).encode("ascii")
+
+    def _node_line(self, node_id, now):
+        heard = self.admitted[node_id]
+        air = self.airs.get(node_id)
+        if heard is None:
+            self._emit("N", node_id, "new", "", "", "0", "0")
+        else:
+            self._emit("N", node_id, "up" if now - heard < 60 else "lost", str(int((now - heard) * 1000)),
+                       str(air.rssi if air else -60), "1", "0")
+
+    def _report(self):
+        now = self.last_cluster = self.clock()
+        self._emit("C", str(self.home), str(max(0, int(self.pair_until - now + 0.999))), str(len(self.admitted)),
+                   "run" if self.running else "idle", str(self.relayed), str(self.dropped))
+        for node_id in sorted(self.admitted):
+            self._node_line(node_id, now)
+
+    def _command(self, name, args):
+        now = self.clock()
+        if name in ("HUB", "USB", "UNPAIR", "PAIR", "ADMIT", "FORGET", "TO"):
+            self.hub_commands.append((name,) + tuple(args))
+        if name == "HUB":
+            channel = args[0] if args and args[0] else "6"
+            if len(args) != 2:
+                self._ack(name, False, "args")
+            elif not channel.isdigit() or not 1 <= int(channel) <= 11:
+                self._ack(name, False, "channel")
+            elif len(args[1]) != 32 or any(c not in "0123456789abcdefABCDEF" for c in args[1]) or \
+                    not args[1].strip("0"):
+                self._ack(name, False, "key")
+            else:
+                if args[1].lower() != self.saved_key:
+                    self.saved_key, self.admitted = args[1].lower(), {}
+                self.role, self.home, self.running = "hub", int(channel), False
+                self._ack(name, True, channel)
+                self._report()
+        elif name == "USB":
+            if self.role == "hub":
+                self.role, self.running = "usb", False
+            self._ack(name, True)
+        elif name == "UNPAIR":
+            self._ack(name, True)
+        elif name in ("PAIR", "ADMIT", "FORGET", "TO") and self.role != "hub":
+            self._ack(name, False, "role")
+        elif name == "PAIR":
+            seconds = args[0] if args and args[0] else "60"
+            if len(args) > 1 or not seconds.isdigit() or int(seconds) > 600:
+                self._ack(name, False, "seconds")
+            else:
+                self.pair_until = now + int(seconds)
+                self._ack(name, True, seconds)
+                self._report()
+        elif name == "ADMIT":
+            node_id = args[0].lower() if len(args) == 1 else ""
+            if node_id not in self.airs or now - self.asked.get(node_id, -1e9) >= 30:
+                self._ack(name, False, "node")
+            elif node_id not in self.admitted and len(self.admitted) >= 8:
+                self._ack(name, False, "full")
+            else:
+                self.admitted[node_id] = None
+                self.airs[node_id].hub = self.node_id
+                self.pair_until = max(self.pair_until, now + 30)
+                self._ack(name, True, node_id)
+        elif name == "FORGET":
+            node_id = args[0].lower() if len(args) == 1 else ""
+            if node_id not in self.admitted:
+                self._ack(name, False, "node")
+            else:
+                del self.admitted[node_id]
+                if node_id in self.airs:
+                    self.airs[node_id].hub = None
+                self._ack(name, True, node_id)
+        elif name == "TO":
+            node_id = args[0].lower() if args else ""
+            if len(args) < 2:
+                self._ack(name, False, "args")
+            elif node_id not in self.admitted:
+                self._ack(name, False, "node")
+            elif args[1] not in REMOTE:
+                self._ack(name, False, "command")
+            elif len(self.queues.get(node_id, [])) >= 4:
+                self._ack(name, False, "busy")
+            else:
+                self.queues.setdefault(node_id, []).append("#%s\n" % ",".join(args[1:]))
+                self._ack(name, True, node_id)
+        elif self.role == "hub" and name == "PLAN":
+            self._ack(name, False, "hub")
+        elif self.role == "hub" and name in ("START", "STOP"):
+            self.running = name == "START"
+            self.last_status = now
+            self._ack(name, True)
+        elif self.role == "hub" and name == "HELLO":
+            self._ack(name, True)
+            self._hello()
+            self._report()
+        else:
+            super()._command(name, args)
+
+
+class FakeProcess:
+    """readsb as the receiver sees it. Signals reach it through `kill`; a stubborn one ignores SIGTERM."""
+
+    def __init__(self, argv, out, stubborn=False):
+        self.argv, self.out, self.stubborn = argv, out, stubborn
+        self.pid, self.returncode, self.signals, self.waits = 4242, None, [], []
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return self.returncode
+
+    def receive(self, sig):
+        self.signals.append(sig)
+        if sig == signal.SIGKILL or not self.stubborn:
+            self.returncode = -sig
+
+    def terminate(self):
+        self.receive(signal.SIGTERM)
+
+    def kill(self):
+        self.receive(signal.SIGKILL)
+
+    def exit(self, said, code=1):
+        """readsb ends by itself, leaving `said` in its log."""
+        (self.out / "readsb.log").write_text(said)
+        self.returncode = code
+
+
+class FakeReadsb:
+    """Stands in for starting readsb: it records how it was started and writes aircraft.json where it was told."""
+
+    def __init__(self, clock, stubborn=False):
+        self.clock, self.stubborn = clock, stubborn
+        self.started, self.processes = [], []
+
+    def __call__(self, argv, **kwargs):
+        self.started.append((list(argv), kwargs))
+        out = Path(argv[argv.index("--write-json") + 1])
+        process = FakeProcess(argv, out, self.stubborn)
+        self.processes.append(process)
+        return process
+
+    def kill(self, pid, sig):
+        live = [p for p in self.processes if p.pid == pid and p.returncode is None]
+        if not live:
+            raise ProcessLookupError(pid)
+        live[-1].receive(sig)
+
+    @property
+    def out(self):
+        return self.processes[-1].out
+
+    def air(self, *planes, now=None):
+        """readsb writes the aircraft it hears now."""
+        sky_json(self.out / "aircraft.json", planes, self.clock() if now is None else now)
+
+
+def sky_json(path, planes, now):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"now": now, "messages": 1000, "aircraft": list(planes)}))
+    os.replace(tmp, path)
+
+
+def plane(code, lat=None, lon=None, **fields):
+    """One aircraft as readsb reports it."""
+    found = {"hex": code, "flight": "TST%s  " % code[-3:].upper(), "alt_baro": 32000, "gs": 451.2, "track": 87.5,
+             "squawk": "1200", "category": "A3", "rssi": -18.4, "messages": 80, "seen": 0.4}
+    if lat is not None:
+        found.update(lat=lat, lon=lon, seen_pos=0.8)
+    found.update(fields)
+    return found
+
+
+class SkyHardware(Hardware):
+    """The hardware check with an RTL-SDR stick plugged in and readsb installed, or not."""
+
+    def __init__(self, sdr=True, readsb=True, sky_use="", **kwargs):
+        super().__init__(**kwargs)
+        self.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}] if sdr else []
+        self.readsb = "/usr/bin/readsb" if readsb else ""
+        self.sky_use = sky_use

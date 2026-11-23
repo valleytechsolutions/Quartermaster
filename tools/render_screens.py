@@ -9,21 +9,22 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quartermaster import accounts, config, uploads, wigle  # noqa: E402
+from quartermaster import accounts, adsb, config, uploads, wigle  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
 from quartermaster.nodes import NodeManager  # noqa: E402
 from quartermaster.recon_engine import Recon  # noqa: E402
 from quartermaster.ui import screens, splash  # noqa: E402
 from quartermaster.ui.app import App, FlashJob  # noqa: E402
 from quartermaster.ui.keys import ScriptedInput  # noqa: E402
-from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeBus, FakeNode, Fleet, Gps, Hardware, NoBle,  # noqa: E402
-                         QuietFleet, Silent, usb_serial)
+from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeAir, FakeBus, FakeHub, FakeNode, Fleet,  # noqa: E402
+                         Gps, Hardware, NoBle, QuietFleet, Silent, usb_serial)
 
 NOW = 1795000000
 KEYS = {"wigle_name": "AID0f1e2d3c4b5a69788796a5b4c3d2e1f0", "wigle_token": "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
         "wdgwars_key": "c7" * 32, "wardrift_key": ""}
 BLUETOOTH = [("C4:7C:8D:11:22:01", "Galaxy Buds2 Pro", -58), ("E4:5F:01:77:88:04", "JBL Flip 6", -80)]
 MAST, SPARE = "dc5475c8a1b2", "48ca43e91a2b"
+HUB, BOW, STERN = "dc5475c8a3c4", "48ca43e93d01", "48ca43e95e02"
 
 
 class Site:
@@ -39,6 +40,27 @@ class Site:
 
     def stop(self):
         pass
+
+
+class Aircraft:
+    """Stands in for readsb's side of a wardrive, with the aircraft it has heard."""
+
+    count = 23
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self, epoch):
+        pass
+
+    def stop(self):
+        pass
+
+    def finish(self):
+        return None
+
+    def status(self):
+        return {"state": adsb.RUNNING, "aircraft": self.count, "detail": adsb.WORDS[adsb.RUNNING]}
 
 
 def build(root):
@@ -92,6 +114,29 @@ def plug_in_nodes(app, root):
         nodes.pump()
 
 
+def pair_wireless_nodes(app, root):
+    """A hub plugged in, one wireless node just added through it and one more asking to join."""
+    bus, nodes = app.bus, app.nodes
+    _, dev, _ = usb_serial(root / "usb", {"ttyACM2": ("303a:1001", "")})
+    airs = [FakeAir(BOW, bus.clock, board="stamp-c5", flash_mb=4, psram_mb=0), FakeAir(STERN, bus.clock)]
+    airs[0].rssi, airs[1].rssi = -48, -63
+    bus.add(dev / "ttyACM2", FakeHub(HUB, bus.clock, airs=airs))
+    app.change("cluster_key", "3d6f0a9c8e7b5d4c2a1f0e9d8c7b6a59")
+    app.change("nodes", app.cfg["nodes"] + [{"id": HUB, "name": "Hub", "ble": False, "hub": True}])
+    nodes.configure(app.cfg)
+    nodes.scan()
+    for _ in range(20):
+        nodes.pump()
+    nodes.pair()
+    app.push(screens.Pairing())
+    for _ in range(30):
+        nodes.pump()
+    press(app, "ENTER")
+    for _ in range(30):
+        nodes.pump()
+    press(app)
+
+
 def old_logs(root):
     """A few earlier wardrives in different upload states."""
     logs = root / "logs"
@@ -115,6 +160,28 @@ def press(app, *names):
     while app.keyboard.queue:
         app.step(0)
     app.step(0)
+
+
+def fly(app, root, shot):
+    """A wardrive with aircraft on and an RTL-SDR stick plugged in."""
+    ticks = iter(range(NOW + 7200, NOW + 10 ** 7, 3))
+    app.cfg["adsb"] = True
+    app.hw.sdr, app.hw.readsb = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}], "/usr/bin/readsb"
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
+                                                 clock=lambda: next(ticks), receiver=Aircraft)
+    app.home()
+    press(app, "W")
+    app.drive.tracker.counts["BLE"] = 187
+    app.drive.rows = 1263
+    app.drive._started = time.monotonic() - 1574
+    shot("wardrive-aircraft")
+    app.open("Hardware")
+    cards = app.screen.cards(app)
+    app.screen.top = max(0, next(i for i, card in enumerate(cards) if card["tag"] == "SDR") - 2)
+    shot("hardware-aircraft")
+    app.stop_wardrive()
+    app.screen.s.update(ble=187, elapsed=1574)
+    shot("summary-aircraft")
 
 
 def main():
@@ -208,6 +275,9 @@ def main():
     app.push(screens.Flashing(job))
     shot("flashing")
     app.pop()
+    pair_wireless_nodes(app, root)
+    shot("pairing")
+    app.pop()
     app.nodes.detach(app)
     for device in app.bus.devices.values():
         device.unplug()
@@ -249,6 +319,8 @@ def main():
     r.unseen_alerts = 1
     press(app, "ESC", "ESC", "ESC")
     shot("recon-alert")
+    app.stop_recon()
+    fly(app, root, shot)
     app.shutdown()
     print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))
 

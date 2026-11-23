@@ -2,7 +2,7 @@
 
 Every file is sent as plain WigleWifi CSV over verified HTTPS. A file counts as
 delivered to a site once that site accepts it or says it already has it. Anything
-else is kept and tried again later.
+else is kept and tried again later. Aircraft files go to WDGWars and Wardrift only.
 """
 
 import http.client
@@ -16,10 +16,11 @@ import time
 import urllib.parse
 import uuid
 
-from . import __version__, accounts as keys, faults, wigle
+from . import __version__, accounts as keys, adsb, faults, wigle
 
 ENDPOINTS = {"wigle": "https://api.wigle.net", "wdgwars": "https://wdgwars.pl", "wardrift": "https://wardrift.net"}
 SERVICES = tuple(ENDPOINTS)
+AIRCRAFT_SERVICES = ("wdgwars", "wardrift")
 WARDRIFT_MAX_BYTES = 10 * 1024 * 1024
 USER_AGENT = "Quartermaster/%s (CardputerZero)" % __version__
 
@@ -74,10 +75,15 @@ def _request(method, url, headers, parts=(), timeout=60):
         conn.close()
 
 
-def _multipart(path):
+def sites(name):
+    """The sites a file is for: aircraft files are not for WiGLE."""
+    return AIRCRAFT_SERVICES if adsb.is_aircraft(name) else SERVICES
+
+
+def _multipart(path, content_type="text/csv"):
     boundary = "----Quartermaster" + uuid.uuid4().hex
     head = ('--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
-            'Content-Type: text/csv\r\n\r\n' % (boundary, path.name)).encode("ascii")
+            'Content-Type: %s\r\n\r\n' % (boundary, path.name, content_type)).encode("ascii")
     tail = ("\r\n--%s--\r\n" % boundary).encode("ascii")
     return "multipart/form-data; boundary=" + boundary, [head, path, tail]
 
@@ -157,10 +163,10 @@ def _wigle_test(accounts, base):
     return Outcome(RETRY, "WiGLE could not check the key (%d)" % status) if outcome.state == REJECTED else outcome
 
 
-def _wdgwars_upload(path, accounts, base):
+def _wdgwars_upload(path, accounts, base, file_type="text/csv"):
     headers = {"X-API-Key": accounts["wdgwars_key"]}
     for route in ("/api/v2/upload-csv", "/api/upload-csv"):
-        content_type, parts = _multipart(path)
+        content_type, parts = _multipart(path, file_type)
         status, body = _request("POST", base + route, dict(headers, **{"Content-Type": content_type}), parts,
                                 timeout=180)
         if status not in (404, 405):
@@ -206,6 +212,38 @@ def _wardrift_upload(path, accounts, base):
     return _refused("Wardrift", status, data)
 
 
+def _wardrift_aircraft(path, accounts, base):
+    """Aircraft go to Wardrift as gzipped JSON with their times counted back from now, in parts of 5000 at most."""
+    try:
+        data = adsb.load(path)
+    except (OSError, EOFError, ValueError):
+        return Outcome(REJECTED, "The aircraft file cannot be read")
+    now = time.time()
+    headers = {"X-API-Key": accounts["wardrift_key"], "Content-Type": "application/gzip"}
+    counted, duplicates, parts = 0, 0, 0
+    for body in adsb.batches(data, now):
+        name = adsb.part_name(path.name, parts + 1)
+        status, reply = _request("POST", base + "/v1/ingest/signals", dict(headers, **{"X-File-Name": name}), [body],
+                                 timeout=180)
+        answer = _json(reply)
+        if status != 200:
+            return _refused("Wardrift", status, answer)
+        parts += 1
+        duplicates += answer.get("duplicate") is True
+        if isinstance(answer.get("item_count"), int):
+            counted += answer["item_count"]
+    if not parts:
+        return Outcome(REJECTED, "The aircraft file holds no aircraft")
+    newest = max((data["now"] - item["seen"] for item in data["aircraft"]
+                  if isinstance(item, dict) and isinstance(item.get("seen"), (int, float))), default=data["now"])
+    if duplicates == parts:
+        return Outcome(DUPLICATE, "Wardrift already had it")
+    detail = "Wardrift has it" + (" (%d aircraft)" % counted if counted else "")
+    if now - newest > adsb.CREDIT_SECONDS:
+        detail += ". Over 3 days old, so it earns no points"
+    return Outcome(DONE, detail)
+
+
 def _wardrift_test(accounts, base):
     # Wardrift has no key-check call. A log with no rows is refused with 400, but only after the key passes.
     lines = "%s\n%s\n" % (",".join(wigle.pre_header()), ",".join(wigle.COLUMNS))
@@ -220,11 +258,17 @@ def _wardrift_test(accounts, base):
 
 _UPLOAD = {"wigle": _wigle_upload, "wdgwars": _wdgwars_upload, "wardrift": _wardrift_upload}
 _TEST = {"wigle": _wigle_test, "wdgwars": _wdgwars_test, "wardrift": _wardrift_test}
+_AIRCRAFT = {"wdgwars": lambda path, accounts, base: _wdgwars_upload(path, accounts, base, "application/gzip"),
+             "wardrift": _wardrift_aircraft}
 
 
 def upload(service, path, accounts, endpoints=None):
+    path = Path(path)
+    if adsb.is_aircraft(path) and service not in AIRCRAFT_SERVICES:
+        return Outcome(REJECTED, "Not for %s" % keys.SERVICE_NAMES[service])
     base = (endpoints or ENDPOINTS)[service]
-    return _guarded(lambda: _UPLOAD[service](Path(path), accounts, base))
+    send = _AIRCRAFT[service] if adsb.is_aircraft(path) else _UPLOAD[service]
+    return _guarded(lambda: send(path, accounts, base))
 
 
 def test(service, accounts, endpoints=None):
@@ -356,16 +400,19 @@ class Uploader:
             self.next_try = self.clock() + delay if retry else None
 
     def logs(self):
-        """Finished logs with at least one row, oldest first. The file still being written is left out."""
+        """Finished logs with at least one row, and aircraft files, oldest first. The file still being written is left
+        out."""
         before = self.active()
         try:
-            files = sorted(self.logs_dir.glob(wigle.LOG_GLOB))
+            files = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)))
         except OSError:
             return []
         active = {before, self.active()}
         return [path for path in files if path not in active and self._has_rows(path)]
 
     def _has_rows(self, path):
+        if adsb.is_aircraft(path):
+            return True
         if path.name not in self._with_rows and wigle.data_rows(path, limit=1):
             self._with_rows.add(path.name)
         return path.name in self._with_rows
@@ -386,7 +433,7 @@ class Uploader:
             retry = False
             try:
                 for path in self.logs():
-                    waiting = [s for s in services if not self.ledger.settled(path.name, s)]
+                    waiting = [s for s in services if s in sites(path.name) and not self.ledger.settled(path.name, s)]
                     if not waiting:
                         continue
                     for service in waiting:
@@ -411,12 +458,14 @@ class Uploader:
             return retry
 
     def marks(self, name, accounts=None):
-        """Per site: "done", "rejected", "waiting", or "" when no key is saved for it."""
+        """Per site: "done", "rejected", "waiting", "" when no key is saved for it, or "none": not a file for it."""
         accounts = accounts or keys.load(self.accounts_path)
         out = {}
         for service in SERVICES:
             state = self.ledger.state(name, service)
-            if state in (DONE, DUPLICATE):
+            if service not in sites(name):
+                out[service] = "none"
+            elif state in (DONE, DUPLICATE):
                 out[service] = "done"
             elif not keys.configured(accounts, service):
                 out[service] = ""
@@ -429,7 +478,7 @@ class Uploader:
         files = [path.name for path in self.logs()]
         services = {}
         for service in SERVICES:
-            states = [self.ledger.state(name, service) for name in files]
+            states = [self.ledger.state(name, service) for name in files if service in sites(name)]
             ready = keys.configured(accounts, service)
             state, detail, when = self.last.get(service, ("", "", None))
             services[service] = {

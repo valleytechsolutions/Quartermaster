@@ -11,7 +11,7 @@ from quartermaster.gnss import GPS
 from quartermaster.nodes import NodeManager
 from quartermaster.recon_engine import Recon
 from quartermaster.wifi import parse_iw_scan
-from tests.fakes import GGA, Clock, FakeBus, FakeNode, NoBle, QuietFleet, Talker, usb_serial
+from tests.fakes import GGA, Clock, FakeAir, FakeBus, FakeHub, FakeNode, NoBle, QuietFleet, Talker, usb_serial
 from tests.test_core import FIX, NOW, SCAN
 from tests.test_engine import ADAPTERS, FakeGPS
 from tests.test_recon import Sound
@@ -908,3 +908,503 @@ def test_stopping_while_a_port_is_being_asked_leaves_no_port_open(tmp_path):
     rig.clock.advance(nodes.NODE_RETRY_SECONDS)
     manager.scan()
     assert len(bus.ports) == opened
+
+
+HUB, AIR1, AIR2 = "c0b1c2d3e4f5", "b0b1c2d3e4f5", "b0b1c2d3e4f6"
+HUB_LINK = "usb-Espressif_USB_JTAG_serial_debug_unit_C0:B1:C2:D3:E4:F5-if00"
+KEY = "8f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+
+def hub_rig(tmp_path, airs=(AIR1, AIR2), paired=True, hub=True, key=KEY, **kwargs):
+    """ONE on USB, a hub on USB, and wireless nodes around the hub: by default in the settings and admitted."""
+    air_nodes = [FakeAir(node_id) for node_id in airs]
+    fake_hub = FakeHub(HUB, airs=air_nodes)
+    cfg = {"country": "US", "nodes": [{"id": ONE, "name": "N0"}, {"id": HUB, "name": "Hub", "hub": hub}]}
+    if key:
+        cfg["cluster_key"] = key
+    if paired:
+        fake_hub.saved_key = key
+        for i, air in enumerate(air_nodes):
+            fake_hub.admitted[air.node_id], air.hub = None, HUB
+            cfg["nodes"].append({"id": air.node_id, "name": "A%d" % i, "wireless": True})
+    ports = {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE)), "ttyACM1": ("303a:1001", HUB_LINK, fake_hub)}
+    rig = Rig(tmp_path, ports, cfg, **kwargs)
+    rig.hub, rig.airs = fake_hub, {air.node_id: air for air in air_nodes}
+    return rig
+
+
+def shares(rig):
+    return {node_id: planner.share_of(plan) for node_id, plan in rig.manager.plans.items()}
+
+
+def test_a_hub_gets_its_channel_and_key_scans_nothing_and_runs_its_wireless_nodes_with_the_wardrive(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    rig.settle()
+    hub, one = rig.hub, rig.devices["ttyACM0"]
+    assert hub.role == "hub" and hub.home == 6 and hub.hub_commands[0] == ("HUB", "6", KEY)
+    assert rig.manager.hub()["ready"] and rig.manager.hub()["nodes"] == 2
+    assert not hub.running and not any(air.running for air in rig.airs.values())
+    wardrive = drive(rig, tmp_path)
+    wardrive.start()
+    rig.settle(4)
+    assert rig.manager.in_use() == [ONE, AIR1, AIR2]
+    assert "PLAN" not in hub.commands and HUB not in rig.manager.plans and hub.running
+    assert one.running and all(air.running for air in rig.airs.values())
+    assert all(air.plan["version"] == rig.manager.plans[air.node_id].version for air in rig.airs.values())
+    assert sorted(set(item for share in shares(rig).values() for item in share)) == sorted(planner.channels("US"))
+    air = rig.airs[AIR1]
+    channel = planner.share_of(rig.manager.plans[AIR1])[0][1]
+    assert air.wifi("aa:bb:cc:00:00:a1", b"Up the mast", channel=channel)
+    rig.settle()
+    assert wardrive.tracker.find("WIFI", "AA:BB:CC:00:00:A1").name == "Up the mast"
+    radios = {a["label"]: a for a in wardrive.status()["adapters"] if a["method"] == "node"}
+    assert set(radios) == {"Node N0", "Node A0", "Node A1"} and radios["Node A0"]["error"] == ""
+    node = rig.manager.node(AIR1)
+    assert node["wireless"] and node["connected"] and node["in_use"] and node["port"] == "" and node["link_rssi"] == -52
+    assert rig.manager.node(HUB)["hub"] and rig.manager.node(HUB)["hub_ready"]
+    wardrive.stop()
+    rig.settle(3)
+    assert not hub.running and not any(air.running for air in rig.airs.values()) and not one.running
+
+
+def test_wireless_nodes_get_a_smaller_share_and_a_bluetooth_plan_through_the_hub(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,))
+    rig.manager.set_ble(AIR1, True)
+    rig.manager.scan()
+    rig.manager.attach(rig, lambda networks, adapter: None, lambda devices: None)
+    rig.settle(4)
+    usb, air = planner.sweep_ms(shares(rig)[ONE]), planner.sweep_ms(shares(rig)[AIR1])
+    assert air < usb and rig.airs[AIR1].plan["ble"]
+    assert rig.airs[AIR1].plan["version"] == rig.manager.plans[AIR1].version
+    assert any(command[:3] == ("TO", AIR1, "PLAN") for command in rig.hub.hub_commands)
+
+
+def test_the_hub_key_is_made_once_kept_in_the_settings_and_never_shown(tmp_path):
+    keys, saved = [], []
+    second = FakeHub(TWO)
+    rig = hub_rig(tmp_path, airs=(), paired=False, hub=False, key=None, on_change=saved.append)
+    rig.bus.add(rig.dev / "ttyACM1", rig.hub)
+    _, dev, _ = usb_serial(tmp_path, {"ttyACM2": ("303a:1001", "")})
+    rig.bus.add(dev / "ttyACM2", second).clock = rig.clock
+    second.last_host = second.last_status = second.last_hello = rig.clock()
+    rig.manager.on_key = keys.append
+    rig.manager.scan()
+    rig.manager.add(TWO, "Spare")
+    with pytest.raises(ValueError, match="firmware update"):
+        rig.manager.set_hub(ONE, True)
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    assert len(keys) == 1 and len(keys[0]) == 32 and int(keys[0], 16) and rig.hub.saved_key == keys[0]
+    assert [entry.get("hub", False) for entry in saved[-1]] == [False, True, False]
+    rig.manager.set_hub(TWO, True)
+    rig.settle()
+    assert len(keys) == 1 and second.role == "hub" and second.saved_key == keys[0] and rig.hub.role == "usb"
+    assert [entry.get("hub", False) for entry in saved[-1]] == [False, False, True]
+    assert HUB in rig.manager.in_use() and TWO not in rig.manager.in_use()
+    shown = repr(rig.manager.known()) + repr(rig.manager.hub()) + repr(rig.manager.found())
+    assert keys[0] not in shown and keys[0] not in repr(saved)
+    path = tmp_path / "config.json"
+    cfg = config.load(path)
+    cfg.update(nodes=saved[-1], cluster_key=keys[0])
+    config.save(cfg, path)
+    assert config.load(path)["cluster_key"] == keys[0] and config.load(path)["nodes"] == saved[-1]
+    assert path.stat().st_mode & 0o777 == 0o600
+    (tmp_path / ".config.json").write_text("{}")
+    (tmp_path / ".config.json").chmod(0o644)
+    config.save(cfg, path)
+    assert path.stat().st_mode & 0o777 == 0o600
+    path.write_text('{"cluster_key": "%s"}' % KEY.upper())
+    assert config.load(path)["cluster_key"] == KEY
+    for bad in ("0" * 32, KEY[:-1] + "g", "12ab", 7):
+        path.write_text('{"cluster_key": %s}' % ('"%s"' % bad if isinstance(bad, str) else bad))
+        assert "cluster_key" not in config.load(path)
+    entries = config.node_entries([{"id": ONE, "hub": True}, {"id": TWO, "hub": True},
+                                   {"id": THREE, "hub": True, "wireless": True}])
+    assert [(e.get("hub"), e.get("wireless")) for e in entries] == [(True, None), (None, None), (None, True)]
+    many = config.node_entries([{"id": "%012x" % i, "wireless": i % 2 == 0} for i in range(40)])
+    assert len(many) == config.MAX_NODES + config.MAX_WIRELESS
+
+
+def test_a_hub_with_firmware_that_cannot_be_one_says_so_and_is_sent_nothing(tmp_path):
+    rig = Rig(tmp_path, {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE))},
+              {"cluster_key": KEY, "nodes": [{"id": ONE, "name": "Old", "hub": True}]})
+    rig.manager.scan()
+    rig.settle()
+    assert "HUB" not in rig.devices["ttyACM0"].commands and rig.manager.node(ONE)["error"] == nodes.NO_ESPNOW
+    assert rig.manager.in_use() == [] and not rig.manager.hub()["ready"] and not rig.manager.pair()
+
+
+def test_a_new_wireless_node_is_shown_while_pairing_and_added_through_the_hub(tmp_path):
+    saved = []
+    rig = hub_rig(tmp_path, paired=False, on_change=saved.append)
+    rig.manager.scan()
+    rig.settle()
+    assert rig.manager.joining() == [] and rig.hub.asked == {}
+    assert rig.manager.pair()
+    rig.settle(2)
+    assert rig.hub.hub_commands[-1] == ("PAIR", "60") and 55 <= rig.manager.hub()["pairing"] <= 60
+    joining = rig.manager.joining()
+    assert [join["id"] for join in joining] == [AIR1, AIR2] and joining[0]["board"] == "c5-8mb"
+    assert joining[0]["firmware"] == "1.1.0" and joining[0]["rssi"] == -52 and not joining[0]["adding"]
+    assert rig.manager.admit(AIR1, "C5 E4F5")
+    assert rig.manager.joining()[0]["adding"]
+    rig.settle(2)
+    assert rig.hub.admitted.get(AIR1) is not None and rig.airs[AIR1].hub == HUB
+    assert saved[-1][-1] == {"id": AIR1, "name": "C5 E4F5", "ble": False, "wireless": True}
+    assert [join["id"] for join in rig.manager.joining()] == [AIR2]
+    node = rig.manager.node(AIR1)
+    assert node["wireless"] and node["connected"] and node["firmware"] == "1.1.0" and node["error"] == ""
+    rig.airs[AIR2].reach = False
+    rig.settle(nodes.JOIN_SECONDS)
+    assert rig.manager.joining() == [] and rig.manager.admit(AIR2, "Late")
+    rig.settle(2)
+    assert AIR2 not in [entry["id"] for entry in saved[-1]] and rig.manager.hub()["note"] == nodes.ADMIT_ERRORS["node"]
+    assert rig.manager.pair(0)
+    rig.settle()
+    assert rig.hub.hub_commands[-1] == ("PAIR", "0") and rig.manager.hub()["pairing"] == 0
+
+
+def test_removing_a_wireless_node_makes_the_hub_forget_it_now_or_when_it_is_back(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.remove(AIR1)
+    rig.settle()
+    assert ("FORGET", AIR1) in rig.hub.hub_commands and rig.airs[AIR1].hub is None
+    assert [node["id"] for node in rig.manager.known()] == [ONE, HUB, AIR2] and AIR1 not in rig.manager.air
+    rig.hub.unplug()
+    rig.settle()
+    rig.manager.remove(AIR2)
+    assert rig.airs[AIR2].hub == HUB
+    rig.hub.replug()
+    rig.clock.advance(nodes.NODE_RETRY_SECONDS)
+    rig.manager.scan()
+    rig.settle(6)
+    assert ("FORGET", AIR2) in rig.hub.hub_commands and rig.airs[AIR2].hub is None and rig.hub.admitted == {}
+    assert rig.hub.hub_commands.count(("FORGET", AIR2)) == 1
+
+
+def test_a_wireless_line_with_a_wrong_checksum_is_counted_on_its_node_and_a_late_one_left_out(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    heard = []
+    rig.manager.attach(rig, lambda networks, adapter: heard.extend(net["ssid"] for net in networks))
+    rig.settle(4)
+    air = rig.airs[AIR1]
+    channel = planner.share_of(rig.manager.plans[AIR1])[0][1]
+    rig.hub.garble_air = 1
+    air.wifi("aa:bb:cc:00:00:01", b"Garbled", channel=channel)
+    air.lose = 2
+    air.wifi("aa:bb:cc:00:00:02", b"Lost", channel=channel)
+    air.wifi("aa:bb:cc:00:00:03", b"Lost", channel=channel)
+    air.wifi("aa:bb:cc:00:00:04", b"Old", channel=channel, age=nodes.AIR_LATE_MS + 1)
+    air.wifi("aa:bb:cc:00:00:05", b"Fine", channel=channel)
+    rig.settle()
+    node = rig.manager.node(AIR1)
+    assert heard == ["Fine"] and node["bad"] == 1 and node["lost"] == 3 and node["late"] == 1
+    assert rig.manager.node(HUB)["bad"] == 0 and rig.manager.node(AIR2)["bad"] == 0
+    rig.hub.out += b"@R,b0b1c2d3e4ff,@W,1,2*00\n@R,zz*00\n"
+    rig.settle()
+    assert rig.manager.links[HUB].bad == 2 and rig.manager.node(AIR1)["bad"] == 1
+
+
+def test_a_wireless_node_out_of_reach_hands_its_channels_back_and_gets_them_again(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    wardrive = drive(rig, tmp_path)
+    wardrive.start()
+    rig.settle(4)
+    first = shares(rig)
+    rig.airs[AIR1].reach = False
+    rig.settle(nodes.AIR_SILENT_SECONDS - 6)
+    assert AIR1 in rig.manager.in_use()
+    rig.settle(12)
+    assert rig.manager.in_use() == [ONE, AIR2] and AIR1 not in rig.manager.plans
+    assert sorted(item for share in shares(rig).values() for item in set(share)) == sorted(planner.channels("US"))
+    assert rig.manager.node(AIR1)["error"] == nodes.AWAY and not rig.manager.node(AIR1)["connected"]
+    errors = {a["label"]: a["error"] for a in wardrive.status()["adapters"] if a["method"] == "node"}
+    assert errors == {"Node N0": "", "Node A0": nodes.AWAY, "Node A1": ""}
+    rig.airs[AIR1].reach = True
+    rig.settle(4)
+    assert rig.manager.in_use() == [ONE, AIR1, AIR2] and shares(rig) == first
+    assert rig.airs[AIR1].plan["version"] == rig.manager.plans[AIR1].version and rig.airs[AIR1].running
+    wardrive.stop()
+
+
+def test_an_unplugged_hub_stops_the_wireless_share_and_the_usb_nodes_take_it(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    wardrive = drive(rig, tmp_path)
+    wardrive.start()
+    rig.settle(4)
+    rig.hub.unplug()
+    rig.settle()
+    one = rig.devices["ttyACM0"]
+    assert rig.manager.in_use() == [ONE] and planner.share_of(rig.manager.plans[ONE]) == planner.channels("US")
+    assert one.scans(149) and one.scans(6) and one.plan["version"] == rig.manager.plans[ONE].version
+    assert rig.manager.node(AIR1)["error"] == nodes.NO_HUB and rig.manager.node(AIR1)["last_heard"] is not None
+    assert not rig.manager.hub()["connected"] and not rig.manager.hub()["ready"]
+    assert rig.manager.admit(AIR1) is False and rig.manager.pair() is False and not rig.manager.identify(AIR1)
+    rig.hub.replug()
+    rig.clock.advance(nodes.NODE_RETRY_SECONDS)
+    rig.manager.scan()
+    rig.settle(6)
+    assert rig.manager.in_use() == [ONE, AIR1, AIR2] and rig.hub.running and rig.hub.role == "hub"
+    assert all(air.running for air in rig.airs.values())
+    wardrive.stop()
+
+
+def test_a_wireless_node_plugged_in_by_usb_is_the_usb_node_and_the_hub_is_told_nothing(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    heard = []
+    rig.manager.attach(rig, lambda networks, adapter: heard.append((adapter["label"], networks[0]["ssid"])))
+    rig.settle(4)
+    told = len(rig.hub.hub_commands)
+    _, dev, _ = usb_serial(tmp_path, {"ttyACM2": ("303a:1001", "")})
+    usb = rig.bus.add(dev / "ttyACM2", FakeNode(AIR1, clock=rig.clock, caps="wifi24+wifi5+ble+espnow"))
+    rig.manager.scan()
+    rig.settle(6)
+    assert rig.manager.in_use() == [ONE, AIR1, AIR2] and usb.running and usb.plan is not None
+    assert rig.manager.links[AIR1].path == str(dev / "ttyACM2") and rig.manager.node(AIR1)["port"]
+    assert not [command for command in rig.hub.hub_commands[told:] if AIR1 in command]
+    air, before = rig.airs[AIR1], rig.manager.air[AIR1].heard
+    air.plan, air.running = dict(usb.plan), True
+    air.wifi("aa:bb:cc:00:00:07", b"Twice", channel=planner.share_of(rig.manager.plans[AIR1])[0][1])
+    rig.settle()
+    assert heard == [] and rig.manager.air[AIR1].heard == before and rig.manager.air[AIR1].seq is not None
+    assert usb.wifi("aa:bb:cc:00:00:08", b"Once", channel=planner.share_of(rig.manager.plans[AIR1])[0][1])
+    rig.settle()
+    assert heard == [("Node A0", "Once")] and rig.manager.found() == []
+
+
+def test_commands_for_a_wireless_node_go_through_the_hub(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    rig.settle()
+    assert rig.manager.identify(AIR1, 3)
+    rig.manager.set_led(AIR1, "gpio,27,1")
+    rig.settle(3)
+    assert rig.airs[AIR1].idents == [3] and rig.airs[AIR1].led == ["gpio", "27", "1"]
+    assert ("TO", AIR1, "IDENT", "3") in rig.hub.hub_commands and rig.airs[AIR2].idents == []
+
+
+def test_a_hub_that_restarted_is_made_a_hub_again(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    rig.manager.attach(rig, lambda networks, adapter: None)
+    rig.settle(4)
+    rig.hub.reset()
+    assert rig.hub.role == "usb"
+    for _ in range(int(nodes.HELLO_SECONDS) + 2):
+        if rig.hub.hub_commands.count(("HUB", "6", KEY)) == 2:
+            break
+        rig.settle(1)
+    rig.settle(1)
+    assert rig.hub.role == "hub" and rig.hub.hub_commands.count(("HUB", "6", KEY)) == 2 and rig.hub.running
+    rig.settle(4)
+    assert rig.manager.in_use() == [ONE, AIR1, AIR2]
+
+
+def test_a_plan_the_hub_could_not_queue_is_sent_again(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,))
+    rig.manager.scan()
+    rig.settle()
+    air = rig.airs[AIR1]
+    air.reach = False
+    for _ in range(4):
+        assert rig.manager.identify(AIR1)
+    rig.manager.attach(rig, lambda networks, adapter: None)
+    rig.settle()
+    assert rig.hub.queues[AIR1] and len(rig.hub.queues[AIR1]) == 4 and air.plan is None
+    air.reach = True
+    rig.settle(nodes.AIR_NUDGE_SECONDS + 4)
+    assert air.plan is not None and air.plan["version"] == rig.manager.plans[AIR1].version
+
+
+def test_a_node_the_hub_took_is_added_even_when_the_answer_was_garbled(tmp_path):
+    saved = []
+    rig = hub_rig(tmp_path, airs=(AIR1,), paired=False, on_change=saved.append)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.manager.admit(AIR1, "Bow")
+    rig.hub.garble = 1
+    rig.settle(6)
+    assert rig.hub.admitted.get(AIR1) is not None and rig.manager.links[HUB].bad == 1
+    assert saved[-1][-1] == {"id": AIR1, "name": "Bow", "ble": False, "wireless": True}
+    assert ("FORGET", AIR1) not in rig.hub.hub_commands and rig.manager.node(AIR1)["connected"]
+
+
+def test_wireless_nodes_of_another_hub_say_they_must_be_added_again_and_keep_their_names(tmp_path):
+    saved = []
+    rig = hub_rig(tmp_path, on_change=saved.append)
+    second = FakeHub(TWO, airs=list(rig.airs.values()))
+    _, dev, _ = usb_serial(tmp_path, {"ttyACM2": ("303a:1001", "")})
+    rig.bus.add(dev / "ttyACM2", second).clock = rig.clock
+    second.last_host = second.last_status = second.last_hello = rig.clock()
+    rig.manager.scan()
+    rig.manager.add(TWO, "Spare")
+    rig.settle()
+    assert rig.manager.stranded(TWO) == 2 and rig.manager.stranded(HUB) == 0
+    rig.manager.set_hub(TWO, True)
+    rig.settle(4)
+    assert second.role == "hub" and second.admitted == {} and rig.manager.node(AIR1)["error"] == nodes.AWAY
+    rig.settle(8)
+    assert rig.manager.node(AIR1)["error"] == nodes.NOT_ON_HUB and rig.manager.node(AIR2)["error"] == nodes.NOT_ON_HUB
+    assert not [command for command in second.hub_commands if command[0] == "FORGET"]
+    rig.airs[AIR1].hub = None
+    rig.manager.pair()
+    rig.settle(2)
+    assert rig.manager.admit(AIR1)
+    rig.settle(3)
+    node = rig.manager.node(AIR1)
+    assert node["error"] == "" and node["connected"] and node["name"] == "A0"
+    assert [entry["name"] for entry in saved[-1] if entry.get("wireless")] == ["A0", "A1"]
+    rig.settle(12)
+    assert rig.manager.node(AIR1)["error"] == "" and rig.manager.node(AIR2)["error"] == nodes.NOT_ON_HUB
+
+
+def test_a_refused_admit_never_makes_the_hub_forget_a_node_it_took(tmp_path):
+    saved = []
+    rig = hub_rig(tmp_path, paired=False, on_change=saved.append)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.airs[AIR1].reach = rig.airs[AIR2].reach = False
+    rig.manager.admit(AIR1, "Bow")
+    rig.hub.garble = 1
+    rig.manager.pump()
+    rig.hub.asked.pop(AIR2)
+    rig.manager.admit(AIR2, "Stern")
+    rig.manager.pump()
+    assert rig.manager.hub()["note"] == nodes.ADMIT_ERRORS["node"] and rig.hub.admitted == {AIR1: None}
+    rig.airs[AIR1].reach = True
+    rig.settle(6)
+    assert ("FORGET", AIR1) not in rig.hub.hub_commands and rig.hub.admitted.get(AIR1) is not None
+    assert {"id": AIR1, "name": "Bow", "ble": False, "wireless": True} in saved[-1]
+    assert rig.manager.node(AIR1)["connected"]
+
+
+def test_a_refused_admit_stops_showing_the_node_as_being_added(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,), paired=False)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.airs[AIR1].reach = False
+    rig.hub.asked.clear()
+    rig.manager.admit(AIR1, "Bow")
+    assert rig.manager.joining()[0]["adding"]
+    rig.settle()
+    assert not rig.manager.joining()[0]["adding"]
+
+
+def test_a_hub_that_lost_its_key_gets_a_new_one_and_an_upper_case_key_is_taken(tmp_path):
+    keys = []
+    rig = hub_rig(tmp_path, airs=(), paired=False, key=None)
+    rig.manager.on_key = keys.append
+    rig.manager.scan()
+    rig.settle(2)
+    assert len(keys) == 1 and rig.manager.hub()["ready"] and rig.hub.hub_commands[0] == ("HUB", "6", keys[0])
+    assert rig.manager.node(HUB)["error"] == ""
+    rig.manager.configure({"country": "US", "nodes": rig.manager.entries(), "cluster_key": KEY.upper()})
+    assert rig.manager.key == KEY and config.cluster_key(" %s " % KEY.upper()) == KEY
+
+
+def test_a_hub_that_is_restarting_says_so_when_it_refuses_a_node(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,), paired=False)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.hub.role = "usb"
+    rig.manager.admit(AIR1, "Bow")
+    rig.manager.pump()
+    assert rig.manager.hub()["note"] == "The hub is restarting. Try again."
+
+
+def test_a_wireless_node_is_given_time_to_take_its_plan_before_it_is_sent_again(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,))
+    rig.manager.scan()
+    rig.settle()
+    air, plans = rig.airs[AIR1], []
+    taken = air.receive
+
+    def receive(data):
+        if data.startswith(b"#PLAN"):
+            plans.append(data)
+            if len(plans) == 1:
+                return
+        taken(data)
+    air.receive = receive
+    rig.manager.attach(rig, lambda networks, adapter: None)
+    rig.settle(nodes.AIR_NUDGE_SECONDS - 2)
+    assert len(plans) == 1 and air.running and air.plan["version"] == 0
+    rig.settle(4)
+    assert len(plans) == 2 and air.plan["version"] == rig.manager.plans[AIR1].version
+
+
+def test_a_hello_relayed_with_another_nodes_id_is_counted_as_bad(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,))
+    rig.manager.scan()
+    rig.settle()
+    rig.hub.relay(AIR1, "@H,1,%s,9.9.9,1.0,8,0,c5,wifi24,US,0,idle" % AIR2)
+    rig.manager.pump()
+    node = rig.manager.node(AIR1)
+    assert rig.manager.air[AIR1].bad == 1 and node["firmware"] == "1.1.0" and node["capabilities"] != ["wifi24"]
+
+
+def test_a_node_on_usb_never_shows_as_a_new_wireless_node(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,), paired=False)
+    rig.manager.scan()
+    rig.settle()
+    _, dev, _ = usb_serial(tmp_path, {"ttyACM2": ("303a:1001", "")})
+    usb = rig.bus.add(dev / "ttyACM2", FakeNode(AIR1, clock=rig.clock, caps="wifi24+wifi5+ble+espnow"))
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    assert rig.hub.told and rig.manager.joining() == []
+    usb.unplug()
+    rig.settle(1)
+    assert AIR1 not in rig.manager.links and rig.manager.joining() == []
+    rig.settle(5)
+    assert [join["id"] for join in rig.manager.joining()] == [AIR1]
+    usb.replug()
+    rig.clock.advance(nodes.NODE_RETRY_SECONDS)
+    rig.manager.scan()
+    rig.settle()
+    assert AIR1 in rig.manager.links and rig.manager.joining() == []
+
+
+def test_a_hub_taken_out_of_the_settings_stops_being_one_and_stops_at_once_with_the_scan(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    rig.manager.attach(rig, lambda networks, adapter: None)
+    rig.settle(4)
+    assert rig.hub.running
+    before = len(rig.hub.commands)
+    rig.manager.detach(rig)
+    rig.manager.pump()
+    assert "STOP" in rig.hub.commands[before:] and not rig.hub.running
+    rig.manager.remove(HUB)
+    rig.manager.pump()
+    assert rig.hub.hub_commands[-1] == ("USB",) and rig.hub.role == "usb"
+
+
+def test_a_node_the_settings_do_not_have_is_forgotten_once_a_minute_at_most(tmp_path):
+    rig = hub_rig(tmp_path, airs=(AIR1,), paired=False)
+    rig.hub.saved_key, rig.hub.admitted[AIR1], rig.airs[AIR1].reach = KEY, None, False
+    rig.manager.scan()
+    rig.settle(2)
+    told = [command for command in rig.hub.hub_commands if command == ("FORGET", AIR1)]
+    assert len(told) == 1
+    rig.hub.admitted[AIR1] = None
+    rig.settle(nodes.FORGET_SECONDS - 10)
+    assert rig.hub.hub_commands.count(("FORGET", AIR1)) == 1
+    rig.settle(12)
+    assert rig.hub.hub_commands.count(("FORGET", AIR1)) == 2

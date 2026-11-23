@@ -150,6 +150,16 @@ A Quartermaster Node is a small ESP32-C5 board on USB that scans Wi-Fi on 2.4 an
 
 Set **Settings > Country** to where you are: the nodes only use the Wi-Fi channels allowed there. The Hardware screen has a card for each node with the channels it scans.
 
+### Wireless nodes
+
+Nodes do not have to be plugged in. One node stays on the CardputerZero as the **hub**, and up to 8 more run on a battery or a USB charger and send what they hear to the hub by radio. Each wireless node scans its own share of the channels where it is, within radio range of the hub.
+
+1. Open the node that stays plugged in and turn on **Hub for wireless nodes**. The hub does not scan. There is one hub: turning it on for one node turns it off for the others. It needs node firmware 1.1.0 or later.
+2. In **Settings > Nodes**, choose **Add a wireless node**. Pairing stays open for 60 seconds.
+3. Power the new node and hold its **BOOT** button for 2 seconds. It shows up as **New wireless node**. Press **OK** to add it.
+
+Wireless nodes start and stop with every wardrive and Recon. A wireless node's screen and the Hardware screen say when it was last heard and how well the hub hears it. A node that has not been heard for 30 seconds hands its channels to the others and gets them back when it is heard again. When the hub is unplugged, the wireless nodes wait for it and the nodes on USB scan every channel. Removing a wireless node makes the hub forget it; hold BOOT on it to add it again. A wireless node plugged in by USB scans as a USB node until it is unplugged. Moving the hub to another node means adding every wireless node again: Quartermaster asks first, and each one says so until it is added.
+
 Flashing waits until no wardrive or Recon runs. If a board does not answer, put it in download mode and try again:
 
 - **Seeed XIAO ESP32-C5:** hold BOOT while you plug it in.
@@ -167,9 +177,28 @@ Flashing waits until no wardrive or Recon runs. If a board does not answer, put 
     <td align="center">A node</td>
     <td align="center">Flashing a node</td>
   </tr>
+  <tr>
+    <td><img src="docs/screens/pairing.png" width="270" alt="Adding a wireless node"></td>
+  </tr>
+  <tr>
+    <td align="center">Adding a wireless node</td>
+  </tr>
 </table>
 
 The firmware, the boards it runs on and the serial protocol are described in [firmware/README.md](firmware/README.md).
+
+## Aircraft
+
+With an RTL-SDR stick (RTL2832U) on USB, Quartermaster also logs the aircraft around you, for WDGWars and Wardrift. WiGLE does not take aircraft, so they are never sent there.
+
+1. Install the decoder once: `sudo apt install readsb`. Quartermaster never installs anything itself.
+   The package may also start readsb at every boot, where it keeps the stick and some CPU all the time. To let Quartermaster run it only during wardrives, turn that off once: `sudo systemctl disable --now readsb`.
+2. Turn on **Settings > Aircraft (ADS-B)** and plug in the stick.
+3. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
+
+If readsb already runs on the Cardputer as a system service, Quartermaster reads what it writes to `/run/readsb` or `/run/adsb` and does not start a second copy. Otherwise it starts readsb for the wardrive at a low priority on one CPU, with no network ports, and stops it with the wardrive. Without the stick or readsb the wardrive goes on as ever, and the Hardware screen says why.
+
+Each aircraft is kept once, with its closest and its furthest position. When the wardrive stops, `quartermaster_<date>-<time>.aircraft.json.gz` (readsb's own aircraft.json format, at the closest position) is written beside the WiGLE log and goes to WDGWars and Wardrift. Wardrift only gives points for aircraft heard in the last 3 days, so keep uploads on.
 
 ## Controls
 
@@ -196,6 +225,7 @@ Every screen shows its own keys along the bottom.
 | | Bluetooth scan | On, Off | On |
 | | Random BLE addresses | Log, Skip | Log |
 | | Bluetooth check | 0.5 s, 1 s, 2 s, 5 s | 1 s |
+| | Aircraft (ADS-B) | Off, On | Off |
 | | Country | 44 countries, or Anywhere else | United States |
 | Nodes | Nodes | The nodes in use, and new ones to add | |
 | | Flash a node | Install or update the node firmware | |
@@ -226,6 +256,8 @@ Everything is kept in the `quartermaster` folder in your home directory.
 | --- | --- |
 | `logs/quartermaster_<date>-<time>.wigle.csv` | The wardrive in WigleWifi-1.6 format, ready for WiGLE, WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.summary.csv` | One line per device: name, security, channel, first and last seen, and the strongest and weakest sighting with position and time. |
+| `logs/quartermaster_<date>-<time>.aircraft.json.gz` | The aircraft of the wardrive, each at its closest position, for WDGWars and Wardrift. |
+| `logs/quartermaster_<date>-<time>.aircraft.csv` | One line per aircraft: callsign, squawk, first and last seen, signal, and the closest and furthest position with height, speed and time. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
 
 Every log starts with a header that names the app:

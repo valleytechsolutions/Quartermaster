@@ -8,7 +8,7 @@ import time
 
 from PIL import Image
 
-from .. import accounts, config, faults, flasher, hardware, power, updates_check, uploads, wigle
+from .. import accounts, adsb, config, faults, flasher, hardware, power, updates_check, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
 from ..recon_engine import Recon
@@ -55,6 +55,7 @@ class HardwareWatch:
         self.interval = interval
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
         self.serial_ports = []
+        self.sdr, self.readsb, self.sky_use = [], "", ""
         self.battery, self._battery_read = None, 0.0
         self._since = {}
         self._stop = threading.Event()
@@ -72,6 +73,8 @@ class HardwareWatch:
             self.bluetooth = hardware.bluetooth_adapters()
             self.gps_ports = hardware.gps_candidates()
             self.serial_ports = serial_ports()
+            self.sdr, self.readsb = hardware.rtl_sdr_dongles(), adsb.find_readsb()
+            self.sky_use = adsb.in_use() if self.sdr else ""
             found = hardware.stalled_usb_adapters()
         except OSError:
             return
@@ -202,7 +205,9 @@ class App:
         self.accounts_path = accounts_path
         self.config_path = config_path
         self.nodes = nodes if nodes is not None else NodeManager(cfg)
-        self.nodes.on_change = lambda entries: self.change("nodes", entries)
+        self._thread = threading.current_thread()
+        self.nodes.on_change = lambda entries: self.on_screen_thread(lambda: self.change("nodes", self.nodes.entries()))
+        self.nodes.on_key = lambda key: self.call_soon(lambda: self.change("cluster_key", key))
         self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes))
         self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes)
         self.flasher_class = flasher_class
@@ -265,7 +270,8 @@ class App:
         if refresh or self._files_at is None or now - self._files_at > 3:
             active, files = self.active_log(), []
             try:
-                paths = sorted(self.logs_dir.glob(wigle.LOG_GLOB), reverse=True)
+                paths = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)),
+                               reverse=True)
             except OSError:
                 paths = []
             for path in paths:
@@ -274,7 +280,7 @@ class App:
                 except OSError:
                     continue
                 files.append({"path": path, "name": path.name, "size": size, "active": path == active,
-                              "epoch": screens.log_epoch(path.name)})
+                              "epoch": screens.log_epoch(path.name), "aircraft": adsb.is_aircraft(path)})
             self._files, self._files_at = files, now
         return self._files
 
@@ -345,6 +351,13 @@ class App:
     def call_soon(self, function):
         """Run a function on the screen thread. Safe to call from any thread."""
         self._calls.append(function)
+
+    def on_screen_thread(self, function):
+        """Run a function now on the screen thread, else as soon as the screen thread can."""
+        if threading.current_thread() is self._thread:
+            function()
+        else:
+            self.call_soon(function)
 
     def busy(self, text):
         """Show a notice right away, before a call that takes a few seconds."""
@@ -625,7 +638,8 @@ class App:
             path.unlink()
         except OSError:
             return self.toast("The log could not be deleted", RED)
-        summary = path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
+        summary = adsb.summary_path(path) if entry.get("aircraft") else \
+            path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
         try:
             summary.unlink()
         except OSError:

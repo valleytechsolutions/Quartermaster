@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 
-from . import faults, hardware, radios, wigle
+from . import adsb, faults, hardware, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .tracker import BLE, BT, WIFI, Tracker
@@ -88,7 +88,7 @@ def _record(device):
 
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
-                 nodes=None):
+                 nodes=None, receiver=adsb.Receiver):
         self.cfg = dict(cfg)
         self.nodes = nodes
         self.gps = gps
@@ -101,6 +101,9 @@ class Wardrive:
         self.ble = ble
         self.fleet_class = fleet
         self.fleet = None
+        self.receiver = receiver
+        self.aircraft = None
+        self.aircraft_path = None
         self.extremes = self.cfg.get("log_rows", "extremes") != "track"
         self.tracker = Tracker(self.cfg.get("relog_seconds", 30), self.cfg.get("relog_meters", 25),
                                self.cfg.get("rssi_step", 4), accuracy=wigle.accuracy_m, extremes=self.extremes)
@@ -156,7 +159,8 @@ class Wardrive:
         if self.adapters is None:
             self.adapters = hardware.wifi_adapters()
         chosen = self._chosen_adapters()
-        if not chosen and not self.cfg.get("ble", True) and not (self.nodes is not None and self.nodes.in_use()):
+        if not chosen and not self.cfg.get("ble", True) and not self.cfg.get("adsb") and \
+                not (self.nodes is not None and self.nodes.in_use()):
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
         radios.claim("wardrive")
         self._stop.clear()
@@ -164,6 +168,11 @@ class Wardrive:
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self.fleet.start()
+        if self.cfg.get("adsb"):
+            self.aircraft = self.receiver(self.logs, self.gps, clock=self.clock, log=lambda: self.log_path,
+                                          max_hdop=self.cfg.get("gps_max_hdop") or None,
+                                          epoch=lambda fix: gps_epoch(fix, self.clock()))
+            self.aircraft.start(gps_epoch(self.gps.snapshot(), self.clock()))
         if self.nodes is not None:
             self.nodes.attach(self, self._wifi_sink, self._node_ble, ble=self.cfg.get("ble", True),
                               bands=self._bands)
@@ -190,6 +199,10 @@ class Wardrive:
                 leftover.unlink(missing_ok=True)
             except OSError:
                 pass
+        try:
+            adsb.recover(self.logs)
+        except OSError:
+            faults.note("Finishing an earlier aircraft log")
 
     def _housekeeping(self):
         """Put waiting rows on disk, follow adapters plugged in or pulled out, write the extremes of devices left."""
@@ -303,6 +316,8 @@ class Wardrive:
             self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
+        if self.aircraft is not None:
+            self.aircraft.stop()
         for thread in self._threads:
             thread.join(timeout=5)
         if self.ble is not None:
@@ -322,6 +337,15 @@ class Wardrive:
             self.state = "stopped"
         radios.release("wardrive")
         self._write_summary()
+        self._write_aircraft()
+
+    def _write_aircraft(self):
+        if self.aircraft is None:
+            return
+        try:
+            self.aircraft_path = self.aircraft.finish()
+        except (OSError, ValueError) as exc:
+            self.failed = self.failed or "Cannot write the aircraft log: %s" % (getattr(exc, "strerror", None) or exc)
 
     def _append(self, row, epoch):
         with self._lock:
@@ -463,6 +487,9 @@ class Wardrive:
         summary.update(state=self.state, rows=self.rows + kept, files=len(paths),
                        log=str(paths[0]) if paths else "", skipped_no_fix=self.skipped_no_fix,
                        elapsed=self.elapsed(),
+                       aircraft=self.aircraft.count if self.aircraft is not None else None,
+                       adsb=self.aircraft.status() if self.aircraft is not None else None,
+                       aircraft_log=str(self.aircraft_path) if self.aircraft_path else "",
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))

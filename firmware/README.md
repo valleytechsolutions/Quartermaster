@@ -34,12 +34,30 @@ The commands and lines are in the "Wireless nodes" section of [PROTOCOL.md](PROT
 ## Flashing
 
 - **From Quartermaster.** Quartermaster ships the firmware in `quartermaster/assets/node/` and can install and update a node plugged into the CardputerZero.
-- **From a browser.** A web flasher page will follow.
+- **From a browser.** The flasher page in `docs/flasher/` (below) flashes from Chrome or Edge on a computer, or Chrome on Android.
 - **By hand.** With ESP-IDF 5.5.6: `idf.py -p PORT flash` in `quartermaster-node/`, or write the merged image at offset 0 with esptool: `esptool.py --chip esp32c5 write_flash 0x0 quartermaster-node-1.1.0-merged.bin`.
 
 If a board does not enter the download mode by itself, hold BOOT while plugging it in.
 
 The merged image is for a first install: bootloader at 0x2000, partition table at 0x8000, app at 0x20000. An update only needs the app image at 0x20000. `quartermaster-node.json` lists the files, offsets and checksums.
+
+## Browser flasher
+
+`docs/flasher/` is a page that flashes a node with [ESP Web Tools](https://github.com/esphome/esp-web-tools) 10.5.2, served by GitHub Pages from `/docs` on `main`. Web Serial needs https, which Pages gives. It has two buttons:
+
+- **First install** writes the merged image at 0 and offers to erase the board first. The merged image blanks `nvs` either way, so it always clears the node's name, light and hub.
+- **Update, keep settings** writes the app image at `ota_0` and a blank `otadata`, so the board starts the new app, the same as an update from Quartermaster. It cannot check the board's partition table first as Quartermaster does, so it is only for boards that already run Quartermaster Node.
+
+The page, its manifests and copies of the images are made from `quartermaster/assets/node/quartermaster-node.json`. After new images are copied there, run:
+
+```
+python3 tools/flasher_page.py            # rewrite docs/flasher/
+python3 tools/flasher_page.py --check    # list what is out of date
+```
+
+It only replaces or removes its own files there (`index.html`, `manifest-*.json`, `otadata-blank.bin`, `quartermaster-node-*.bin`).
+
+`tests/test_flasher_page.py` fails when the page no longer matches the bundled firmware.
 
 ## Building
 

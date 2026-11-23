@@ -3,6 +3,10 @@
 Each node scans only its share. The channels a country allows are those of ESP-IDF 5.5 for the ESP32-C5, so a
 node is never given a channel it would skip. Adapters in the Cardputer keep sweeping every channel: Linux does not
 let Quartermaster limit them.
+
+A wireless node scans with the same times on each channel, but after every 0.6 s or so of scanning it goes back to
+the hub's channel to hand over what it heard, which takes up to 150 ms. Its channels take it longer, so the split
+counts its time as AIR_SLOWER times the time on the channels and gives it a smaller share.
 """
 
 from collections import namedtuple
@@ -13,6 +17,7 @@ GHZ5 = (36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 
         149, 153, 157, 161, 165, 169, 173, 177)
 BUSY = (1, 6, 11)
 BUSY_FROM = 3
+AIR_SLOWER = 1.15
 
 _CE = (13, ((36, 64), (100, 140), (149, 173)))
 _RULES = {
@@ -85,9 +90,9 @@ def _items(country, count, bands=None):
     return items
 
 
-def _cut(items, count, times):
-    """Cut the channels, in order, into `count` runs: the slowest run as quick as can be, then fewest runs that
-    cross from one band into the other."""
+def _cut(items, count, times, weights):
+    """Cut the channels, in order, into `count` runs, run k for a node `weights[k]` times as slow: the slowest run as
+    quick as can be, then fewest runs that cross from one band into the other."""
     costs = [cost(band, ch, times) for band, ch in items]
     total = len(items)
     sums = [0]
@@ -105,7 +110,7 @@ def _cut(items, count, times):
                 before = best.get((k - 1, i))
                 if before is None:
                     continue
-                score = (max(before[0], sums[j] - sums[i]), before[1] + crosses(i, j), i)
+                score = (max(before[0], (sums[j] - sums[i]) * weights[k - 1]), before[1] + crosses(i, j), i)
                 if choice is None or score[:2] < choice[:2]:
                     choice = score
             if choice is not None:
@@ -118,7 +123,7 @@ def _cut(items, count, times):
     return cuts[::-1]
 
 
-def _spread(items, nodes, times):
+def _spread(items, nodes, times, weight):
     """Nodes that cannot scan every band: the slowest channels first, each to the least busy node that can take it."""
     shares = {node_id: [] for node_id, _ in nodes}
     loads = dict.fromkeys(shares, 0)
@@ -128,42 +133,46 @@ def _spread(items, nodes, times):
         if able:
             node_id = min(able, key=lambda n: (loads[n], len({b for b, _ in shares[n]} | {band}), n))
             shares[node_id].append((band, ch))
-            loads[node_id] += cost(band, ch, times)
+            loads[node_id] += cost(band, ch, times) * weight[node_id]
     return shares
 
 
-def split(country, nodes, times=TIMES, bands=None):
-    """{node id: [(band, channel)]} for nodes given as (node id, capabilities), on the bands kept (None: all).
+def split(country, nodes, times=TIMES, bands=None, slow=()):
+    """{node id: [(band, channel)]} for nodes given as (node id, capabilities), on the bands kept (None: all). The
+    nodes in `slow` are wireless nodes.
 
     Every channel goes to one node, except that with three nodes or more 1, 6 and 11 go to two different nodes."""
     nodes = sorted((node_id, frozenset(caps)) for node_id, caps in nodes)
     if not nodes:
         return {}
+    weight = {node_id: AIR_SLOWER if node_id in slow else 1.0 for node_id, _ in nodes}
     items = _items(country, len(nodes), bands)
     if any(not {"wifi24", "wifi5"} <= caps for _, caps in nodes):
-        shares = _spread(items, nodes, times)
+        shares = _spread(items, nodes, times, weight)
     else:
-        cuts = _cut(items, min(len(nodes), len(items)), times) if items else []
+        cuts = _cut(items, min(len(nodes), len(items)), times, [weight[node_id] for node_id, _ in nodes]) \
+            if items else []
         shares = {node_id: list(cuts[i]) if i < len(cuts) else [] for i, (node_id, _) in enumerate(nodes)}
         for node_id in shares:
             for item in set(shares[node_id]):
                 while shares[node_id].count(item) > 1:
                     shares[node_id].remove(item)
                     others = [n for n in shares if item not in shares[n]]
-                    taker = min(others, key=lambda n: (sweep_ms(shares[n], times), "2.4" not in
+                    taker = min(others, key=lambda n: (sweep_ms(shares[n], times) * weight[n], "2.4" not in
                                                        {b for b, _ in shares[n]}, n))
                     shares[taker].append(item)
     return {node_id: sorted(share, key=lambda item: (item[0] != "2.4", item[1])) for node_id, share in shares.items()}
 
 
-def make(country, nodes, previous=None, version=1, times=TIMES, bands=None):
-    """The plan of each node, given as (node id, capabilities, Bluetooth wanted), on the bands kept (None: all).
+def make(country, nodes, previous=None, version=1, times=TIMES, bands=None, slow=()):
+    """The plan of each node, given as (node id, capabilities, Bluetooth wanted), on the bands kept (None: all). The
+    nodes in `slow` are wireless nodes.
 
     A node whose share, times and Bluetooth are what it already has keeps its plan and version; the others get
     `version`."""
     country = country if country in _RULES else "01"
     previous = previous or {}
-    shares = split(country, [(node_id, caps) for node_id, caps, _ in nodes], times, bands)
+    shares = split(country, [(node_id, caps) for node_id, caps, _ in nodes], times, bands, slow)
     plans = {}
     for node_id, caps, ble in nodes:
         ghz2, ghz5 = bitmaps(shares[node_id])

@@ -10,8 +10,8 @@ import os
 import re
 import time
 
-from .. import __version__, accounts, config, flasher, hardware, qr, recon, updates_check, uploads, wigle
-from ..nodes import NEWER, NOT_PLUGGED, OLDER, UNPLUGGED
+from .. import __version__, accounts, adsb, config, flasher, hardware, qr, recon, updates_check, uploads, wigle
+from ..nodes import NEWER, NO_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
 from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN,
@@ -156,12 +156,16 @@ def node_word(node):
     """The word the lists show for a node, and its colour."""
     if node["updating"]:
         return "Updating", GOLD
+    if not node["connected"] and node.get("wireless"):
+        return ("Waiting", FAINT) if node["error"] == NO_HUB else ("Not heard", FAINT)
     if not node["connected"]:
         return "Not plugged in", FAINT
     if node["error"] == OLDER:
         return "Old firmware", AMBER
     if node["error"] == NEWER:
         return "Newer firmware", AMBER
+    if node.get("hub"):
+        return ("Hub", GREEN) if node["hub_ready"] else ("Hub", AMBER)
     if node["state"] == "run":
         return "Scanning", GREEN
     if old_firmware(node):
@@ -171,6 +175,28 @@ def node_word(node):
 
 def channels_text(node):
     return "ch " + " ".join(str(channel) for channel in node["plan_channels"])
+
+
+def link_text(node):
+    """When a wireless node was last heard and how well the hub hears it."""
+    parts = []
+    if node["last_heard"] is not None:
+        parts.append("heard %s ago" % ago(node["last_heard"]))
+    if node.get("link_rssi") is not None:
+        parts.append("%d dBm" % node["link_rssi"])
+    return "  ".join(parts)
+
+
+def hub_note(app):
+    """A line for the Nodes list about the hub, or None."""
+    hub = app.nodes.hub()
+    if hub is None:
+        return None
+    if not hub["connected"]:
+        return "The hub is unplugged. Wireless nodes wait for it.", AMBER
+    if hub["error"]:
+        return hub["error"], AMBER
+    return None
 
 
 def gps_text(fix):
@@ -352,7 +378,15 @@ class Wardrive(Screen):
         nodes = sum(1 for a in s["adapters"] if a.get("method") == "node")
         radios = [plural(count, word) for count, word in ((len(s["adapters"]) - nodes, "radio"), (nodes, "node"))
                   if count]
-        c.text_right(W - 4, y + 1, " + ".join(radios) or "0 radios", font("ui", 8), MUTED)
+        radios = " + ".join(radios) or "0 radios"
+        c.text_right(W - 4, y + 1, radios, font("ui", 8), MUTED)
+        if s.get("aircraft") is not None:
+            sky = s.get("adsb") or {}
+            right = W - 12 - int(c.text_width(radios, font("ui", 8)))
+            text = "%d aircraft" % s["aircraft"]
+            if right - c.text_width(text, font("ui", 8)) >= x + 2:
+                c.text_right(right, y + 1, text, font("ui", 8),
+                             MUTED if sky.get("state") in (adsb.RUNNING, adsb.SYSTEM) else AMBER)
         y += 14
         warning = self.warning(app, s)
         if warning:
@@ -392,7 +426,8 @@ class Wardrive(Screen):
 class Summary(Screen):
     def __init__(self, status):
         self.s = status
-        self.title = "WARDRIVE SAVED" if status["log"] and not status["failed"] else "WARDRIVE ENDED"
+        saved = status["log"] or status.get("aircraft_log")
+        self.title = "WARDRIVE SAVED" if saved and not status["failed"] else "WARDRIVE ENDED"
 
     def hints(self, app):
         return [("Esc", "Menu"), ("L", "Logs"), ("U", "Uploads"), ("W", "New wardrive")]
@@ -400,30 +435,35 @@ class Summary(Screen):
     def render(self, c, app):
         s = self.s
         files = s.get("files", 0)
+        saved = s["log"] or s.get("aircraft_log") or ""
         rows = [("Wi-Fi networks", "{:,}".format(s["wifi"])), ("Bluetooth devices", "{:,}".format(s["ble"])),
                 ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
                 ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
-                ("Saved as", (s["log"].rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
-                 if s["log"] else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
+                ("Saved as", (saved.rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
+                 if saved else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
+        if s.get("aircraft") is not None:
+            rows.insert(2, ("Aircraft", "{:,}".format(s["aircraft"])))
+        step = 17 if len(rows) <= 6 else 15
         if s["failed"]:
             c.text((8, TOP - 1), s["failed"], font("ui", 9), RED, width=W - 16)
         for i, (label, value) in enumerate(rows):
-            y = TOP + (12 if s["failed"] else 0) + i * 17
+            y = TOP + (12 if s["failed"] else 0) + i * step
             c.text((8, y), label, font("ui", 10), MUTED)
-            c.text_right(W - 8, y, value, font("bold", 10), TEXT if i < 5 or s["log"] else AMBER)
+            c.text_right(W - 8, y, value, font("bold", 10), TEXT if label != "Saved as" or saved else AMBER)
             c.line((8, y + 14, W - 8, y + 14))
         if s["failed"]:
             return
         status = app.upload_status()
-        if not s["log"]:
+        sites = [info["name"] for service, info in status["services"].items()
+                 if info["configured"] and service in uploads.sites(saved)]
+        if not saved:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
-        elif not status["keys"]:
+        elif not sites:
             text, color = "Press K to add your upload keys.", AMBER
         elif not status["auto"]:
             text, color = "Automatic uploads are off. Press U to send it.", MUTED
         else:
-            text, color = "Uploading to %s." % ", ".join(
-                info["name"] for info in status["services"].values() if info["configured"]), GREEN
+            text, color = "Uploading to %s." % ", ".join(sites), GREEN
         c.text((8, TOP + 106), text, font("ui", 9), color, width=W - 16)
 
     def handle(self, key, app):
@@ -453,9 +493,9 @@ class Hardware(Screen):
         return [("F/X", "Scroll"), ("Esc", "Back")]
 
     def cards(self, app):
-        scanning = {}
-        if app.wardriving:
-            scanning = {a["interface"]: a for a in app.drive.status()["adapters"]}
+        scanning, status = {}, app.drive.status() if app.wardriving else None
+        if status is not None:
+            scanning = {a["interface"]: a for a in status["adapters"]}
         cards = []
         for item in app.hw.stalled:
             cards.append({"tag": "!", "color": AMBER, "title": item["label"], "edge": AMBER,
@@ -480,6 +520,9 @@ class Hardware(Screen):
         for node in app.nodes.found():
             cards.append({"tag": "NEW", "color": GOLD, "title": "New node found  " + default_name(node),
                           "detail": "Add it under Settings > Nodes."})
+        aircraft = self.aircraft_card(app, status)
+        if aircraft is not None:
+            cards.append(aircraft)
         fix = app.gps.snapshot()
         source = fix.get("source", "none")
         plugged = [port for port in app.hw.gps_ports if port.get("kind") == "usb" and port.get("likely")]
@@ -505,8 +548,43 @@ class Hardware(Screen):
         return cards
 
     @staticmethod
+    def aircraft_card(app, status):
+        """The RTL-SDR stick, when aircraft are on in Settings or one is plugged in."""
+        plugged, on = getattr(app.hw, "sdr", []), app.cfg.get("adsb")
+        if not on and not plugged:
+            return None
+        card = {"tag": "SDR", "color": GOLD, "title": "Radio for aircraft (RTL-SDR)"}
+        live = status.get("adsb") if status is not None else None
+        if not on:
+            state = adsb.OFF
+        elif live is not None:
+            state = live["state"]
+        elif not plugged:
+            state = adsb.NO_DONGLE
+        elif getattr(app.hw, "sky_use", "") == adsb.SYSTEM:
+            state = adsb.SYSTEM
+        elif not getattr(app.hw, "readsb", ""):
+            state = adsb.NO_READSB
+        else:
+            state = getattr(app.hw, "sky_use", "") or adsb.READY
+        card["detail"] = adsb.WORDS[state]
+        if state in (adsb.RUNNING, adsb.SYSTEM):
+            card.update(detail_color=GREEN, right="%d aircraft" % live["aircraft"] if live is not None else "")
+        elif state == adsb.OFF:
+            card.update(color=FAINT, detail_color=FAINT)
+        elif state != adsb.READY:
+            card.update(color=AMBER, edge=AMBER, detail_color=AMBER)
+        return card
+
+    @staticmethod
     def node_card(node):
+        if node["wireless"] and not node["port"]:
+            return Hardware.wireless_card(node)
         card = {"tag": "NODE", "color": GOLD, "title": "%s  %s" % (node["name"], board_name(node))}
+        if node["hub"] and node["connected"] and not node["error"] and not node["updating"]:
+            count = plural(node["wireless_nodes"], "wireless node")
+            card.update(tag="HUB", detail="Hub for %s. It does not scan." % count, right="firmware " + node["firmware"])
+            return card
         if node["updating"]:
             card.update(detail="Being updated", detail_color=GOLD)
         elif not node["connected"]:
@@ -519,6 +597,19 @@ class Hardware(Screen):
             card.update(detail="Old firmware. Update it under Settings > Nodes.", detail_color=AMBER)
         else:
             card.update(detail="Ready. It scans in the next wardrive or Recon.", right="firmware " + node["firmware"])
+        return card
+
+    @staticmethod
+    def wireless_card(node):
+        card = {"tag": "AIR", "color": GOLD, "title": "%s  wireless" % node["name"], "right": link_text(node)}
+        if not node["connected"]:
+            card.update(color=FAINT, detail=node["error"], detail_color=FAINT)
+        elif node["error"]:
+            card.update(color=AMBER, edge=AMBER, detail=node["error"], detail_color=AMBER)
+        elif node["in_use"]:
+            card.update(bands=node["plan_bands"], detail=channels_text(node))
+        else:
+            card.update(detail="Ready. It scans in the next wardrive or Recon.")
         return card
 
     def render(self, c, app):
@@ -561,6 +652,8 @@ def upload_mark(c, x, y, mark):
         c.draw.ellipse(box, fill=RED)
     elif mark == "waiting":
         c.draw.ellipse(box, outline=AMBER, width=2)
+    elif mark == "none":
+        c.line((x - 3, y + 4, x + 3, y + 4), fill=FAINT)
     else:
         c.draw.ellipse(box, outline=LINE, width=1)
 
@@ -596,6 +689,8 @@ class Logs(Screen, ListMixin):
             if entry["active"]:
                 c.pill(116, y + 2, "REC", font("monob", 8), WHITE, (150, 24, 28), height=11)
                 continue
+            if entry.get("aircraft"):
+                c.pill(116, y + 2, "AIR", font("monob", 8), BG, GOLD, height=11)
             c.text_right(196, y + 3, size_text(entry["size"]), font("mono", 9), MUTED)
             marks = app.uploader.marks(entry["name"], saved)
             for x, service in zip(self.COLUMNS, uploads.SERVICES):
@@ -670,15 +765,17 @@ class LogDetail(Details):
 
     def rows(self, app):
         entry = self.entry
-        path = entry["path"]
-        if self.counts is None:
+        path, aircraft = entry["path"], entry.get("aircraft")
+        if self.counts is None and aircraft:
+            self.counts = (None, line_count(adsb.summary_path(path), 1))
+        elif self.counts is None:
             self.counts = (wigle.data_rows(path),
                            line_count(path.with_name(path.name.replace(".wigle.csv", ".summary.csv")), 1))
         rows = [("Recorded", when(entry["epoch"])), ("File", entry["name"]), ("Size", size_text(entry["size"]))]
         if self.counts[0] is not None:
             rows.append(("Rows", "{:,}".format(self.counts[0])))
         if self.counts[1] is not None:
-            rows.append(("Devices", "{:,}".format(self.counts[1])))
+            rows.append(("Aircraft" if aircraft else "Devices", "{:,}".format(self.counts[1])))
         if path == app.active_log():
             rows.append(("", "Still recording. It is sent after the wardrive stops.", AMBER))
             return rows
@@ -692,9 +789,14 @@ class LogDetail(Details):
                 rows.append((name, record.get("detail") or "Refused", RED))
             elif marks[service] == "waiting":
                 rows.append((name, record.get("detail") or "Waiting to be sent", AMBER))
+            elif marks[service] == "none":
+                rows.append((name, "Not for %s" % name, FAINT))
             else:
                 rows.append((name, "No key saved", FAINT))
-        rows.append(("", "Download it from the phone setup page, under Keys.", FAINT))
+        if aircraft:
+            rows.append(("", "Aircraft go to WDGWars and Wardrift only.", FAINT))
+        else:
+            rows.append(("", "Download it from the phone setup page, under Keys.", FAINT))
         return rows
 
     def handle(self, key, app):
@@ -1087,14 +1189,19 @@ class Nodes(Screen, ListMixin):
 
     @staticmethod
     def rows(app):
-        return [("new", node) for node in app.nodes.found()] + [("known", node) for node in app.nodes.known()]
+        rows = [("new", node) for node in app.nodes.found()] + [("known", node) for node in app.nodes.known()]
+        hub = app.nodes.hub()
+        if hub is not None and hub["ready"]:
+            rows.append(("pair", None))
+        return rows
 
     def hints(self, app):
         rows = self.rows(app)
         if not rows:
             return [("Esc", "Back")]
         self.clamp(len(rows), self.VISIBLE)
-        return [("OK", "Add" if rows[self.index][0] == "new" else "Open"), ("F/X", "Move"), ("Esc", "Back")]
+        word = {"new": "Add", "pair": "Pair"}.get(rows[self.index][0], "Open")
+        return [("OK", word), ("F/X", "Move"), ("Esc", "Back")]
 
     def render(self, c, app):
         rows = self.rows(app)
@@ -1113,12 +1220,18 @@ class Nodes(Screen, ListMixin):
                 c.text((150, y + 3), default_name(node), font("mono", 8), MUTED, width=95)
                 c.text_right(W - 14, y + 2, "OK to add", font("ui", 9), GOLD)
                 continue
+            if kind == "pair":
+                c.text((11, y + 2), "Add a wireless node", font("ui", 10), GOLD, width=200)
+                c.text((W - 18, y), "›", font("bold", 11), FAINT)
+                continue
             word, color = node_word(node)
+            kind_text = "wireless" if node["wireless"] and not node["port"] else "hub" if node["hub"] else \
+                board_name(node) if node["board"] else ""
             c.text((11, y + 2), node["name"], font("ui", 10), TEXT, width=130)
-            c.text((150, y + 3), board_name(node) if node["board"] else "", font("mono", 8), MUTED, width=95)
+            c.text((150, y + 3), kind_text, font("mono", 8), MUTED, width=95)
             c.text_right(W - 14, y + 2, word, font("ui", 9), color)
         self.scrollbar(c, len(rows), self.VISIBLE, y1=TOP + self.VISIBLE * 17 - 2)
-        note, color = (app.nodes.error, AMBER) if app.nodes.error else \
+        note, color = (app.nodes.error, AMBER) if app.nodes.error else hub_note(app) or \
             ("Up to %d nodes. Each one scans its share of the channels." % config.MAX_NODES, FAINT)
         c.text((10, CONTENT_BOTTOM - 13), note, font("ui", 8), color, width=W - 20)
 
@@ -1131,6 +1244,12 @@ class Nodes(Screen, ListMixin):
             kind, node = rows[self.index]
             if kind == "known":
                 app.push(NodeDetail(node["id"]))
+                return True
+            if kind == "pair":
+                if app.nodes.pair():
+                    app.push(Pairing())
+                else:
+                    app.toast("The hub is not ready yet", AMBER)
                 return True
             name = default_name(node)
             try:
@@ -1151,23 +1270,31 @@ class NodeDetail(Screen, ListMixin):
     HELP = {"name": "The name shown in lists and on the Hardware screen.",
             "ble": "Bluetooth halves the node's time for Wi-Fi.",
             "identify": "Blinks its light for 5 seconds, so you can tell it from the others.",
+            "hub": "The hub stays plugged in and talks to the wireless nodes. It does not scan.",
             "update": "Writes the firmware that came with Quartermaster. Its settings are kept.",
-            "remove": "Quartermaster stops using it. Plug it in again to add it back."}
+            "remove": "Quartermaster stops using it. Plug it in again to add it back.",
+            "forget": "The hub forgets it. Hold BOOT on it for 2 seconds to add it again."}
 
     def __init__(self, node_id):
         self.node_id = node_id
         self.index = self.top = 0
 
     def node(self, app):
-        return next((node for node in app.nodes.known() if node["id"] == self.node_id), None)
+        node = app.nodes.node(self.node_id)
+        return node if node["configured"] else None
 
     @staticmethod
     def actions(node):
-        actions = [("name", "Name", node["name"]), ("ble", "Bluetooth", "On" if node["ble"] else "Off"),
-                   ("identify", "Identify", "Blink its light")]
-        if old_firmware(node):
+        air = node["wireless"] and not node["port"]
+        actions = [("name", "Name", node["name"])]
+        if not node["hub"]:
+            actions.append(("ble", "Bluetooth", "On" if node["ble"] else "Off"))
+        actions.append(("identify", "Identify", "Blink its light"))
+        if not node["wireless"] and (node["hub"] or "espnow" in node["capabilities"]):
+            actions.append(("hub", "Hub for wireless nodes", "On" if node["hub"] else "Off"))
+        if old_firmware(node) and not air:
             actions.append(("update", "Update firmware", "%s to %s" % (node["firmware"], bundled_firmware())))
-        return actions + [("remove", "Remove", "")]
+        return actions + [("forget" if node["wireless"] else "remove", "Remove", "")]
 
     def hints(self, app):
         return [("OK", "Change"), ("F/X", "Move"), ("Esc", "Back")]
@@ -1183,37 +1310,44 @@ class NodeDetail(Screen, ListMixin):
         c.rect((4, y0, W - 4, y0 + 38), fill=SURFACE, radius=5)
         c.text((10, y0 + 2), node["name"], font("bold", 11), TEXT, width=200)
         c.text_right(W - 10, y0 + 3, word, font("ui", 9), color)
+        air = node["wireless"] and not node["port"]
         if node["firmware"]:
-            facts = "%s  firmware %s  chip %s  %d MB flash" % (
-                board_name(node), node["firmware"], node["chip"], node["flash_mb"] or 0)
+            kind = "wireless" if air else "hub" if node["hub"] else \
+                "chip %s  %d MB flash" % (node["chip"], node["flash_mb"] or 0)
+            facts = "%s  firmware %s  %s" % (board_name(node), node["firmware"], kind)
         else:
-            facts = "Not seen since Quartermaster started"
+            facts = "Not heard since Quartermaster started" if air else "Not seen since Quartermaster started"
         c.text((10, y0 + 16), facts, font("mono", 8), MUTED, width=W - 20)
-        if node["error"] and (node["connected"] or node["error"] not in (NOT_PLUGGED, UNPLUGGED)):
+        if node["error"] and (node["connected"] or air or node["error"] not in (NOT_PLUGGED, UNPLUGGED)):
             left, tint = node["error"], AMBER
+        elif node["hub"] and node["hub_ready"]:
+            left, tint = "Hub for %s" % plural(node["wireless_nodes"], "wireless node"), TEXT
         elif node["plan_channels"]:
             left, tint = channels_text(node), TEXT
         else:
             left, tint = "Channels are shared out when a scan starts", FAINT
         right = []
-        if node["connected"]:
+        if node["connected"] and not node["hub"]:
             right.append("{:,} network{}".format(node["networks"], "" if node["networks"] == 1 else "s"))
-        if node["last_heard"] is not None:
+        if air:
+            right.append(link_text(node))
+        elif node["last_heard"] is not None:
             right.append("heard %s ago" % ago(node["last_heard"]))
-        right = "  ".join(right)
+        right = "  ".join(part for part in right if part)
         c.text_right(W - 10, y0 + 27, right, font("mono", 8), MUTED)
         room = W - 26 - (int(c.text_width(right, font("mono", 8))) if right else 0)
         c.text((10, y0 + 27), left, font("mono", 8), tint, width=room)
-        for row, (key, label, value) in enumerate(actions):
+        for row, (key, label, value) in enumerate(actions[self.top:self.top + self.VISIBLE]):
             y = y0 + 43 + row * 15
-            selected = row == self.index
+            selected = self.top + row == self.index
             if selected:
                 c.select(y - 1, 14)
-            c.text((11, y), label, font("ui", 10), RED if key == "remove" else TEXT)
+            c.text((11, y), label, font("ui", 10), RED if key in ("remove", "forget") else TEXT)
             c.text_right(W - 22, y + 1, value, font("mono", 9), GOLD if selected else MUTED)
             c.text((W - 18, y - 1), "›", font("bold", 11), FAINT)
-        c.text((10, y0 + 45 + len(actions) * 15), self.HELP[actions[self.index][0]], font("ui", 9), MUTED,
-               width=W - 20)
+        self.scrollbar(c, len(actions), self.VISIBLE, y0=y0 + 42, y1=y0 + 41 + self.VISIBLE * 15)
+        c.text((10, y0 + 45 + min(len(actions), self.VISIBLE) * 15), self.HELP[actions[self.index][0]],
+               font("ui", 9), MUTED, width=W - 20)
 
     def handle(self, key, app):
         node = self.node(app)
@@ -1230,6 +1364,13 @@ class NodeDetail(Screen, ListMixin):
         action, node_id = actions[self.index][0], self.node_id
         if action == "ble":
             app.nodes.set_ble(node_id, not node["ble"])
+        elif action == "hub":
+            stranded = 0 if node["hub"] else app.nodes.stranded(node_id)
+            if stranded:
+                app.confirm("Move the hub here?", "Your %s must be added again. Hold BOOT on each one for 2 seconds."
+                            % plural(stranded, "wireless node"), "Move", lambda: self.make_hub(app, node_id))
+            else:
+                self.make_hub(app, node_id, not node["hub"])
         elif key != "ENTER":
             return True
         elif action == "name":
@@ -1249,7 +1390,122 @@ class NodeDetail(Screen, ListMixin):
         elif action == "remove":
             app.confirm("Remove this node?", "%s is no longer used. Plug it in again to add it back." % node["name"],
                         "Remove", lambda: app.remove_node(node_id), danger=True)
+        elif action == "forget":
+            app.confirm("Remove this node?", "The hub forgets %s. Hold BOOT on it for 2 seconds to add it again."
+                        % node["name"], "Remove", lambda: app.remove_node(node_id), danger=True)
         return True
+
+    @staticmethod
+    def make_hub(app, node_id, on=True):
+        try:
+            app.nodes.set_hub(node_id, on)
+        except ValueError as exc:
+            app.toast(str(exc), AMBER)
+            return
+        app.toast("It is the hub now. It does not scan." if on else "It scans again")
+
+
+class Pairing(Screen, ListMixin):
+    """Settings > Nodes > Add a wireless node. The hub's pairing window stays open while this screen does."""
+
+    title = "ADD A WIRELESS NODE"
+    VISIBLE = 4
+
+    def __init__(self):
+        self.index = self.top = 0
+        self.pending, self.added = set(), []
+
+    def follow(self, app):
+        """A node being added shows as added once it is in the settings."""
+        names = app.nodes.names()
+        for node_id in sorted(self.pending & set(names)):
+            self.pending.discard(node_id)
+            self.added.append(node_id)
+        return names
+
+    def rows(self, app, names=None):
+        names = app.nodes.names() if names is None else names
+        return [("join", join) for join in app.nodes.joining() if join["id"] not in self.added] + \
+            [("added", {"id": node_id, "name": names[node_id]}) for node_id in self.added if node_id in names]
+
+    def hints(self, app):
+        rows = self.rows(app)
+        if rows and rows[min(self.index, len(rows) - 1)][0] == "join":
+            return [("OK", "Add"), ("F/X", "Move"), ("Esc", "Done")]
+        hub = app.nodes.hub()
+        if hub is not None and hub["ready"] and not hub["pairing"]:
+            return [("OK", "Pair again"), ("Esc", "Done")]
+        return [("Esc", "Done")]
+
+    def render(self, c, app):
+        names = self.follow(app)
+        hub = app.nodes.hub()
+        left = hub["pairing"] if hub is not None and hub["ready"] else 0
+        y0 = TOP - 2
+        c.rect((4, y0, W - 4, y0 + 40), fill=SURFACE, radius=5)
+        if hub is None or not hub["connected"]:
+            first, second, color = "The hub is unplugged.", "Plug it in to add wireless nodes.", AMBER
+        elif not hub["ready"]:
+            first, second, color = "Waiting for the hub to answer.", hub["error"] or "This takes a few seconds.", AMBER
+        elif left:
+            first, second, color = "Hold BOOT on the new node for 2 seconds.", \
+                "Its light blinks fast while it looks for the hub.", TEXT
+            c.text_right(W - 12, y0 + 5, "%d:%02d" % divmod(left, 60), font("display", 24), GOLD)
+        else:
+            first, second, color = "Pairing is closed.", "Press OK to open it again.", MUTED
+        c.text((10, y0 + 6), first, font("bold", 10), color, width=W - 90)
+        c.text((10, y0 + 22), second, font("ui", 9), MUTED, width=W - 90)
+        rows = self.rows(app, names)
+        self.clamp(len(rows), self.VISIBLE)
+        if not rows and left:
+            c.text_center(W // 2, y0 + 62, "No new node has asked yet", font("ui", 10), FAINT)
+        for row, (kind, item) in enumerate(rows[self.top:self.top + self.VISIBLE]):
+            y = y0 + 46 + row * 17
+            if self.top + row == self.index:
+                c.select(y, 15)
+            if kind == "join":
+                c.text((11, y + 2), "New wireless node", font("bold", 10), GOLD, width=130)
+                c.text((150, y + 3), default_name(item), font("mono", 8), MUTED, width=95)
+                c.text_right(W - 14, y + 2, "Adding…" if item["adding"] else "OK to add", font("ui", 9), GOLD)
+            else:
+                c.text((11, y + 2), item["name"], font("ui", 10), TEXT, width=200)
+                c.text_right(W - 14, y + 2, "Added", font("ui", 9), GREEN)
+        self.scrollbar(c, len(rows), self.VISIBLE, y0=y0 + 46, y1=y0 + 44 + self.VISIBLE * 17)
+        note = hub["note"] if hub is not None else ""
+        c.text((10, CONTENT_BOTTOM - 13), note or "The hub takes up to %d wireless nodes." % config.MAX_WIRELESS,
+               font("ui", 8), AMBER if note else FAINT, width=W - 20)
+
+    def handle(self, key, app):
+        self.follow(app)
+        rows = self.rows(app)
+        self.clamp(len(rows), self.VISIBLE)
+        if self.move(key, len(rows), self.VISIBLE):
+            return True
+        if key != "ENTER":
+            return super().handle(key, app)
+        if key.repeat:
+            return True
+        hub = app.nodes.hub()
+        if rows and rows[self.index][0] == "join":
+            join = rows[self.index][1]
+            if join["adding"]:
+                return True
+            name = default_name(join)
+            try:
+                sent = app.nodes.admit(join["id"], name)
+            except ValueError as exc:
+                app.toast(str(exc), AMBER)
+                return True
+            if sent:
+                self.pending.add(join["id"])
+            else:
+                app.toast("The hub is not ready yet", AMBER)
+        elif hub is not None and hub["ready"] and not hub["pairing"]:
+            app.nodes.pair(PAIR_SECONDS)
+        return True
+
+    def closed(self, app):
+        app.nodes.pair(0)
 
 
 def flash_targets(app):
@@ -1257,7 +1513,7 @@ def flash_targets(app):
     ports = {port["real"]: port for port in app.hw.serial_ports}
     targets = []
     for node in app.nodes.known() + app.nodes.found():
-        if not node["connected"]:
+        if not node["connected"] or not node["port"]:
             continue
         port = ports.pop(os.path.realpath(node["port"]), None)
         targets.append({"node": node["id"], "path": node["port"], "native": port["native"] if port else True,

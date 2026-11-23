@@ -139,3 +139,37 @@ def test_only_the_bands_kept_are_shared():
     plans = planner.make("US", [(node_id, BOTH, True) for node_id in ids(2)], bands=set())
     assert {(plan.ghz2, plan.ghz5, plan.ble) for plan in plans.values()} == {(1, 1, True)}
     assert planner.split("US", nodes(4), bands={"2.4"})[ids(4)[3]]
+
+
+@pytest.mark.parametrize("country", ("US", "DE", "JP", "01"))
+def test_a_wireless_node_gets_a_share_it_sweeps_as_soon_as_the_others_with_its_handovers(country):
+    for count in range(2, 9):
+        for caps in (BOTH, ("wifi24", "wifi5"), ("wifi24",)):
+            group = [(node_id, caps if i % 2 else BOTH) for i, node_id in enumerate(ids(count))]
+            slow = {ids(count)[0]}
+            shares = planner.split(country, group, slow=slow)
+            heard = {item for share in shares.values() for item in share}
+            assert heard == set(planner.channels(country))
+            times = {node_id: planner.sweep_ms(share) * (planner.AIR_SLOWER if node_id in slow else 1)
+                     for node_id, share in shares.items()}
+            even = planner.split(country, group)
+            assert max(times.values()) <= max(planner.sweep_ms(share) for share in even.values()) * planner.AIR_SLOWER
+            if caps == BOTH:
+                assert planner.sweep_ms(shares[ids(count)[0]]) <= planner.sweep_ms(even[ids(count)[0]])
+    group = nodes(3)
+    assert planner.split("US", group, slow={node_id for node_id, _ in group}) == planner.split("US", group)
+    two = planner.split("US", nodes(2), slow={ids(2)[0]})
+    assert planner.sweep_ms(two[ids(2)[0]]) < planner.sweep_ms(two[ids(2)[1]])
+    plans = planner.make("US", [(node_id, BOTH, False) for node_id in ids(2)], slow={ids(2)[1]})
+    assert planner.sweep_ms(planner.share_of(plans[ids(2)[1]])) < planner.sweep_ms(planner.share_of(plans[ids(2)[0]]))
+
+
+def test_a_wireless_node_is_counted_slower_where_bands_differ_and_where_1_6_and_11_are_given_twice():
+    first, second = ids(2)
+    mixed = planner.split("US", [(first, BOTH), (second, ("wifi5",))], slow={first})
+    assert planner.sweep_ms(mixed[first]) < planner.sweep_ms(mixed[second])
+    group = nodes(4)
+    slow = ids(4)[0]
+    shares = planner.split("US", group, bands={"2.4"}, slow={slow})
+    usb = max(planner.sweep_ms(share) for node_id, share in shares.items() if node_id != slow)
+    assert planner.sweep_ms(shares[slow]) * planner.AIR_SLOWER <= usb

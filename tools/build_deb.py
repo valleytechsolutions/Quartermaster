@@ -18,8 +18,9 @@ PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
 DEPENDS = "python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, ca-certificates"
 # NetworkManager starts each Wi-Fi sweep for an app that may not start one itself. aplay sounds the Recon alert.
+# readsb hears aircraft through an RTL-SDR stick.
 RECOMMENDS = "network-manager, bluez"
-SUGGESTS = "alsa-utils"
+SUGGESTS = "alsa-utils, readsb"
 
 
 def build(out):
