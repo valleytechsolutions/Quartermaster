@@ -16,10 +16,10 @@ import tempfile
 HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
-DEPENDS = "python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, ca-certificates"
-# NetworkManager starts each Wi-Fi sweep for an app that may not start one itself. aplay sounds the Recon alert.
-RECOMMENDS = "network-manager, bluez"
-SUGGESTS = "alsa-utils"
+# The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
+# rtl-sdr brings rtl_adsb for aircraft, the stick's udev rules and the TV driver blacklist, and starts no service.
+DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
+           "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr")
 
 
 def build(out):
@@ -49,16 +49,18 @@ def build(out):
         shutil.copy2(HERE / "packaging" / "quartermaster.tmpfiles", tmpfiles)
         doc = stage / "usr/share/doc" / pkg
         doc.mkdir(parents=True)
-        shutil.copy2(HERE / "LICENSE", doc / "copyright")
+        notices = HERE / "quartermaster" / "assets" / "node-firmware-notices.txt"
+        (doc / "copyright").write_text((HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
+                                       notices.read_text(encoding="utf-8"), encoding="utf-8")
         control = stage / "DEBIAN"
         control.mkdir()
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
         (control / "control").write_text(
             "Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: %s\nInstalled-Size: %d\n"
-            "Depends: %s\nRecommends: %s\nSuggests: %s\nSection: APPLaunch\nPriority: optional\n"
+            "Depends: %s\nSection: APPLaunch\nPriority: optional\n"
             "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
             "Description: %s\n Wi-Fi and Bluetooth wardriver for the M5Stack CardputerZero.\n"
-            % (pkg, version, MAINTAINER, size, DEPENDS, RECOMMENDS, SUGGESTS, manifest["description"]))
+            % (pkg, version, MAINTAINER, size, DEPENDS, manifest["description"]))
         shutil.copy2(HERE / "packaging" / "postinst", control / "postinst")
         (control / "postinst").chmod(0o755)
         for path in stage.rglob("*"):

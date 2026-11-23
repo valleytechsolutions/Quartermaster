@@ -9,18 +9,22 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quartermaster import accounts, config, uploads, wigle  # noqa: E402
+from quartermaster import accounts, adsb, config, uploads, wigle  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
+from quartermaster.nodes import NodeManager  # noqa: E402
 from quartermaster.recon_engine import Recon  # noqa: E402
-from quartermaster.ui import splash  # noqa: E402
-from quartermaster.ui.app import App  # noqa: E402
+from quartermaster.ui import screens, splash  # noqa: E402
+from quartermaster.ui.app import App, FlashJob  # noqa: E402
 from quartermaster.ui.keys import ScriptedInput  # noqa: E402
-from tests.fakes import ADAPTERS, FIX, Ble, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent  # noqa: E402
+from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeAir, FakeBus, FakeHub, FakeNode, Fleet,  # noqa: E402
+                         Gps, Hardware, NoBle, QuietFleet, Silent, usb_serial)
 
 NOW = 1795000000
 KEYS = {"wigle_name": "AID0f1e2d3c4b5a69788796a5b4c3d2e1f0", "wigle_token": "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
         "wdgwars_key": "c7" * 32, "wardrift_key": ""}
 BLUETOOTH = [("C4:7C:8D:11:22:01", "Galaxy Buds2 Pro", -58), ("E4:5F:01:77:88:04", "JBL Flip 6", -80)]
+MAST, SPARE = "dc5475c8a1b2", "48ca43e91a2b"
+HUB, BOW, STERN = "dc5475c8a3c4", "48ca43e93d01", "48ca43e95e02"
 
 
 class Site:
@@ -38,9 +42,30 @@ class Site:
         pass
 
 
+class Aircraft:
+    """Stands in for the aircraft side of a wardrive, with the aircraft it has heard."""
+
+    count = 23
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self, epoch):
+        pass
+
+    def stop(self):
+        pass
+
+    def finish(self):
+        return None
+
+    def status(self):
+        return {"state": adsb.RUNNING, "aircraft": self.count, "detail": adsb.WORDS[adsb.RUNNING]}
+
+
 def build(root):
     cfg = config.load(root / "config.json")
-    cfg.update(ble_interval=0.5, ignore=["Black Pearl Guest", "My iPhone", "a4:91:b1:20:7c:5e"])
+    cfg.update(ble_interval=0.5, country_set=True, ignore=["Black Pearl Guest", "My iPhone", "a4:91:b1:20:7c:5e"])
     accounts.save(KEYS, root / "accounts.json")
     gps = Gps(FIX)
     ticks = iter(range(NOW, NOW + 10 ** 7, 3))
@@ -52,7 +77,11 @@ def build(root):
     uploader = uploads.Uploader(root, cfg, accounts_path=root / "accounts.json", sender=sender, clock=lambda: NOW)
     recon = Recon(cfg, gps, root=root, adapters=ADAPTERS, ble=NoBle(), fleet=QuietFleet, sound=Silent(),
                   clock=lambda: NOW)
-    app = App(Display(), ScriptedInput(), gps, cfg, root=root, splash=False,
+    clock = Clock()
+    bus = FakeBus(clock)
+    sys_tty, dev, by_id = usb_serial(root / "usb", {})
+    nodes = NodeManager(cfg, bus.factory, sys_tty, dev, by_id, clock=clock, threads=False)
+    app = App(Display(), ScriptedInput(), gps, cfg, root=root, splash=False, nodes=nodes,
               wardrive=lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
                                              clock=lambda: next(ticks)),
               recon=recon, uploader=uploader, hw=Hardware(), accounts_path=root / "accounts.json",
@@ -60,7 +89,52 @@ def build(root):
               tester=lambda service, saved: uploads.Outcome(uploads.DONE, "Signed in to %s as blackbeard"
                                                             % accounts.SERVICE_NAMES[service]))
     uploader.active = app.active_log
+    app.bus = bus
     return app
+
+
+def plug_in_nodes(app, root):
+    """One node in the settings that scans, and one just plugged in."""
+    bus, nodes = app.bus, app.nodes
+    ports = {"ttyACM0": ("303a:1001", "usb-Espressif_USB_JTAG_serial_debug_unit_DC:54:75:C8:A1:B2-if00"),
+             "ttyACM1": ("303a:1001", "usb-Espressif_USB_JTAG_serial_debug_unit_48:CA:43:E9:1A:2B-if00")}
+    _, dev, _ = usb_serial(root / "usb", ports)
+    bus.add(dev / "ttyACM0", FakeNode(MAST, bus.clock, firmware="1.1.0"))
+    bus.add(dev / "ttyACM1", FakeNode(SPARE, bus.clock, caps="wifi24+wifi5", board="stamp-c5", flash_mb=4,
+                                      psram_mb=0))
+    app.change("nodes", [{"id": MAST, "name": "Crow's nest", "ble": False, "led": "gpio,27,1"}])
+    nodes.configure(app.cfg)
+    nodes.scan()
+    nodes.attach(app, lambda found, adapter: None)
+    for _ in range(40):
+        nodes.pump()
+    mast = bus.devices[str(dev / "ttyACM0")]
+    mast.networks, mast.sweeps = 1204, 37
+    for _ in range(12):
+        nodes.pump()
+
+
+def pair_wireless_nodes(app, root):
+    """A hub plugged in, one wireless node just added through it and one more asking to join."""
+    bus, nodes = app.bus, app.nodes
+    _, dev, _ = usb_serial(root / "usb", {"ttyACM2": ("303a:1001", "")})
+    airs = [FakeAir(BOW, bus.clock, board="stamp-c5", flash_mb=4, psram_mb=0), FakeAir(STERN, bus.clock)]
+    airs[0].rssi, airs[1].rssi = -48, -63
+    bus.add(dev / "ttyACM2", FakeHub(HUB, bus.clock, airs=airs))
+    app.change("cluster_key", "3d6f0a9c8e7b5d4c2a1f0e9d8c7b6a59")
+    app.change("nodes", app.cfg["nodes"] + [{"id": HUB, "name": "Hub", "ble": False, "hub": True}])
+    nodes.configure(app.cfg)
+    nodes.scan()
+    for _ in range(20):
+        nodes.pump()
+    nodes.pair()
+    app.push(screens.Pairing())
+    for _ in range(30):
+        nodes.pump()
+    press(app, "ENTER")
+    for _ in range(30):
+        nodes.pump()
+    press(app)
 
 
 def old_logs(root):
@@ -88,6 +162,30 @@ def press(app, *names):
     app.step(0)
 
 
+def fly(app, root, shot):
+    """A wardrive with aircraft on and an RTL-SDR stick plugged in."""
+    ticks = iter(range(NOW + 7200, NOW + 10 ** 7, 3))
+    app.change("nodes", [])
+    app.nodes.configure(app.cfg)
+    app.cfg["adsb"] = True
+    app.hw.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}]
+    app.hw.decoder = "/usr/bin/rtl_adsb"
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
+                                                 clock=lambda: next(ticks), receiver=Aircraft)
+    app.home()
+    press(app, "W")
+    app.drive.tracker.counts["BLE"] = 187
+    app.drive.rows = 1263
+    shot("wardrive-aircraft")
+    app.open("Hardware")
+    cards = app.screen.cards(app)
+    app.screen.top = max(0, next(i for i, card in enumerate(cards) if card["tag"] == "SDR") - 2)
+    shot("hardware-aircraft")
+    app.stop_wardrive()
+    app.screen.s.update(ble=187, elapsed=1574)
+    shot("summary-aircraft")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(ROOT / "screenshots"))
@@ -113,10 +211,15 @@ def main():
     old_logs(root)
     app = build(root)
 
+    def lit(at):
+        return not (int(at * 2) % 2 or int(at * 3) % 2)
+
     def shot(name):
         app.toast_until = 0
-        while int(time.monotonic() * 2) % 2 or int(time.monotonic() * 3) % 2:    # every blinking mark is lit
+        while not (lit(time.monotonic()) and lit(time.monotonic() + 0.1)):    # every blinking mark is lit
             time.sleep(0.005)
+        if app.wardriving:
+            app.drive._started = time.monotonic() - 1574
         save(app.compose(), name)
 
     shot("home")
@@ -126,7 +229,6 @@ def main():
         time.sleep(0.02)
     app.drive.tracker.counts["BLE"] = 187
     app.drive.rows = 1263
-    app.drive._started = time.monotonic() - 1574
     shot("wardrive")
     press(app, "ENTER")
     shot("confirm")
@@ -165,7 +267,28 @@ def main():
     app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "ignore")
     press(app, "ENTER")
     shot("ignore-list")
-    press(app, "ESC", "ESC", "A")
+    press(app, "ESC")
+    plug_in_nodes(app, root)
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "nodes")
+    press(app, "ENTER")
+    shot("nodes")
+    press(app, "DOWN", "ENTER")
+    shot("node-detail")
+    job = FlashJob(app.nodes, {"node": SPARE, "path": "/dev/ttyACM1", "native": True, "title": "Stamp-C5 1A2B",
+                               "detail": "", "mode": "update", "configured": False}, "update")
+    job.state = "writing"
+    job.progress(611 * 1024, 1005216 + 8192)
+    app.push(screens.Flashing(job))
+    shot("flashing")
+    app.pop()
+    pair_wireless_nodes(app, root)
+    shot("pairing")
+    app.pop()
+    app.nodes.detach(app)
+    for device in app.bus.devices.values():
+        device.unplug()
+    app.nodes.pump()
+    press(app, "ESC", "ESC", "ESC", "A")
     shot("about")
     press(app, "T")
     shot("tips")
@@ -202,6 +325,8 @@ def main():
     r.unseen_alerts = 1
     press(app, "ESC", "ESC", "ESC")
     shot("recon-alert")
+    app.stop_recon()
+    fly(app, root, shot)
     app.shutdown()
     print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))
 

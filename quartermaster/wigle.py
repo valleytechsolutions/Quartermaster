@@ -14,13 +14,16 @@ from pathlib import Path
 import time
 
 from . import APP_NAME, __version__
+from .config import is_mac
 from .names import one_line
+from .tracker import Ends
 
 COLUMNS = ("MAC", "SSID", "AuthMode", "FirstSeen", "Channel", "Frequency", "RSSI", "CurrentLatitude",
            "CurrentLongitude", "AltitudeMeters", "AccuracyMeters", "RCOIs", "MfgrId", "Type")
 FIX_MAX_AGE = 5.0
 MIN_EPOCH = 1704067200  # 2024-01-01: an unset clock must never reach a log
 LOG_GLOB = "quartermaster_*.wigle.csv"
+JOURNAL_GLOB = ".quartermaster_*.wigle.csv.part"
 SYNC_SECONDS = 5.0
 
 
@@ -73,13 +76,114 @@ def log_filename(epoch, serial=0):
     return "quartermaster_%s%s.wigle.csv" % (stamp, "-%d" % serial if serial else "")
 
 
-def new_log_path(directory, epoch):
+def new_log_path(directory, epoch, taken=()):
     serial = 0
     while True:
         path = Path(directory) / log_filename(epoch, serial)
-        if not path.exists():
+        if not path.exists() and path.name not in taken and not journal_path(path).exists():
             return path
         serial += 1
+
+
+def journal_path(path):
+    """The hidden file a log's candidate rows wait in until the log is compacted."""
+    path = Path(path)
+    return path.with_name("." + path.name + ".part")
+
+
+def log_of(journal):
+    journal = Path(journal)
+    return journal.with_name(journal.name[1:-len(".part")])
+
+
+def _fields(line):
+    if not line.endswith("\n"):
+        return None
+    if '"' in line:
+        try:
+            row = next(csv.reader((line,)))
+        except (csv.Error, StopIteration):
+            return None
+    else:
+        row = line[:-1].split(",")
+    if len(row) != len(COLUMNS) or row[13] not in ("WIFI", "BLE", "BT") or not is_mac(row[0]):
+        return None
+    try:
+        int(row[6])
+        float(row[10] or 0)
+    except ValueError:
+        return None
+    return row
+
+
+def _named(line, ssid, auth):
+    row = _fields(line)
+    if (row[1], row[2]) == (ssid, auth):
+        return line
+    row[1], row[2] = ssid, auth
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerow(row)
+    return out.getvalue()
+
+
+def compact(journal, path, names=None):
+    """Write the strongest and the weakest row of each device in a journal to a log, in the order they were seen.
+
+    One pass over the journal keeps where each row that may still be chosen starts, and a second reads only those.
+    Both rows of a device carry the last name and capabilities known for it: names(type, mac, ssid, auth) gives the
+    ones to write, or None to leave the device out. The log appears under its name only once it is whole and on
+    disk. A journal without rows writes nothing. Returns the number of rows written for each (type, mac).
+    """
+    found, header, offset, same = {}, [], 0, {}
+    with open(journal, "rb") as source:
+        for seq, raw in enumerate(source):
+            at, offset = offset, offset + len(raw)
+            line = raw.decode("utf-8", "replace")
+            if seq < 2:
+                header.append(line)
+                continue
+            row = _fields(line)
+            if row is None:
+                continue
+            entry = found.get((row[13], row[0]))
+            if entry is None:
+                entry = found[(row[13], row[0])] = [Ends(), "", ""]
+            entry[0].add((int(row[6]), seq, at, same.setdefault(row[3], row[3]), None,
+                          same.setdefault(row[10], row[10])))
+            entry[1], entry[2] = row[1] or entry[1], row[2] or entry[2]
+    if len(header) < 2 or not header[0].startswith("WigleWifi-1.6,") or header[1] != ",".join(COLUMNS) + "\n":
+        return {}
+    kept, counts = [], {}
+    for (kind, mac), (ends, ssid, auth) in found.items():
+        if names:
+            known = names(kind, mac, ssid, auth)
+            if known is None:
+                continue
+            ssid, auth = known
+        chosen = ends.chosen()
+        counts[(kind, mac)] = len(chosen)
+        kept.extend((point[3], point[1], point[2], ssid, auth) for point in chosen)
+    if not kept:
+        return {}
+    kept.sort()
+    tmp = path.with_name("." + path.name + ".tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as out, open(journal, "rb") as source:
+            out.write("".join(header).encode("utf-8"))
+            for _, _, at, ssid, auth in kept:
+                source.seek(at)
+                out.write(_named(source.readline().decode("utf-8", "replace"), ssid, auth).encode("utf-8"))
+            out.flush()
+            fsync(out.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return counts
 
 
 def data_rows(path, limit=None):

@@ -1,13 +1,17 @@
 """Navigation, the status bar and key hints, and the main loop."""
 
 from collections import deque
+import os
+from pathlib import Path
 import threading
 import time
 
 from PIL import Image
 
-from .. import accounts, config, faults, hardware, power, uploads, wigle
+from .. import accounts, adsb, config, faults, flasher, hardware, power, updates_check, uploads, wigle
+from .. import engine
 from ..engine import DEFAULT_ROOT, Wardrive
+from ..nodes import NodeManager
 from ..recon_engine import Recon
 from ..setup_server import SetupServer
 from . import icons, recon_screens, screens
@@ -22,6 +26,28 @@ EMPTY_SECONDS, CLOSING_SECONDS = 15, 10
 BATTERY_SILENCE = 60
 REPEATING = ("UP", "DOWN", "LEFT", "RIGHT", "PAGEUP", "PAGEDOWN", "BACKSPACE", "DELETE")
 REC_FILL = (70, 12, 14)
+NODES_SECONDS = 1.0
+PORT_WAIT, PORT_STEP = 20.0, 0.1
+FLASH_WAIT = 60.0
+FINISH_WAIT = 30.0
+UPDATE_SECONDS = 15.0
+GONE = "The node is not plugged in any more. Plug it in again and retry."
+FLASH_LAST = "Battery almost empty. Closing once the board is flashed."
+BUSY = "Something else is using this board's port. Plug the board in again and retry."
+
+
+def serial_ports(sys_tty=hardware.SYS_TTY, dev=Path("/dev"), by_id=hardware.BY_ID):
+    """USB serial ports an ESP32-C5 board may be on: its own USB port first, then the bridges such boards use."""
+    links = hardware.by_id_links(by_id)
+    found = []
+    for name in hardware.usb_serial_names(sys_tty):
+        usb_id = hardware.usb_id_of(name, sys_tty)
+        if usb_id != hardware.NODE_NATIVE and usb_id not in hardware.NODE_BRIDGES:
+            continue
+        real = os.path.realpath(str(Path(dev) / name))
+        found.append({"name": name, "path": links.get(real, str(Path(dev) / name)), "real": real,
+                      "native": usb_id == hardware.NODE_NATIVE})
+    return sorted(found, key=lambda port: not port["native"])
 
 
 class HardwareWatch:
@@ -30,6 +56,8 @@ class HardwareWatch:
     def __init__(self, interval=5.0):
         self.interval = interval
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
+        self.serial_ports = []
+        self.sdr, self.decoder, self.sky_use = [], "", ""
         self.battery, self._battery_read = None, 0.0
         self._since = {}
         self._stop = threading.Event()
@@ -46,6 +74,9 @@ class HardwareWatch:
             self.adapters = hardware.wifi_adapters()
             self.bluetooth = hardware.bluetooth_adapters()
             self.gps_ports = hardware.gps_candidates()
+            self.serial_ports = serial_ports()
+            self.sdr, self.decoder = hardware.rtl_sdr_dongles(), adsb.find_decoder()
+            self.sky_use = adsb.in_use() if self.sdr else ""
             found = hardware.stalled_usb_adapters()
         except OSError:
             return
@@ -76,17 +107,116 @@ class HardwareWatch:
         self._stop.set()
 
 
+class FlashJob:
+    """Flashes one board on a worker thread, so that the screen thread only draws how far it got.
+
+    state is "starting", "writing", "done" or "failed", with error in words when it failed."""
+
+    def __init__(self, nodes, target, mode, flasher_class=flasher.Flasher, manifest=flasher.MANIFEST):
+        self.nodes, self.target, self.mode = nodes, target, mode
+        self.flasher_class, self.manifest = flasher_class, manifest
+        self.state, self.error, self.waiting = "starting", "", False
+        self.done = self.total = 0
+        self.path = target["path"]
+        self._thread = None
+
+    @property
+    def fraction(self):
+        return self.done / self.total if self.total else 0.0
+
+    @property
+    def needs_boot(self):
+        return self.error in (flasher.NO_ANSWER, flasher.UNREADY)
+
+    def start(self):
+        self._thread = threading.Thread(target=self.run, daemon=True, name="flash")
+        self._thread.start()
+
+    def wait(self, seconds):
+        if self._thread is not None:
+            self._thread.join(seconds)
+
+    def native(self, path):
+        """Whether the board is on the ESP32-C5's own USB port, from the port it is on now."""
+        name = os.path.basename(os.path.realpath(path))
+        usb_id = hardware.usb_id_of(name, getattr(self.nodes, "sys_tty", hardware.SYS_TTY))
+        return usb_id == hardware.NODE_NATIVE if usb_id else self.target["native"]
+
+    def node_on(self, path):
+        real = os.path.realpath(path)
+        return next((node["id"] for node in self.nodes.known() + self.nodes.found()
+                     if node["connected"] and os.path.realpath(node["port"]) == real), None)
+
+    def hold(self, path):
+        """Take the port of a board without node firmware. The GPS search or a look for a node may have it for a
+        few seconds; the node itself when it turns out to be one."""
+        deadline = time.monotonic() + PORT_WAIT
+        while not hardware.hold_port(path, "flash"):
+            node_id = self.node_on(path)
+            if node_id is not None:
+                return node_id
+            if time.monotonic() >= deadline:
+                raise flasher.FlashError(BUSY)
+            self.waiting = True
+            time.sleep(PORT_STEP)
+        self.waiting = False
+        return None
+
+    def progress(self, done, total):
+        self.done, self.total = done, total
+
+    def run(self):
+        error, held, path = "", False, None
+        try:
+            node_id = self.target["node"]
+            if node_id is None:
+                node_id = self.hold(self.target["path"])
+                held = node_id is None
+                path = self.target["path"] if held else None
+            if node_id is not None:
+                self.waiting = False
+                path = self.nodes.release(node_id)
+                if path is None:
+                    raise flasher.FlashError(GONE)
+            self.path = path
+            with self.flasher_class(path) as board:
+                board.connect(self.native(path))
+                self.state = "writing"
+                board.install(self.manifest, self.mode, progress=self.progress)
+        except flasher.FlashError as exc:
+            error = str(exc) or flasher.FAILED
+        except Exception:
+            faults.note("Flashing a node")
+            error = flasher.FAILED
+        finally:
+            if held:
+                hardware.let_go_port(path, "flash")
+            if path is not None:
+                self.nodes.take_back(path)
+        self.error = error
+        self.state = "failed" if error else "done"
+
+
 class App:
     def __init__(self, display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=True, wardrive=None, recon=None,
                  uploader=None, hw=None, accounts_path=None, config_path=None, tester=uploads.test,
-                 setup=SetupServer):
+                 setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check):
         self.display, self.keyboard, self.gps, self.cfg = display, keyboard, gps, cfg
         self.root = root
         self.logs_dir = root / "logs"
         self.accounts_path = accounts_path
         self.config_path = config_path
-        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root))
-        self.recon = recon or Recon(cfg, gps, root=root)
+        self.nodes = nodes if nodes is not None else NodeManager(cfg)
+        self._thread = threading.current_thread()
+        self.nodes.on_change = lambda entries: self.on_screen_thread(lambda: self.change("nodes", self.nodes.entries()))
+        self.nodes.on_key = lambda key: self.call_soon(lambda: self.change("cluster_key", key))
+        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes))
+        self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes)
+        self.flasher_class = flasher_class
+        self.flash_job = None
+        self.updates = updates
+        self.update, self._update_ask, self._update_at = None, None, 0.0
+        self._announced, self._nodes_at = set(), None
         self.uploader = uploader or uploads.Uploader(root, cfg, active=self.active_log, accounts_path=accounts_path)
         self.hw = hw or HardwareWatch()
         self.tester = tester
@@ -109,6 +239,7 @@ class App:
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
         self._pressed = None
         self._deaf = False
+        self._finisher = None
 
     @property
     def screen(self):
@@ -142,7 +273,8 @@ class App:
         if refresh or self._files_at is None or now - self._files_at > 3:
             active, files = self.active_log(), []
             try:
-                paths = sorted(self.logs_dir.glob(wigle.LOG_GLOB), reverse=True)
+                paths = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)),
+                               reverse=True)
             except OSError:
                 paths = []
             for path in paths:
@@ -151,7 +283,7 @@ class App:
                 except OSError:
                     continue
                 files.append({"path": path, "name": path.name, "size": size, "active": path == active,
-                              "epoch": screens.log_epoch(path.name)})
+                              "epoch": screens.log_epoch(path.name), "aircraft": adsb.is_aircraft(path)})
             self._files, self._files_at = files, now
         return self._files
 
@@ -187,6 +319,8 @@ class App:
         self.running = False
 
     def ask_quit(self):
+        if self.flashing():
+            return self.toast("Wait until the board is flashed", AMBER)
         said = self.drive.failed if self.wardriving else ""
         detail = "Finished logs keep uploading next time."
         if self.wardriving or self.recon_running:
@@ -221,6 +355,13 @@ class App:
         """Run a function on the screen thread. Safe to call from any thread."""
         self._calls.append(function)
 
+    def on_screen_thread(self, function):
+        """Run a function now on the screen thread, else as soon as the screen thread can."""
+        if threading.current_thread() is self._thread:
+            function()
+        else:
+            self.call_soon(function)
+
     def busy(self, text):
         """Show a notice right away, before a call that takes a few seconds."""
         picture = self.compose()
@@ -242,6 +383,8 @@ class App:
 
     def change(self, key, value):
         self.cfg[key] = value
+        if key == "country":
+            self.cfg["country_set"] = True
         self.save()
         if key == "gps_source":
             self.gps.mode = value
@@ -251,6 +394,8 @@ class App:
             self.drive.set_ignore(value)
         if key == "auto_upload" and value:
             self.uploader.kick()
+        if key == "country":
+            self.nodes.set_country(value)
         self.recon.cfg = dict(self.cfg)
         self.stale()
 
@@ -301,6 +446,93 @@ class App:
         self.uploader.kick()
         self.stale()
 
+    def watch_nodes(self):
+        """Say once per node and session that a node not in the settings was plugged in."""
+        now = time.monotonic()
+        if self._nodes_at is not None and now - self._nodes_at < NODES_SECONDS:
+            return
+        self._nodes_at = now
+        fresh = [node["id"] for node in self.nodes.found() if node["id"] not in self._announced]
+        if fresh:
+            self._announced.update(fresh)
+            if not isinstance(self.screen, screens.Nodes):
+                self.toast("New node found. Settings > Nodes to add it.", GOLD, 5)
+
+    def remove_node(self, node_id):
+        node = self.nodes.node(node_id)
+        self.nodes.remove(node_id)
+        self.pop()
+        self.toast("%s removed" % node["name"])
+
+    def flash_blocked(self):
+        if self.wardriving:
+            return "Stop the wardrive first"
+        if self.recon_running:
+            return "Stop Recon first"
+        return ""
+
+    def flashing(self):
+        return self.flash_job is not None and self.flash_job.state in ("starting", "writing")
+
+    def ask_flash(self, target):
+        blocked = self.flash_blocked()
+        if blocked:
+            return self.toast("%s. Flashing restarts the board." % blocked, AMBER, 4)
+        if target["node"] is None:
+            return self.confirm("Install the node firmware?", "This erases the board and makes it a Quartermaster "
+                                "Node. It takes about a minute.", "Install", lambda: self.flash(target, "first"),
+                                default=1)
+        options = [("update", "Update", "keeps its settings"), ("first", "First install", "erases the board")]
+        self.push(screens.Picker("How to flash it?", options, target["mode"], lambda mode: self.flash(target, mode)))
+
+    def flash(self, target, mode):
+        """Flash a board on a worker thread, and show how far it got."""
+        blocked = self.flash_blocked()
+        if blocked:
+            return self.toast("%s. Flashing restarts the board." % blocked, AMBER, 4)
+        if self.flashing():
+            return self.toast("Another board is being flashed", AMBER)
+        self.flash_job = FlashJob(self.nodes, target, mode, self.flasher_class)
+        self.flash_job.start()
+        self.push(screens.Flashing(self.flash_job))
+
+    def retry_flash(self, job, mode=None):
+        """Try again on the same board: as a node if it came back as one, else on the port it was on."""
+        target = dict(job.target)
+        node = self.nodes.node(target["node"]) if target["node"] else None
+        if node is None or not node["connected"]:
+            target.update(node=None, path=job.path)
+        while isinstance(self.screen, (screens.Flashing, screens.Confirm)):
+            self.pop()
+        self.flash(target, mode or job.mode)
+
+    def check_updates(self):
+        """Ask in the background whether a newer Quartermaster is out. Nothing is downloaded."""
+        if self.update_state()[0] == "busy":
+            return
+        ask = object()
+
+        def work():
+            try:
+                state, _, text = self.updates()
+            except Exception:
+                faults.note("Update check")
+                state, text = updates_check.UNKNOWN, updates_check.UNKNOWN_TEXT
+            if self._update_ask is ask:
+                self.update = (state, text)
+            self.call_soon(lambda: None)
+        self.update, self._update_ask, self._update_at = ("busy", ""), ask, time.monotonic()
+        self.dirty = True
+        threading.Thread(target=work, daemon=True, name="update-check").start()
+
+    def update_state(self):
+        """(state, words) of the last check. One with no answer after UPDATE_SECONDS counts as offline, because the
+        timeout of each request does not bound the name lookup."""
+        state, text = self.update or ("", "")
+        if state == "busy" and time.monotonic() - self._update_at >= UPDATE_SECONDS:
+            return updates_check.OFFLINE, updates_check.OFFLINE_TEXT
+        return state, text
+
     def setup_server(self):
         def changed():
             self.call_soon(self.keys_changed)
@@ -322,6 +554,8 @@ class App:
                          "wardrive starts.", "Start wardrive", self._swap_to_wardrive, default=1)
             return False
         drive = self.wardrive_factory(self.cfg, self.gps)
+        if drive.leftovers():
+            self.busy("Finishing the last wardrive…")
         try:
             drive.start()
         except RuntimeError as exc:
@@ -412,7 +646,8 @@ class App:
             path.unlink()
         except OSError:
             return self.toast("The log could not be deleted", RED)
-        summary = path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
+        summary = adsb.summary_path(path) if entry.get("aircraft") else \
+            path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
         try:
             summary.unlink()
         except OSError:
@@ -548,7 +783,11 @@ class App:
                 self._empty_since = self._closing = None
                 self.toast("Charging. Quartermaster stays open.", GREEN, 5)
             elif now >= self._closing:
-                self.quit()
+                if not self.flashing():
+                    return self.quit()
+                self._closing = now + 1
+                if self.toast_text != FLASH_LAST:
+                    self.toast(FLASH_LAST, RED, CLOSING_SECONDS)
             return
         if not battery:
             return
@@ -601,6 +840,7 @@ class App:
             self.booted()
         if self._booted:
             self.watch_battery()
+            self.watch_nodes()
         self._listen()
         for key in self.keyboard.poll(timeout):
             if not self.screen.text_mode:
@@ -626,9 +866,22 @@ class App:
             self._deaf = False
             getattr(self.keyboard, "flush", lambda: None)()
 
+    def finish_last(self):
+        """Finish the log of a wardrive that a crash or a power cut ended, then let the uploader look at the logs."""
+        try:
+            if engine.leftovers(self.logs_dir) and \
+                    engine.recover(self.logs_dir, engine.ignored_names(self.cfg.get("ignore", ()))):
+                self.call_soon(lambda: self.toast("Finished the log of your last wardrive.", GREEN, 5))
+        except Exception:
+            faults.note("Finishing the last wardrive")
+        if self.running:
+            self.uploader.start()
+
     def run(self):
         self.hw.start()
-        self.uploader.start()
+        self.nodes.start()
+        self._finisher = threading.Thread(target=self.finish_last, daemon=True, name="finish-last")
+        self._finisher.start()
         drawn = 0.0
         try:
             while self.running:
@@ -663,5 +916,10 @@ class App:
             self.recon.stop()
         while self.stack:
             self.stack.pop().closed(self)
+        if self.flashing():
+            self.flash_job.wait(FLASH_WAIT)
+        if self._finisher is not None:
+            self._finisher.join(FINISH_WAIT)
         self.uploader.stop()
+        self.nodes.stop()
         self.hw.stop()
