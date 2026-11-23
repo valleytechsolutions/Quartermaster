@@ -1803,7 +1803,7 @@ class About(Screen):
         c.paste(image("quartermaster-logo-dark.png", (120, 84)), (8, TOP + 3))
         c.text((126, TOP + 4), "Quartermaster", font("display", 17), GOLD)
         c.text((126, TOP + 26), "Version %s" % __version__, font("ui", 10), TEXT)
-        c.text((126, TOP + 41), "Wi-Fi + Bluetooth wardriver", font("ui", 9), MUTED)
+        c.text((126, TOP + 41), "Wardriver for every radio", font("ui", 9), MUTED)
         c.text((126, TOP + 53), "for the CardputerZero", font("ui", 9), MUTED)
         c.text((126, TOP + 68), REPO, font("ui", 7), FAINT)
         y = CONTENT_BOTTOM - 37

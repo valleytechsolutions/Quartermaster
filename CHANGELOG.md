@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+The AppStore listing and the About screen now name every radio Quartermaster uses. Nothing else changes.
+
 ## 1.2.0
 
 LoRa mesh nodes from the Cap LoRa-1262, and aircraft that start by themselves.
