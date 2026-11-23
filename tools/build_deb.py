@@ -18,7 +18,7 @@ PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
 # The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
 DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
-           "ca-certificates, network-manager, bluez, alsa-utils, readsb")
+           "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr")
 
 
 def build(out):

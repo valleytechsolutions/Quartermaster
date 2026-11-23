@@ -13,12 +13,4 @@ done
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/quartermaster.conf || true
 fi
-# readsb pulled in for Quartermaster runs only during a wardrive; one the user installed is left alone.
-mark=/var/lib/quartermaster/readsb-boot-off
-if [ ! -e "$mark" ] && command -v apt-mark >/dev/null 2>&1 && apt-mark showauto readsb 2>/dev/null | grep -qx readsb; then
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable --now readsb.service >/dev/null 2>&1 || true
-    fi
-    mkdir -p /var/lib/quartermaster && : > "$mark" || true
-fi
 exit 0
