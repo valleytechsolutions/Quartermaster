@@ -184,7 +184,7 @@ class GPS:
 
     def unpower(self):
         if self.rails is not None:
-            self.rails.restore()
+            self.rails.restore("gps")
 
     def _ports(self):
         if self.mode not in ("auto", "gpsd", "off"):

@@ -8,7 +8,7 @@ import time
 
 from PIL import Image
 
-from .. import accounts, adsb, config, faults, flasher, hardware, power, updates_check, uploads, wigle
+from .. import accounts, adsb, config, faults, flasher, hardware, lora, mesh, power, updates_check, uploads, wigle
 from .. import engine
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
@@ -200,7 +200,7 @@ class FlashJob:
 class App:
     def __init__(self, display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=True, wardrive=None, recon=None,
                  uploader=None, hw=None, accounts_path=None, config_path=None, tester=uploads.test,
-                 setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check):
+                 setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check, cap=None):
         self.display, self.keyboard, self.gps, self.cfg = display, keyboard, gps, cfg
         self.root = root
         self.logs_dir = root / "logs"
@@ -210,7 +210,9 @@ class App:
         self._thread = threading.current_thread()
         self.nodes.on_change = lambda entries: self.on_screen_thread(lambda: self.change("nodes", self.nodes.entries()))
         self.nodes.on_key = lambda key: self.call_soon(lambda: self.change("cluster_key", key))
-        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes))
+        self.cap = cap if cap is not None else lora.Cap(getattr(gps, "rails", None))
+        self.country_asked = False
+        self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes, cap=self.cap))
         self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes)
         self.flasher_class = flasher_class
         self.flash_job = None
@@ -218,6 +220,7 @@ class App:
         self.update, self._update_ask, self._update_at = None, None, 0.0
         self._announced, self._nodes_at = set(), None
         self.uploader = uploader or uploads.Uploader(root, cfg, active=self.active_log, accounts_path=accounts_path)
+        self.uploader.reporter.on_change = lambda: self.call_soon(self.save)
         self.hw = hw or HardwareWatch()
         self.tester = tester
         self.setup_class = setup
@@ -273,8 +276,8 @@ class App:
         if refresh or self._files_at is None or now - self._files_at > 3:
             active, files = self.active_log(), []
             try:
-                paths = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)),
-                               reverse=True)
+                paths = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)) +
+                               list(self.logs_dir.glob(mesh.FILE_GLOB)), reverse=True)
             except OSError:
                 paths = []
             for path in paths:
@@ -283,7 +286,8 @@ class App:
                 except OSError:
                     continue
                 files.append({"path": path, "name": path.name, "size": size, "active": path == active,
-                              "epoch": screens.log_epoch(path.name), "aircraft": adsb.is_aircraft(path)})
+                              "epoch": screens.log_epoch(path.name), "aircraft": adsb.is_aircraft(path),
+                              "mesh": mesh.is_mesh(path)})
             self._files, self._files_at = files, now
         return self._files
 
@@ -385,6 +389,8 @@ class App:
         self.cfg[key] = value
         if key == "country":
             self.cfg["country_set"] = True
+        if key == "adsb":
+            self.cfg["adsb_set"] = True
         self.save()
         if key == "gps_source":
             self.gps.mode = value
@@ -396,6 +402,9 @@ class App:
             self.uploader.kick()
         if key == "country":
             self.nodes.set_country(value)
+        if key == "lora" and value is not False and self.cap.state == lora.OFF:
+            self.cap.state = lora.CHECKING
+            self.cap.start()
         self.recon.cfg = dict(self.cfg)
         self.stale()
 
@@ -543,7 +552,7 @@ class App:
         return self.setup_class(self.logs_dir, self.cfg, self.accounts_path, on_keys=changed, on_ignore=ignored,
                                 on_upload=lambda: self.call_soon(self.upload_now), marks=self.uploader.marks)
 
-    def start_wardrive(self):
+    def start_wardrive(self, ask=True):
         if self.wardriving:
             if not isinstance(self.screen, screens.Wardrive):
                 self.home()
@@ -552,6 +561,8 @@ class App:
         if self.recon_running:
             self.confirm("Stop Recon first?", "Recon and a wardrive never run together. Recon stops and the "
                          "wardrive starts.", "Start wardrive", self._swap_to_wardrive, default=1)
+            return False
+        if ask and self.ask_country():
             return False
         drive = self.wardrive_factory(self.cfg, self.gps)
         if drive.leftovers():
@@ -570,6 +581,20 @@ class App:
         self.push(screens.Wardrive(self))
         if self.hw.stalled:
             self.toast("%s is not starting. See Hardware" % self.hw.stalled[0]["label"], AMBER, 5)
+        return True
+
+    def ask_country(self):
+        """The LoRa band depends on the country, so with the cap found and no country chosen yet, ask once."""
+        if self.country_asked or self.cfg.get("country_set") or not self.cap.found or \
+                self.cfg.get("lora", "auto") is False:
+            return False
+        self.country_asked = True
+
+        def chosen(value):
+            self.change("country", value)
+            self.start_wardrive(ask=False)
+        self.push(screens.Picker("Where are you?", [(value, text, "") for value, text in config.COUNTRIES],
+                                 self.cfg.get("country"), chosen))
         return True
 
     def _swap_to_wardrive(self):
@@ -646,8 +671,8 @@ class App:
             path.unlink()
         except OSError:
             return self.toast("The log could not be deleted", RED)
-        summary = adsb.summary_path(path) if entry.get("aircraft") else \
-            path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
+        summary = adsb.summary_path(path) if entry.get("aircraft") else mesh.summary_path(path) if entry.get("mesh") \
+            else path.with_name(path.name.replace(".wigle.csv", ".summary.csv"))
         try:
             summary.unlink()
         except OSError:
@@ -825,7 +850,7 @@ class App:
 
     def booted(self):
         if self.cfg.get("auto_start"):
-            self.start_wardrive()
+            self.start_wardrive(ask=False)
         elif not accounts.ready(self.accounts()):
             self.toast("Press K to add your upload keys", GOLD, 5)
 
@@ -878,6 +903,7 @@ class App:
             self.uploader.start()
 
     def run(self):
+        self.cap.start(self.cfg.get("lora", "auto") is not False)
         self.hw.start()
         self.nodes.start()
         self._finisher = threading.Thread(target=self.finish_last, daemon=True, name="finish-last")

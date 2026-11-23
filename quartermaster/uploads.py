@@ -1,14 +1,17 @@
 """Send finished logs to WiGLE, WDGWars and Wardrift, and remember what each site already has.
 
-Every file is sent as plain WigleWifi CSV over verified HTTPS. A file counts as
-delivered to a site once that site accepts it or says it already has it. Anything
-else is kept and tried again later. Aircraft files go to WDGWars and Wardrift only.
+Every file is sent over verified HTTPS: logs as plain WigleWifi CSV, aircraft as
+gzipped JSON, mesh nodes as JSON. A file counts as delivered to a site once that
+site accepts it or says it already has it. Anything else is kept and tried again
+later. Aircraft and mesh files go to WDGWars and Wardrift only.
 """
 
 import http.client
 import json
 import os
 from pathlib import Path
+import re
+import secrets
 import socket
 import ssl
 import threading
@@ -16,31 +19,35 @@ import time
 import urllib.parse
 import uuid
 
-from . import __version__, accounts as keys, adsb, faults, wigle
+from . import __version__, accounts as keys, adsb, faults, mesh, wigle
 
 ENDPOINTS = {"wigle": "https://api.wigle.net", "wdgwars": "https://wdgwars.pl", "wardrift": "https://wardrift.net"}
 SERVICES = tuple(ENDPOINTS)
 AIRCRAFT_SERVICES = ("wdgwars", "wardrift")
 WARDRIFT_MAX_BYTES = 10 * 1024 * 1024
 USER_AGENT = "Quartermaster/%s (CardputerZero)" % __version__
+# Wardrift's mesh route turns away anything that does not look like a browser.
+BROWSER_AGENT = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 "
+                 "Safari/537.36 Quartermaster/%s" % __version__)
 
-DONE, DUPLICATE, REJECTED, AUTH, RETRY = "done", "duplicate", "rejected", "auth", "retry"
-SETTLED = (DONE, DUPLICATE, REJECTED)
+DONE, DUPLICATE, REJECTED, AUTH, RETRY, NOTHING = "done", "duplicate", "rejected", "auth", "retry", "nothing"
+SETTLED = (DONE, DUPLICATE, REJECTED, NOTHING)
 BACKOFF = (60, 120, 300, 600, 900)
 IDLE_CHECK = 60
 
 
 class Outcome:
-    __slots__ = ("state", "detail", "ref")
+    """What a site did with a file. sent: how many of a mesh file's nodes Wardrift already confirmed."""
+    __slots__ = ("state", "detail", "ref", "sent")
 
-    def __init__(self, state, detail="", ref=""):
-        self.state, self.detail, self.ref = state, str(detail)[:160], str(ref)[:64]
+    def __init__(self, state, detail="", ref="", sent=0):
+        self.state, self.detail, self.ref, self.sent = state, str(detail)[:160], str(ref)[:64], sent
 
     def __repr__(self):
         return "Outcome(%r, %r, %r)" % (self.state, self.detail, self.ref)
 
 
-def _request(method, url, headers, parts=(), timeout=60):
+def _request(method, url, headers, parts=(), timeout=60, agent=USER_AGENT):
     """Send bytes and files in order as one body. Returns (status, first 64 KiB of the reply)."""
     target = urllib.parse.urlsplit(url)
     length = sum(len(part) if isinstance(part, bytes) else os.path.getsize(part) for part in parts)
@@ -53,7 +60,7 @@ def _request(method, url, headers, parts=(), timeout=60):
         conn.putrequest(method, target.path or "/", skip_accept_encoding=True)
         for name, value in headers.items():
             conn.putheader(name, value)
-        conn.putheader("User-Agent", USER_AGENT)
+        conn.putheader("User-Agent", agent)
         conn.putheader("Accept", "application/json")
         conn.putheader("Connection", "close")
         if method != "GET":
@@ -76,8 +83,8 @@ def _request(method, url, headers, parts=(), timeout=60):
 
 
 def sites(name):
-    """The sites a file is for: aircraft files are not for WiGLE."""
-    return AIRCRAFT_SERVICES if adsb.is_aircraft(name) else SERVICES
+    """The sites a file is for: aircraft and mesh files are not for WiGLE."""
+    return AIRCRAFT_SERVICES if adsb.is_aircraft(name) or mesh.is_mesh(name) else SERVICES
 
 
 def _multipart(path, content_type="text/csv"):
@@ -256,17 +263,148 @@ def _wardrift_test(accounts, base):
     return Outcome(RETRY, "Wardrift could not check the key (%d)" % status) if outcome.state == REJECTED else outcome
 
 
+def _count(data, key):
+    value = data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _reasons(found):
+    return ", ".join("%s %d" % (reason, count) for reason, count in sorted(found.items(), key=lambda i: -i[1])[:3])
+
+
+def _wdgwars_mesh(path, accounts, base):
+    """Mesh nodes go to WDGWars signed, 1000 at a time. A reply that counts none of them took none of them."""
+    try:
+        data = mesh.load(path)
+    except (OSError, EOFError, ValueError):
+        return Outcome(REJECTED, "The mesh file cannot be read")
+    records = mesh.wdgwars_records(data)
+    if not records:
+        return Outcome(NOTHING, "Nothing to send. No node gave its own position")
+    key = accounts["wdgwars_key"]
+    headers = {"X-API-Key": key, "Content-Type": "application/json"}
+    new = seen = merged = refused = skipped = 0
+    reasons = {}
+    for start in range(0, len(records), mesh.WDGWARS_BATCH):
+        part = records[start:start + mesh.WDGWARS_BATCH]
+        status, reply = _request("POST", base + "/api/upload", headers,
+                                 [mesh.wdgwars_body(part, key, secrets.token_hex(8))], timeout=180)
+        answer = _json(reply)
+        if status == 413 and answer.get("error") != "payload-too-large":
+            return Outcome(RETRY, "WDGWars is busy (413). Will try again")
+        if status != 200:
+            return _refused("WDGWars", status, answer)
+        if answer.get("ok") is False or answer.get("error"):
+            return Outcome(REJECTED, "WDGWars refused the nodes: %s" % (_reason(answer) or "no reason given"))
+        counts = [_count(answer, "meshcore_" + name) for name in ("imported", "already_seen", "merged", "rejected")]
+        note = " ".join(str(answer.get(field) or "") for field in ("info", "message", "note")).lower()
+        if not any(counts):
+            if "already uploaded recently" in note or "no new processing" in note:
+                skipped += len(part)
+                continue
+            return Outcome(REJECTED, "WDGWars answered but took none of the %d nodes" % len(part))
+        new, seen, merged, refused = new + counts[0], seen + counts[1], merged + counts[2], refused + counts[3]
+        why = answer.get("meshcore_reject_reasons")
+        for reason, count in (why.items() if isinstance(why, dict) else ()):
+            if isinstance(count, int) and count > 0:
+                reason = re.sub(r"[^a-z0-9_]", "", str(reason).lower())[:24] or "other"
+                reasons[reason] = reasons.get(reason, 0) + count
+    if new + merged == 0 and refused and not seen and not skipped:
+        why = " (%s)" % _reasons(reasons) if reasons else ""
+        return Outcome(REJECTED, "WDGWars refused all %d nodes%s" % (refused, why))
+    if new + merged + refused == 0:
+        return Outcome(DUPLICATE, "WDGWars already had the %d nodes" % len(records))
+    parts = ["%d new" % (new + merged)] + (["%d already seen" % seen] if seen else []) + \
+        (["%d refused (%s)" % (refused, _reasons(reasons)) if reasons else "%d refused" % refused] if refused else [])
+    left = len(data["nodes"]) - len(records)
+    return Outcome(DONE, "WDGWars took %s%s" % (", ".join(parts), ". %d gave no position" % left if left else ""))
+
+
+class Reporter:
+    """Who sends Wardrift mesh nodes: an id that stays, and a request number that only goes up. Both are kept in
+    the settings. The number follows the clock as well, so a number that was not saved is never sent twice."""
+
+    def __init__(self, cfg, clock=time.time):
+        self.cfg, self.clock = cfg, clock
+        self.on_change = lambda: None
+        self._lock = threading.Lock()
+
+    def id(self):
+        with self._lock:
+            value = self.cfg.get("wardrift_reporter")
+            try:
+                if isinstance(value, str) and uuid.UUID(value).int:
+                    return value
+            except ValueError:
+                pass
+            self.cfg["wardrift_reporter"] = value = str(uuid.uuid4())
+        self.on_change()
+        return value
+
+    def next(self):
+        with self._lock:
+            last = self.cfg.get("wardrift_sequence")
+            last = last if isinstance(last, int) and not isinstance(last, bool) else 0
+            self.cfg["wardrift_sequence"] = value = max(int(self.clock()), last + 1)
+        self.on_change()
+        return value
+
+
+def _wardrift_mesh(path, accounts, base, reporter, sent=0):
+    """Mesh nodes go to Wardrift as JSON, 100 at a time. Each request is taken only when its receipt names it.
+    The first `sent` nodes were confirmed on an earlier try and are not sent again."""
+    try:
+        data = mesh.load(path)
+    except (OSError, EOFError, ValueError):
+        return Outcome(REJECTED, "The mesh file cannot be read")
+    now = time.time()
+    nodes = mesh.wardrift_nodes(data, now)
+    if not nodes:
+        return Outcome(NOTHING, "Nothing to send. No node had what Wardrift needs")
+    headers = {"X-API-Key": accounts["wardrift_key"], "Content-Type": "application/json"}
+    taken = min(max(int(sent or 0), 0), len(nodes))
+    receipt = ""
+    for body, batch, count in mesh.wardrift_bodies(nodes[taken:], now, reporter.id(), reporter.next):
+        status, reply = _request("POST", base + "/v1/ingest/mesh", headers, [body], timeout=90, agent=BROWSER_AGENT)
+        answer = _json(reply)
+        outcome = None
+        if status == 409 and answer.get("error") == "sequence_conflict":
+            outcome = Outcome(RETRY, "Wardrift is busy with another upload. Will try again")
+        elif status == 403 and not answer:
+            outcome = Outcome(RETRY, "Wardrift is blocking the upload. Will try again")
+        elif status == 403:
+            reason = _reason(answer)
+            outcome = Outcome(REJECTED, "Wardrift takes mesh nodes only from a node key"
+                              if "node" in reason.lower() or "mesh" in reason.lower() else
+                              "Wardrift refused the nodes (403)%s" % (": " + reason if reason else ""))
+        elif not 200 <= status < 300:
+            outcome = _refused("Wardrift", status, answer)
+        elif answer.get("ok") is not True or answer.get("batch_id") != batch or not answer.get("receipt_id"):
+            reason = _reason(answer)
+            outcome = Outcome(REJECTED, "Wardrift did not confirm the nodes%s" % (": " + reason if reason else ""))
+        if outcome is not None:
+            outcome.sent = taken
+            return outcome
+        taken += count
+        receipt = str(answer["receipt_id"])
+    return Outcome(DONE, "Wardrift has it (%d nodes)" % taken, receipt)
+
+
 _UPLOAD = {"wigle": _wigle_upload, "wdgwars": _wdgwars_upload, "wardrift": _wardrift_upload}
 _TEST = {"wigle": _wigle_test, "wdgwars": _wdgwars_test, "wardrift": _wardrift_test}
 _AIRCRAFT = {"wdgwars": lambda path, accounts, base: _wdgwars_upload(path, accounts, base, "application/gzip"),
              "wardrift": _wardrift_aircraft}
 
 
-def upload(service, path, accounts, endpoints=None):
+def upload(service, path, accounts, endpoints=None, reporter=None, sent=0):
     path = Path(path)
-    if adsb.is_aircraft(path) and service not in AIRCRAFT_SERVICES:
+    if service not in sites(path.name):
         return Outcome(REJECTED, "Not for %s" % keys.SERVICE_NAMES[service])
     base = (endpoints or ENDPOINTS)[service]
+    if mesh.is_mesh(path):
+        if service == "wdgwars":
+            return _guarded(lambda: _wdgwars_mesh(path, accounts, base))
+        return _guarded(lambda: _wardrift_mesh(path, accounts, base, reporter or Reporter({}), sent))
     send = _AIRCRAFT[service] if adsb.is_aircraft(path) else _UPLOAD[service]
     return _guarded(lambda: send(path, accounts, base))
 
@@ -307,6 +445,10 @@ class Ledger:
             entry = self.data.setdefault(name, {}).setdefault(service, {})
             entry.update(state=outcome.state, detail=outcome.detail, ref=outcome.ref, time=int(now),
                          tries=int(entry.get("tries", 0)) + 1)
+            if getattr(outcome, "sent", 0) and outcome.state != DONE:
+                entry["sent"] = outcome.sent
+            else:
+                entry.pop("sent", None)
             self._save()
 
     def reopen(self, name=None):
@@ -359,6 +501,7 @@ class Uploader:
         self._thread = None
         self._pass = threading.Lock()
         self._with_rows = set()
+        self.reporter = Reporter(cfg, clock)
 
     def start(self):
         if self._thread is None:
@@ -400,18 +543,19 @@ class Uploader:
             self.next_try = self.clock() + delay if retry else None
 
     def logs(self):
-        """Finished logs with at least one row, and aircraft files, oldest first. The file still being written is left
-        out."""
+        """Finished logs with at least one row, and aircraft and mesh files, oldest first. The file still being
+        written is left out."""
         before = self.active()
         try:
-            files = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)))
+            files = sorted(list(self.logs_dir.glob(wigle.LOG_GLOB)) + list(self.logs_dir.glob(adsb.FILE_GLOB)) +
+                           list(self.logs_dir.glob(mesh.FILE_GLOB)))
         except OSError:
             return []
         active = {before, self.active()}
         return [path for path in files if path not in active and self._has_rows(path)]
 
     def _has_rows(self, path):
-        if adsb.is_aircraft(path):
+        if adsb.is_aircraft(path) or mesh.is_mesh(path):
             return True
         if path.name not in self._with_rows and wigle.data_rows(path, limit=1):
             self._with_rows.add(path.name)
@@ -440,7 +584,11 @@ class Uploader:
                         if self._stop.is_set():
                             return retry
                         self.current = (path.name, service)
-                        outcome = self.sender(service, path, accounts, self.endpoints)
+                        extra = {}
+                        if mesh.is_mesh(path) and service == "wardrift":
+                            extra = {"reporter": self.reporter,
+                                     "sent": self.ledger.entry(path.name, service).get("sent", 0)}
+                        outcome = self.sender(service, path, accounts, self.endpoints, **extra)
                         if not path.exists():
                             continue
                         self.ledger.record(path.name, service, outcome, self.clock())
@@ -463,7 +611,7 @@ class Uploader:
         out = {}
         for service in SERVICES:
             state = self.ledger.state(name, service)
-            if service not in sites(name):
+            if service not in sites(name) or state == NOTHING:
                 out[service] = "none"
             elif state in (DONE, DUPLICATE):
                 out[service] = "done"

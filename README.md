@@ -33,9 +33,27 @@ Plug in any USB Wi-Fi adapter and any GPS, press one key, and drive. Quartermast
 - **Keys from your phone.** Scan a QR code, enter the PIN, paste your keys. Or type them on the keyboard. Each key can be tested from the device.
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **Nodes.** Small ESP32-C5 boards scan beside your adapters, on USB or wireless through a hub node. Quartermaster shares the channels out between them.
-- **Aircraft.** With an RTL-SDR stick, the aircraft around you are logged for WDGWars and Wardrift.
+- **Aircraft.** Plug in an RTL-SDR stick and the aircraft around you are logged for WDGWars and Wardrift.
+- **Mesh nodes.** Fit the Cap LoRa-1262 and the Meshtastic and MeshCore nodes around you are logged for WDGWars and Wardrift.
 - **One at a time.** Recon and a wardrive never run together, so every radio is always doing one job well.
 - **The battery in view.** The level is at the top of every screen. Quartermaster tells you at 20 % and at 10 %. When the battery is almost empty, it saves a running wardrive and closes, so that the Cardputer can switch off safely.
+
+## Plug in and go
+
+Quartermaster looks for your hardware by itself. There is nothing to set up for these:
+
+- **Wi-Fi adapters.** Every USB adapter and the built-in radio scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
+- **Bluetooth.** The Cardputer's own radio scans in every wardrive. If Bluetooth is not ready yet, Quartermaster tries again every few seconds.
+- **GPS.** A USB GPS, the GPS on the Cap LoRa-1262, a Grove GPS unit or gpsd. Quartermaster tries each one and powers the cap and the Grove port only when it needs them. Plug a GPS in at any time, also during a wardrive.
+- **Aircraft.** Plug in an RTL-SDR stick, before or during a wardrive, and Quartermaster listens for aircraft. Restart the Cardputer once after the first install.
+- **Mesh nodes.** Fit the Cap LoRa-1262 before you switch on, and every wardrive listens for Meshtastic and MeshCore nodes. Restart the Cardputer once after the first install.
+
+These still need a press:
+
+- **Starting a wardrive.** Press **W**, then **OK** to stop it.
+- **Nodes.** Flash the board, then add it with **OK** in **Settings > Nodes**. Wireless nodes are added there too. See [Nodes](#nodes).
+- **Upload keys.** Enter them once. See [Upload keys](#upload-keys).
+- **Country.** Set it once if you use nodes or the Cap LoRa-1262. With the cap, the first wardrive asks.
 
 ## Screens
 
@@ -134,6 +152,7 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 - **Bluetooth:** the built-in radio.
 - **Nodes:** ESP32-C5 boards running the Quartermaster Node firmware. See [Nodes](#nodes).
 - **Aircraft:** an RTL-SDR stick (RTL2832U). See [Aircraft](#aircraft).
+- **Mesh nodes:** the M5Stack Cap LoRa-1262 (SX1262). See [Mesh nodes](#mesh-nodes).
 
 Recommended:
 
@@ -160,7 +179,7 @@ Other ESP32-C5 boards with 4 MB of flash or more may work too.
 2. Open **Settings > Nodes** and press **OK** on the new node to add it. It scans in every wardrive and in Recon from then on.
 3. Press **OK** on a node to rename it, turn its Bluetooth on (that halves its time for Wi-Fi), tell it which light the board has, blink that light, update its firmware or remove it. A node uses no light until you choose one.
 
-Set **Settings > Country** to where you are: the nodes only use the Wi-Fi channels allowed there. Quartermaster asks the first time you open **Settings > Nodes**. Until then it uses United States. The Hardware screen has a card for each node with the channels it scans.
+Set **Settings > Country** to where you are: the nodes only use the Wi-Fi channels allowed there, and the Cap LoRa-1262 the LoRa band. Quartermaster asks the first time you open **Settings > Nodes**, or start a wardrive with the cap fitted. Until then it uses United States. The Hardware screen has a card for each node with the channels it scans.
 
 If gpsd is installed, plug a node in by its own USB port, not a UART port. gpsd may take a UART port for a GPS.
 
@@ -215,7 +234,7 @@ With an RTL-SDR stick (RTL2832U) on USB, Quartermaster also logs the aircraft ar
 
 1. Nothing to install: the radio tools, rtl-sdr, come with Quartermaster. They add no service, so nothing runs until a wardrive.
 2. Restart the Cardputer once after the first install. This keeps the TV driver off the stick and gives you access to it.
-3. Turn on **Settings > Aircraft (ADS-B)** and plug in the stick.
+3. Plug in the stick. **Settings > Aircraft (ADS-B)** is on **Auto**, so Quartermaster listens whenever the stick is plugged in, also when you plug it in during a wardrive. **On** always listens and says when the stick is missing. **Off** never listens.
 4. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
 
 During a wardrive Quartermaster starts `rtl_adsb` at a low priority on one CPU, with no network ports, and stops it with the wardrive. It reads what the stick hears and works out each aircraft itself. Wi-Fi and Bluetooth come first: when the air is very busy, some aircraft messages are skipped rather than slow the wardrive.
@@ -234,6 +253,65 @@ Each aircraft is kept once, with its closest and its furthest position. When the
     <td align="center">Wardrive with aircraft</td>
     <td align="center">The stick on the Hardware screen</td>
     <td align="center">Summary</td>
+  </tr>
+</table>
+
+## Mesh nodes
+
+With the M5Stack Cap LoRa-1262 fitted, Quartermaster also logs the Meshtastic and MeshCore nodes around you, for WDGWars and Wardrift. WiGLE does not take mesh nodes, so they are never sent there. Quartermaster only listens. It never sends anything on LoRa.
+
+1. Nothing to install: what the cap needs comes with Quartermaster.
+2. Restart the Cardputer once after the first install. This gives Quartermaster access to the cap.
+3. Fit the cap before you switch on. Quartermaster checks once, when it opens, that the radio on the cap answers. Without the cap nothing changes and nothing is slower.
+4. **Settings > LoRa mesh** is on **Auto**, so every wardrive listens when the cap was found. **On** always listens and says when the cap is missing. **Off** never listens.
+5. Set **Settings > Country** to where you are. Quartermaster asks the first time you start a wardrive with the cap. It picks the LoRa band:
+
+| Country | Meshtastic (LongFast, default channel) | MeshCore (public) |
+| --- | --- | --- |
+| United States, Canada, Mexico | 906.875 MHz | 910.525 MHz |
+| Europe and the United Kingdom | 869.525 MHz | 869.618 MHz |
+| Australia | 919.875 MHz | 915.800 MHz |
+| New Zealand | 919.875 MHz | 917.375 MHz |
+| South Korea | 922.875 MHz | |
+| Brazil | 903.875 MHz | |
+
+The cap does not reach the bands of other countries, so there it does not listen and the Hardware screen says so. Meshtastic and MeshCore use different settings, so one radio cannot hear both at the same time. Where there are two, Quartermaster listens to each in turn, 30 seconds at a time.
+
+The radio has a thread of its own and is never read by the screen, so Wi-Fi and Bluetooth are not slowed. The cap's GPS still works while it listens.
+
+What is kept:
+
+- **Meshtastic.** Every node heard on the default channel, by its node number. Its name, role and the position it gives out are read only from the public default channels. Packets that came over the internet (MQTT) are skipped.
+- **MeshCore.** Nodes that send an advert. An advert only counts when its signature is right.
+- Each node is kept once, with its closest and its furthest sighting at the Cardputer's position, the signal (RSSI and SNR) and how many hops away it was. A node closer in hops always counts as closer. The position the node gives out about itself is kept beside it.
+
+Every 30 seconds the nodes are saved to a hidden file next to the log. When the wardrive stops, `quartermaster_<date>-<time>.mesh.json.gz` is written beside the WiGLE log, and goes to WDGWars and Wardrift:
+
+- **WDGWars** gets each node at the position it gives out about itself, as the WDGWars mesh uploaders do. Nodes that give no position are not sent. A file with no such node says so in Logs.
+- **Wardrift** gets every node, with its position when it gives one.
+
+Logs shows mesh files with a **MESH** tag, and what each site took.
+
+<table>
+  <tr>
+    <td><img src="docs/screens/wardrive-mesh.png" width="270" alt="Wardrive with mesh nodes"></td>
+    <td><img src="docs/screens/hardware-mesh.png" width="270" alt="The Cap LoRa-1262 on the Hardware screen"></td>
+    <td><img src="docs/screens/summary-mesh.png" width="270" alt="Wardrive summary with mesh nodes"></td>
+  </tr>
+  <tr>
+    <td align="center">Wardrive with mesh nodes</td>
+    <td align="center">The cap on the Hardware screen</td>
+    <td align="center">Summary</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screens/logs-mesh.png" width="270" alt="A mesh file in Logs"></td>
+    <td><img src="docs/screens/log-detail-mesh.png" width="270" alt="A mesh file and where it went"></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td align="center">A mesh file in Logs</td>
+    <td align="center">Where it went</td>
+    <td></td>
   </tr>
 </table>
 
@@ -262,7 +340,8 @@ Every screen shows its own keys along the bottom.
 | | Bluetooth scan | On, Off | On |
 | | Random BLE addresses | Log, Skip | Log |
 | | Bluetooth check | 0.5 s, 1 s, 2 s, 5 s | 1 s |
-| | Aircraft (ADS-B) | Off, On | Off |
+| | Aircraft (ADS-B) | Auto, On, Off | Auto |
+| | LoRa mesh | Auto, On, Off | Auto |
 | | Country | 44 countries, or Anywhere else | United States |
 | Nodes | Nodes | The nodes in use, and new ones to add | |
 | | Flash a node | Install or update the node firmware | |
@@ -295,12 +374,14 @@ Everything is kept in the `quartermaster` folder in your home directory.
 | `logs/quartermaster_<date>-<time>.summary.csv` | One line per device: name, security, channel, first and last seen, and the strongest and weakest sighting with position and time. |
 | `logs/quartermaster_<date>-<time>.aircraft.json.gz` | The aircraft of the wardrive, each at its closest position, for WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.aircraft.csv` | One line per aircraft: callsign, squawk, first and last seen, signal, and the closest and furthest position with height, speed and time. |
+| `logs/quartermaster_<date>-<time>.mesh.json.gz` | The Meshtastic and MeshCore nodes of the wardrive, each with its closest and furthest sighting, for WDGWars and Wardrift. |
+| `logs/quartermaster_<date>-<time>.mesh.csv` | One line per mesh node: name, role, first and last seen, signal, hops, the closest and furthest sighting with position and time, and the position the node gives out. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
 
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.1.0,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.0,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.
@@ -337,7 +418,7 @@ python3 tools/build_deb.py
 
 The package lands in `build/`. That last step needs `dpkg-deb`, so run it on Debian, Ubuntu or the Cardputer itself. `python3 tools/render_screens.py` draws every screen with sample data, which is how the pictures on this page are made.
 
-On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see.
+On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see, and whether the Cap LoRa-1262 answers.
 
 ## Thanks
 

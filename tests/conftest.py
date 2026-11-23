@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from quartermaster import engine, faults, radios
+from quartermaster import engine, faults, hardware, lora, radios
 from quartermaster.names import one_line
 from quartermaster.ui import gfx, keys
 
@@ -53,6 +53,19 @@ def no_wardrive_left_running(monkeypatch):
 def no_installed_keymap(monkeypatch):
     """The keymap file of the machine the tests run on must not decide their result."""
     monkeypatch.setattr(keys, "KEYMAP", "/nonexistent")
+
+
+@pytest.fixture(autouse=True)
+def no_usb_of_this_machine(tmp_path, monkeypatch):
+    """An RTL-SDR stick on the machine the tests run on must not turn on aircraft on Auto."""
+    monkeypatch.setattr(hardware.rtl_sdr_dongles, "__defaults__", (tmp_path / "no-usb",))
+
+
+@pytest.fixture(autouse=True)
+def no_lora_cap_of_this_machine(tmp_path, monkeypatch):
+    """A Cap LoRa-1262 on the machine the tests run on must not be powered or looked for."""
+    missing = (tmp_path / "no-spidev", tmp_path / "no-supply", tmp_path / "no-mux")
+    monkeypatch.setattr(lora.Cap.__init__, "__defaults__", (None,) + missing + (lora.CapRadio,))
 
 
 @pytest.fixture

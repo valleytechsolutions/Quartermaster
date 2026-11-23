@@ -36,9 +36,14 @@ SECTIONS = [
          "Phones rotate random addresses. Skip keeps logs smaller."),
         ("ble_interval", "Bluetooth check", [(0.5, "0.5 s"), (1.0, "1 s"), (2.0, "2 s"), (5.0, "5 s")],
          "How often Bluetooth results are read."),
-        ("adsb", "Aircraft (ADS-B)", [(False, "Off"), (True, "On")],
-         "Logs aircraft with an RTL-SDR stick. Sent to WDGWars and Wardrift only."),
-        ("country", "Country", COUNTRIES, "Where you are. Nodes use only the Wi-Fi channels allowed here."),
+        ("adsb", "Aircraft (ADS-B)", [("auto", "Auto"), (True, "On"), (False, "Off")],
+         "Logs aircraft with an RTL-SDR stick. Auto listens when one is plugged in. Sent to WDGWars and Wardrift "
+         "only."),
+        ("lora", "LoRa mesh", [("auto", "Auto"), (True, "On"), (False, "Off")],
+         "Logs Meshtastic and MeshCore nodes with a Cap LoRa-1262, for WDGWars and Wardrift. Auto listens when one is "
+         "plugged in."),
+        ("country", "Country", COUNTRIES, "Where you are. Nodes use the Wi-Fi channels and LoRa the band allowed "
+         "here."),
     ]),
     ("NODES", [
         ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
@@ -102,6 +107,7 @@ _MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
 _NODE_ID = re.compile(r"[0-9a-f]{12}")
 _LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
 _KEY = re.compile(r"[0-9a-f]{32}")
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def is_mac(text):
@@ -158,7 +164,7 @@ def node_entries(items):
 
 
 def load(path=PATH):
-    cfg = dict(DEFAULTS, country_set=False)
+    cfg = dict(DEFAULTS, country_set=False, adsb_set=False)
     cfg.update(default_lists())
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -176,7 +182,15 @@ def load(path=PATH):
     if isinstance(categories, list):
         cfg["recon_categories"] = [c for c in default_lists()["recon_categories"] if c in categories]
     cfg["country_set"] = data.get("country_set") is True and "country" in data
+    cfg["adsb_set"] = data.get("adsb_set") is True
+    if cfg["adsb"] is False and not cfg["adsb_set"]:
+        cfg["adsb"] = "auto"
     cfg["nodes"] = node_entries(data.get("nodes"))
+    if isinstance(data.get("wardrift_reporter"), str) and _UUID.fullmatch(data["wardrift_reporter"]):
+        cfg["wardrift_reporter"] = data["wardrift_reporter"]
+    sequence = data.get("wardrift_sequence")
+    if isinstance(sequence, int) and not isinstance(sequence, bool) and 0 <= sequence < 2 ** 53:
+        cfg["wardrift_sequence"] = sequence
     if cluster_key(data.get("cluster_key")):
         cfg["cluster_key"] = cluster_key(data["cluster_key"])
     return cfg
@@ -186,7 +200,8 @@ def save(cfg, path=PATH):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name("." + path.name)
-    keys = list(DEFAULTS) + list(LISTS) + ["cluster_key", "country_set"]
+    keys = list(DEFAULTS) + list(LISTS) + ["cluster_key", "country_set", "adsb_set", "wardrift_reporter",
+                                           "wardrift_sequence"]
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as out:

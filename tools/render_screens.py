@@ -9,15 +9,15 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quartermaster import accounts, adsb, config, uploads, wigle  # noqa: E402
+from quartermaster import accounts, adsb, config, lora, mesh, uploads, wigle  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
 from quartermaster.nodes import NodeManager  # noqa: E402
 from quartermaster.recon_engine import Recon  # noqa: E402
 from quartermaster.ui import screens, splash  # noqa: E402
 from quartermaster.ui.app import App, FlashJob  # noqa: E402
 from quartermaster.ui.keys import ScriptedInput  # noqa: E402
-from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeAir, FakeBus, FakeHub, FakeNode, Fleet,  # noqa: E402
-                         Gps, Hardware, NoBle, QuietFleet, Silent, usb_serial)
+from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeAir, FakeBus, FakeCap, FakeHub, FakeNode,  # noqa: E402
+                         Fleet, Gps, Hardware, NoBle, QuietFleet, Silent, usb_serial)
 
 NOW = 1795000000
 KEYS = {"wigle_name": "AID0f1e2d3c4b5a69788796a5b4c3d2e1f0", "wigle_token": "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
@@ -63,6 +63,28 @@ class Aircraft:
         return {"state": adsb.RUNNING, "aircraft": self.count, "detail": adsb.WORDS[adsb.RUNNING]}
 
 
+class MeshNodes(mesh.Listener):
+    """Stands in for the mesh side of a wardrive, with the nodes it has heard."""
+
+    HEARD = [({"network": "meshtastic", "node": "1a2b3c4d", "name": "Hilltop Rptr", "short_name": "HTR",
+               "role": "ROUTER", "position": (25.0912, -77.3801), "hops": 0}, -92.5, 6.25),
+             ({"network": "meshtastic", "node": "0badcafe", "name": "Pocket", "short_name": "PKT", "hops": 1},
+              -104.0, -2.5),
+             ({"network": "meshcore", "node": "ab" * 8, "public_key": "ab" * 32, "name": "Ridge", "role": "REPEATER",
+               "position": (25.1302, -77.4115), "hops": 2}, -111.0, -8.75)]
+
+    def start(self, epoch):
+        self.prepare(epoch)
+        for i in range(9):
+            packet, rssi, snr = self.HEARD[i % 3]
+            packet = dict(packet, node=packet["node"][:-1] + str(i))
+            self.mesh.hear(packet, rssi, snr, epoch + i * 40, (FIX["latitude"], FIX["longitude"], 4.0))
+        self.state, self.packets = mesh.LISTENING, 214
+
+    def stop(self):
+        pass
+
+
 def build(root):
     cfg = config.load(root / "config.json")
     cfg.update(ble_interval=0.5, country_set=True, ignore=["Black Pearl Guest", "My iPhone", "a4:91:b1:20:7c:5e"])
@@ -70,7 +92,7 @@ def build(root):
     gps = Gps(FIX)
     ticks = iter(range(NOW, NOW + 10 ** 7, 3))
 
-    def sender(service, path, saved, endpoints):
+    def sender(service, path, saved, endpoints, **extra):
         if service == "wigle":
             return uploads.Outcome(uploads.DONE, "WiGLE has it (20261118-00412)", "20261118-00412")
         return uploads.Outcome(uploads.DONE, "WDGWars has it (job 5731)", "5731")
@@ -85,7 +107,7 @@ def build(root):
               wardrive=lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
                                              clock=lambda: next(ticks)),
               recon=recon, uploader=uploader, hw=Hardware(), accounts_path=root / "accounts.json",
-              config_path=root / "config.json", setup=Site,
+              config_path=root / "config.json", setup=Site, cap=FakeCap(lora.ABSENT),
               tester=lambda service, saved: uploads.Outcome(uploads.DONE, "Signed in to %s as blackbeard"
                                                             % accounts.SERVICE_NAMES[service]))
     uploader.active = app.active_log
@@ -184,6 +206,36 @@ def fly(app, root, shot):
     app.stop_wardrive()
     app.screen.s.update(ble=187, elapsed=1574)
     shot("summary-aircraft")
+
+
+def listen(app, root, shot):
+    """A wardrive with a Cap LoRa-1262 fitted, aircraft on as well."""
+    ticks = iter(range(NOW + 14400, NOW + 10 ** 7, 3))
+    app.cap = FakeCap()
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
+                                                 clock=lambda: next(ticks), receiver=Aircraft, cap=app.cap,
+                                                 listener=MeshNodes)
+    app.home()
+    press(app, "W")
+    app.drive.tracker.counts["BLE"] = 187
+    app.drive.rows = 1263
+    shot("wardrive-mesh")
+    app.open("Hardware")
+    cards = app.screen.cards(app)
+    app.screen.top = max(0, next(i for i, card in enumerate(cards) if card["tag"] == "LORA") - 2)
+    shot("hardware-mesh")
+    app.stop_wardrive()
+    app.screen.s.update(ble=187, elapsed=1574)
+    shot("summary-mesh")
+    app.uploader.run_pass()
+    app.stale()
+    press(app, "ESC", "L")
+    files = app.log_files()
+    app.screen.index = next(i for i, entry in enumerate(files) if entry.get("mesh"))
+    press(app)
+    shot("logs-mesh")
+    press(app, "ENTER")
+    shot("log-detail-mesh")
 
 
 def main():
@@ -327,6 +379,7 @@ def main():
     shot("recon-alert")
     app.stop_recon()
     fly(app, root, shot)
+    listen(app, root, shot)
     app.shutdown()
     print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))
 

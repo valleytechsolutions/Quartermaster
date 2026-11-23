@@ -10,7 +10,8 @@ import os
 import re
 import time
 
-from .. import __version__, accounts, adsb, config, flasher, hardware, qr, recon, updates_check, uploads, wigle
+from .. import (__version__, accounts, adsb, config, flasher, hardware, lora, mesh, qr, recon, updates_check,
+                uploads, wigle)
 from ..nodes import NEWER, NO_HUB, NOT_ON_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
@@ -363,6 +364,11 @@ class Wardrive(Screen):
             return "%s is not starting. See Hardware." % app.hw.stalled[0]["label"], AMBER
         if s["ble_error"]:
             return s["ble_error"], AMBER
+        if (s.get("lora") or {}).get("state") == mesh.FAILED:
+            return "The LoRa cap stopped listening. See Hardware.", AMBER
+        if s.get("lora") is not None and not app.cfg.get("country_set"):
+            return "LoRa uses the %s band. Set your country in Settings." % lora.region_name(
+                app.cfg.get("country", "US")), AMBER
         return None
 
     def render(self, c, app):
@@ -384,18 +390,27 @@ class Wardrive(Screen):
         for band in ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
+        small = font("ui", 8)
+        extra = []
+        if s.get("aircraft") is not None:
+            extra.append(("%d aircraft" % s["aircraft"],
+                          (s.get("adsb") or {}).get("state") in (adsb.RUNNING, adsb.SYSTEM)))
+        if s.get("mesh") is not None:
+            extra.append(("%d mesh" % s["mesh"], (s.get("lora") or {}).get("state") == mesh.LISTENING))
         nodes = sum(1 for a in s["adapters"] if a.get("method") == "node")
         radios = [plural(count, word) for count, word in ((len(s["adapters"]) - nodes, "radio"), (nodes, "node"))
                   if count]
         radios = " + ".join(radios) or "0 radios"
-        c.text_right(W - 4, y + 1, radios, font("ui", 8), MUTED)
-        if s.get("aircraft") is not None:
-            sky = s.get("adsb") or {}
-            right = W - 12 - int(c.text_width(radios, font("ui", 8)))
-            text = "%d aircraft" % s["aircraft"]
-            if right - c.text_width(text, font("ui", 8)) >= x + 2:
-                c.text_right(right, y + 1, text, font("ui", 8),
-                             MUTED if sky.get("state") in (adsb.RUNNING, adsb.SYSTEM) else AMBER)
+        needed = sum(int(c.text_width(text, small)) + 8 for text, _ in extra)
+        if extra and W - 12 - int(c.text_width(radios, small)) - needed + 8 < x + 2:
+            radios = plural(len(s["adapters"]), "radio")
+        c.text_right(W - 4, y + 1, radios, small, MUTED)
+        right = W - 12 - int(c.text_width(radios, small))
+        for text, fine in extra:
+            if right - c.text_width(text, small) < x + 2:
+                break
+            c.text_right(right, y + 1, text, small, MUTED if fine else AMBER)
+            right -= int(c.text_width(text, small)) + 8
         y += 14
         warning = self.warning(app, s)
         if warning:
@@ -435,7 +450,7 @@ class Wardrive(Screen):
 class Summary(Screen):
     def __init__(self, status):
         self.s = status
-        saved = status["log"] or status.get("aircraft_log")
+        saved = status["log"] or status.get("aircraft_log") or status.get("mesh_log")
         self.title = "WARDRIVE SAVED" if saved and not status["failed"] else "WARDRIVE ENDED"
 
     def hints(self, app):
@@ -444,14 +459,18 @@ class Summary(Screen):
     def render(self, c, app):
         s = self.s
         files = s.get("files", 0)
-        saved = s["log"] or s.get("aircraft_log") or ""
+        saved = s["log"] or s.get("aircraft_log") or s.get("mesh_log") or ""
         rows = [("Wi-Fi networks", "{:,}".format(s["wifi"])), ("Bluetooth devices", "{:,}".format(s["ble"])),
                 ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
                 ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
                 ("Saved as", (saved.rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
                  if saved else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
-        if s.get("aircraft") is not None:
-            rows.insert(2, ("Aircraft", "{:,}".format(s["aircraft"])))
+        sky, heard = s.get("aircraft"), s.get("mesh")
+        if sky is not None and heard is not None:
+            rows.insert(2, ("Aircraft / mesh nodes", "{:,} / {:,}".format(sky, heard)))
+        elif sky is not None or heard is not None:
+            rows.insert(2, ("Aircraft" if heard is None else "Mesh nodes", "{:,}".format(sky if heard is None
+                                                                                         else heard)))
         step = 17 if len(rows) <= 6 else 15
         if s["failed"]:
             c.text((8, TOP - 1), s["failed"], font("ui", 9), RED, width=W - 16)
@@ -529,9 +548,9 @@ class Hardware(Screen):
         for node in app.nodes.found():
             cards.append({"tag": "NEW", "color": GOLD, "title": "New node found  " + default_name(node),
                           "detail": "Add it under Settings > Nodes."})
-        aircraft = self.aircraft_card(app, status)
-        if aircraft is not None:
-            cards.append(aircraft)
+        for card in (self.aircraft_card(app, status), self.lora_card(app, status)):
+            if card is not None:
+                cards.append(card)
         fix = app.gps.snapshot()
         source = fix.get("source", "none")
         plugged = [port for port in app.hw.gps_ports if port.get("kind") == "usb" and port.get("likely")]
@@ -558,13 +577,14 @@ class Hardware(Screen):
 
     @staticmethod
     def aircraft_card(app, status):
-        """The RTL-SDR stick, when aircraft are on in Settings or one is plugged in."""
-        plugged, on = getattr(app.hw, "sdr", []), app.cfg.get("adsb")
-        if not on and not plugged:
+        """The RTL-SDR stick, when aircraft are on in Settings or one is plugged in. On Auto, while one is plugged
+        in or the wardrive listens with it."""
+        plugged, on = getattr(app.hw, "sdr", []), app.cfg.get("adsb", "auto")
+        live = status.get("adsb") if status is not None else None
+        if not plugged and (on is False or on == "auto" and live is None):
             return None
         card = {"tag": "SDR", "color": GOLD, "title": "Radio for aircraft (RTL-SDR)"}
-        live = status.get("adsb") if status is not None else None
-        if not on:
+        if on is False:
             state = adsb.OFF
         elif live is not None:
             state = live["state"]
@@ -582,6 +602,35 @@ class Hardware(Screen):
         elif state == adsb.OFF:
             card.update(color=FAINT, detail_color=FAINT)
         elif state != adsb.READY:
+            card.update(color=AMBER, edge=AMBER, detail_color=AMBER)
+        return card
+
+    @staticmethod
+    def lora_card(app, status):
+        """The Cap LoRa-1262: on On always, on Off and Auto once it was found."""
+        cap, on = app.cap, app.cfg.get("lora", "auto")
+        live = status.get("lora") if status is not None else None
+        if live is None and not cap.found and on is not True:
+            return None
+        country = app.cfg.get("country", "US")
+        card = {"tag": "LORA", "color": GOLD, "title": "Cap LoRa-1262 for mesh nodes",
+                "right": lora.region_name(country)}
+        if on is False:
+            return dict(card, color=FAINT, detail=mesh.WORDS[lora.OFF], detail_color=FAINT, right="")
+        if live is not None and live["state"] == mesh.LISTENING:
+            return dict(card, detail=live["detail"], detail_color=GREEN, right=plural(live["packets"], "packet"))
+        if live is not None:
+            state = live["reason"] or live["state"]
+        elif not lora.plan(country):
+            state = mesh.NO_BAND
+        elif cap.found and not app.cfg.get("country_set"):
+            return dict(card, detail="Set your country in Settings.", detail_color=AMBER)
+        elif cap.found:
+            return dict(card, detail="Ready. It listens in the next wardrive.")
+        else:
+            state = cap.state
+        card.update(detail=mesh.WORDS.get(state, mesh.WORDS[mesh.FAILED]), right="")
+        if state != lora.CHECKING:
             card.update(color=AMBER, edge=AMBER, detail_color=AMBER)
         return card
 
@@ -701,6 +750,8 @@ class Logs(Screen, ListMixin):
                 continue
             if entry.get("aircraft"):
                 c.pill(116, y + 2, "AIR", font("monob", 8), BG, GOLD, height=11)
+            elif entry.get("mesh"):
+                c.pill(116, y + 2, "MESH", font("monob", 8), BG, CYAN, height=11)
             c.text_right(196, y + 3, size_text(entry["size"]), font("mono", 9), MUTED)
             marks = app.uploader.marks(entry["name"], saved)
             for x, service in zip(self.COLUMNS, uploads.SERVICES):
@@ -775,9 +826,11 @@ class LogDetail(Details):
 
     def rows(self, app):
         entry = self.entry
-        path, aircraft = entry["path"], entry.get("aircraft")
+        path, aircraft, heard = entry["path"], entry.get("aircraft"), entry.get("mesh")
         if self.counts is None and aircraft:
             self.counts = (None, line_count(adsb.summary_path(path), 1))
+        elif self.counts is None and heard:
+            self.counts = (None, line_count(mesh.summary_path(path), 1))
         elif self.counts is None:
             self.counts = (wigle.data_rows(path),
                            line_count(path.with_name(path.name.replace(".wigle.csv", ".summary.csv")), 1))
@@ -785,7 +838,8 @@ class LogDetail(Details):
         if self.counts[0] is not None:
             rows.append(("Rows", "{:,}".format(self.counts[0])))
         if self.counts[1] is not None:
-            rows.append(("Aircraft" if aircraft else "Devices", "{:,}".format(self.counts[1])))
+            rows.append(("Aircraft" if aircraft else "Mesh nodes" if heard else "Devices",
+                         "{:,}".format(self.counts[1])))
         if path == app.active_log():
             rows.append(("", "Still recording. It is sent after the wardrive stops.", AMBER))
             return rows
@@ -800,11 +854,13 @@ class LogDetail(Details):
             elif marks[service] == "waiting":
                 rows.append((name, record.get("detail") or "Waiting to be sent", AMBER))
             elif marks[service] == "none":
-                rows.append((name, "Not for %s" % name, FAINT))
+                rows.append((name, record.get("detail") or "Not for %s" % name, FAINT))
             else:
                 rows.append((name, "No key saved", FAINT))
         if aircraft:
             rows.append(("", "Aircraft go to WDGWars and Wardrift only.", FAINT))
+        elif heard:
+            rows.append(("", "Mesh nodes go to WDGWars and Wardrift only.", FAINT))
         else:
             rows.append(("", "Download it from the phone setup page, under Keys.", FAINT))
         return rows

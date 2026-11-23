@@ -45,31 +45,49 @@ def battery(root=SUPPLIES):
 
 
 class Rails:
+    """Switches the supplies on for whoever needs them, and off again once nobody does.
+
+    Each user names itself, "gps" or "lora", so that the GPS never cuts the supply the LoRa radio runs on."""
+
     def __init__(self, paths=RAILS):
         self.paths = [Path(path) for path in paths]
         self._original = {}
+        self._users = {}
         self._lock = threading.Lock()
 
-    def on(self):
+    def on(self, user="gps", paths=None):
         """Switch on every supply that is off. True when one was switched on just now."""
         switched = False
         with self._lock:
-            for path in self.paths:
+            for path in self.paths if paths is None else [Path(path) for path in paths]:
+                if path in self._original:
+                    self._users[path].add(user)
+                    continue
                 try:
                     value = path.read_text().strip()
                     if value == "0":
                         path.write_text("1")
                         self._original[path] = value
+                        self._users[path] = {user}
                         switched = True
                 except OSError:
                     continue
         return switched
 
-    def restore(self):
+    def restore(self, user="gps"):
+        """Put back what was switched on, except a supply someone else still needs."""
         with self._lock:
-            for path, value in self._original.items():
+            for path in list(self._original):
+                users = self._users.get(path, set())
+                users.discard(user)
+                if users and user is not None:
+                    continue
                 try:
-                    path.write_text(value)
+                    path.write_text(self._original[path])
                 except OSError:
                     pass
-            self._original.clear()
+                del self._original[path]
+                self._users.pop(path, None)
+
+    def restore_all(self):
+        self.restore(None)
