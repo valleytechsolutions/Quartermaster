@@ -34,7 +34,7 @@ The commands and lines are in the "Wireless nodes" section of [PROTOCOL.md](PROT
 ## Flashing
 
 - **From Quartermaster.** Quartermaster ships the firmware in `quartermaster/assets/node/` and can install and update a node plugged into the CardputerZero.
-- **From a browser.** The flasher page in `docs/flasher/` (below) flashes from Chrome or Edge on a computer, or Chrome on Android.
+- **From a browser.** The [flasher page](https://valleytechsolutions.github.io/Quartermaster/flasher/) (below) flashes from Chrome or Edge on a computer, or Chrome on Android.
 - **By hand.** With ESP-IDF 5.5.6: `idf.py -p PORT flash` in `quartermaster-node/`, or write the merged image at offset 0 with esptool: `esptool.py --chip esp32c5 write_flash 0x0 quartermaster-node-1.1.0-merged.bin`.
 
 If a board does not enter the download mode by itself, hold BOOT while plugging it in.

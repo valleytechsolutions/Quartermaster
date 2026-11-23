@@ -247,7 +247,7 @@ A wireless node is somewhere within radio range of the hub, not at the Cardputer
 
 **From the Cardputer.** Plug the board in and open **Settings > Flash a node**. Pick the board. A board without the node firmware gets **Install**, which erases it. A node you already have can choose **Update**, which keeps its settings, or **First install**. A progress bar shows how far it is. A node whose firmware is older than the one that came with Quartermaster also shows **Update firmware** on its screen in **Settings > Nodes**.
 
-**From a computer or a phone.** The flasher web page in [docs/flasher](docs/flasher/) works in Chrome or Edge on a computer, or Chrome on Android. Plug the board in, press **First install** for a new board, or **Update, keep settings** for a board that already runs Quartermaster Node, and pick the board in the list. It needs https, so open it from GitHub Pages, not as a file. Safari and the browsers on iPhone and iPad cannot flash a board.
+**From a computer or a phone.** The [flasher web page](https://valleytechsolutions.github.io/Quartermaster/flasher/) works in Chrome or Edge on a computer, or Chrome on Android. Plug the board in, press **First install** for a new board, or **Update, keep settings** for a board that already runs Quartermaster Node, and pick the board in the list. Its files are in [docs/flasher](docs/flasher/). Safari and the browsers on iPhone and iPad cannot flash a board.
 
 Flashing from the Cardputer waits until no wardrive or Recon runs. If a board does not answer, put it in download mode and try again:
 
