@@ -39,7 +39,7 @@ def build(out):
         launcher.chmod(0o755)
         images = stage / PREFIX / "share" / "images"
         images.mkdir(parents=True)
-        shutil.copy2(HERE / "packaging" / "icon.png", images / (pkg + ".png"))
+        shutil.copy2(HERE / "packaging" / "icon-launcher.png", images / (pkg + ".png"))
         applications = stage / PREFIX / "applications"
         applications.mkdir(parents=True)
         (applications / (pkg + ".desktop")).write_text(
