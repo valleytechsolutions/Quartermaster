@@ -19,11 +19,23 @@ The firmware needs a chip of revision 1.x and 4 MB of flash. PSRAM is used when 
 
 The node does not know which LED a board has, so it uses none until Quartermaster tells it with `#LED` (the table above). The choice is saved on the node. While the node scans, the LED blinks briefly after every sweep. `#IDENT` makes it blink for a few seconds, to find the node among others.
 
+## Wireless nodes
+
+A node does not have to be plugged in. One node stays on the CardputerZero as the **hub**; up to 8 more run on batteries or USB chargers as **air nodes**, scan where they are, and send what they hear to the hub by radio (ESP-NOW). The same firmware does all three jobs:
+
+- A node that hears nothing from Quartermaster in its first 10 s becomes an air node. Plugging it into Quartermaster makes it a USB node again.
+- Quartermaster makes the plugged-in node a hub, opens pairing, and adds the new air nodes it is shown.
+- A new air node looks for a hub that is pairing, with its LED blinking fast (the LED Quartermaster set while the node was plugged in). Once added it keeps its hub across restarts; while it looks for its hub the LED flashes every 2 s, and while it scans the LED blinks briefly each time it hands its findings to the hub.
+- Air nodes start and stop when the hub does, and stop by themselves when they have not heard the hub for 60 s.
+- Holding BOOT for 2 s, or sending `#UNPAIR` while it is plugged in, makes a node forget its hub, so it can be added again. Do this for an air node that was removed while it was switched off, or whose hub got a new key. On a Stamp-C5 whose LED is set to GPIO 28 the button is not read, so use `#UNPAIR`.
+
+The commands and lines are in the "Wireless nodes" section of [PROTOCOL.md](PROTOCOL.md).
+
 ## Flashing
 
 - **From Quartermaster.** Quartermaster ships the firmware in `quartermaster/assets/node/` and can install and update a node plugged into the CardputerZero.
 - **From a browser.** A web flasher page will follow.
-- **By hand.** With ESP-IDF 5.5.6: `idf.py -p PORT flash` in `quartermaster-node/`, or write the merged image at offset 0 with esptool: `esptool.py --chip esp32c5 write_flash 0x0 quartermaster-node-1.0.0-merged.bin`.
+- **By hand.** With ESP-IDF 5.5.6: `idf.py -p PORT flash` in `quartermaster-node/`, or write the merged image at offset 0 with esptool: `esptool.py --chip esp32c5 write_flash 0x0 quartermaster-node-1.1.0-merged.bin`.
 
 If a board does not enter the download mode by itself, hold BOOT while plugging it in.
 
@@ -40,7 +52,7 @@ idf.py merge-bin -o quartermaster-node-merged.bin
 python3 package.py               # copies the images and writes quartermaster-node.json
 ```
 
-The build is reproducible: the same sources give the same images. The host tests of the line format and the reporting rules run without ESP-IDF:
+The build is reproducible: the same sources give the same images. The host tests of the line format, the reporting rules and the wireless frames run without ESP-IDF:
 
 ```
 make -C firmware/quartermaster-node/test
@@ -54,7 +66,8 @@ The Firmware workflow builds the images with Espressif's ESP-IDF v5.5.6 image, r
 - Bluetooth LE is an active scan with a random address, started only when the plan asks for it.
 - The node remembers what it has reported and only reports a device again when it is stronger or weaker than before, after 30 s, or when a name turns up.
 - Every line goes to the native USB port and to UART0 at 921600 baud. Scanning never waits for a slow port.
-- The node stops scanning when it has heard nothing from Quartermaster for 30 s.
+- The node stops scanning when it has heard nothing from Quartermaster for 30 s. An air node instead stops when it has heard nothing from its hub for 60 s.
+- An air node scans a few channels at a time and hands its lines to the hub in between, on the hub's channel. The hub answers each handover with its state and any commands waiting for that node; lines the hub did not confirm are sent again.
 
 | File | What it does |
 | --- | --- |
@@ -65,3 +78,7 @@ The Firmware workflow builds the images with Espressif's ESP-IDF v5.5.6 image, r
 | `main/proto.c` | line formatting, command parsing, checksums |
 | `main/seen.c` | what has been reported |
 | `main/led.c` | the status LED |
+| `main/wire.c` | wireless frames, resending, pairing steps, hub lines |
+| `main/radio.c` | ESP-NOW, keys |
+| `main/hub.c` | the hub |
+| `main/air.c` | air nodes |

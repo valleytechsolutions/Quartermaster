@@ -7,6 +7,17 @@ import re
 
 PATH = Path(os.environ.get("QUARTERMASTER_CONFIG", str(Path.home() / ".config" / "quartermaster" / "config.json")))
 ON_OFF = [(True, "On"), (False, "Off")]
+# The countries a Quartermaster Node knows. The country sets the Wi-Fi channels the nodes may use.
+COUNTRIES = [("US", "United States"), ("CA", "Canada"), ("GB", "United Kingdom"), ("DE", "Germany"),
+             ("FR", "France"), ("AU", "Australia"), ("JP", "Japan"), ("AT", "Austria"), ("BE", "Belgium"),
+             ("BR", "Brazil"), ("BG", "Bulgaria"), ("CN", "China"), ("HR", "Croatia"), ("CY", "Cyprus"),
+             ("CZ", "Czechia"), ("DK", "Denmark"), ("EE", "Estonia"), ("FI", "Finland"), ("GR", "Greece"),
+             ("HK", "Hong Kong"), ("HU", "Hungary"), ("IS", "Iceland"), ("IN", "India"), ("IE", "Ireland"),
+             ("IT", "Italy"), ("LV", "Latvia"), ("LI", "Liechtenstein"), ("LT", "Lithuania"), ("LU", "Luxembourg"),
+             ("MT", "Malta"), ("MX", "Mexico"), ("NL", "Netherlands"), ("NZ", "New Zealand"), ("NO", "Norway"),
+             ("PL", "Poland"), ("PT", "Portugal"), ("RO", "Romania"), ("SK", "Slovakia"), ("SI", "Slovenia"),
+             ("KR", "South Korea"), ("ES", "Spain"), ("SE", "Sweden"), ("CH", "Switzerland"), ("TW", "Taiwan"),
+             ("01", "Anywhere else")]
 
 # (section, [(key, label, choices, help)]). choices is None for a setting that opens its own screen.
 SECTIONS = [
@@ -25,6 +36,12 @@ SECTIONS = [
          "Phones rotate random addresses. Skip keeps logs smaller."),
         ("ble_interval", "Bluetooth check", [(0.5, "0.5 s"), (1.0, "1 s"), (2.0, "2 s"), (5.0, "5 s")],
          "How often Bluetooth results are read."),
+        ("country", "Country", COUNTRIES, "Where you are. Nodes use only the Wi-Fi channels allowed here."),
+    ]),
+    ("NODES", [
+        ("nodes", "Nodes", None, "ESP32-C5 boards on USB that scan Wi-Fi beside your adapters. Add, name or "
+         "update them here."),
+        ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5 board, or update a node."),
     ]),
     ("LOGGING", [
         ("log_rows", "Rows per device", [("extremes", "Closest + furthest"), ("track", "Full track")],
@@ -66,13 +83,21 @@ SECTIONS = [
          "Skip the menu and start scanning."),
         ("splash", "Boot animation", ON_OFF, "Show the ship at launch."),
     ]),
+    ("ABOUT", [
+        ("check_updates", "Check for updates", None, "Asks the AppStore and GitHub for a newer version. Nothing "
+         "is downloaded."),
+    ]),
 ]
 SETTINGS = [item for _, items in SECTIONS for item in items]
 DEFAULTS = {key: choices[0][0] for key, _, choices, _ in SETTINGS if choices}
 DEFAULTS.update(min_rssi=-100, rssi_step=4, relog_meters=25, relog_seconds=30, ble_interval=1.0)
-LISTS = ("ignore", "recon_categories")
+LISTS = ("ignore", "recon_categories", "nodes")
 MAX_IGNORED = 64
+MAX_NODES = 8
+NODE_NAME_MAX = 16
 _MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
+_NODE_ID = re.compile(r"[0-9a-f]{12}")
+_LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
 
 
 def is_mac(text):
@@ -81,7 +106,26 @@ def is_mac(text):
 
 def default_lists():
     from .recon import CATEGORIES
-    return {"ignore": [], "recon_categories": list(CATEGORIES)}
+    return {"ignore": [], "recon_categories": list(CATEGORIES), "nodes": []}
+
+
+def node_entries(items):
+    """The nodes of a settings file that make sense: {"id", "name", "ble"} and an optional "led", each id once."""
+    nodes, seen = [], set()
+    for item in items if isinstance(items, list) else ():
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        node_id = item["id"].strip().lower()
+        if not _NODE_ID.fullmatch(node_id) or node_id in seen:
+            continue
+        name = item.get("name")
+        entry = {"id": node_id, "name": " ".join(name.split())[:NODE_NAME_MAX] if isinstance(name, str) else "",
+                 "ble": item.get("ble") is True}
+        if isinstance(item.get("led"), str) and _LED.fullmatch(item["led"]):
+            entry["led"] = item["led"]
+        nodes.append(entry)
+        seen.add(node_id)
+    return nodes[:MAX_NODES]
 
 
 def load(path=PATH):
@@ -102,6 +146,7 @@ def load(path=PATH):
     categories = data.get("recon_categories")
     if isinstance(categories, list):
         cfg["recon_categories"] = [c for c in default_lists()["recon_categories"] if c in categories]
+    cfg["nodes"] = node_entries(data.get("nodes"))
     return cfg
 
 

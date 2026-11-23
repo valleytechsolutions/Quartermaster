@@ -98,6 +98,18 @@ static void part(const proto_plan_t *p, uint16_t c2, uint32_t c5, bool passive, 
     results(t0 + (t1 - t0) / 2, gen);
 }
 
+static void chunks(const proto_plan_t *p, uint16_t c2, uint32_t c5, bool passive, uint32_t gen)
+{
+    unsigned n = wire_chunk_size(passive ? p->passive : p->active_max);
+    while ((c2 || c5) && node.running && node.role == ROLE_AIR) {
+        uint16_t o2;
+        uint32_t o5;
+        wire_chunk(&c2, &c5, n, &o2, &o5);
+        part(p, o2, o5, passive, gen);
+        air_handover();
+    }
+}
+
 static void apply_country(const char *cc)
 {
     esp_err_t err = esp_wifi_set_country_code(cc, false);
@@ -112,7 +124,7 @@ static void scan_task(void *arg)
     char country[3] = "";
     proto_plan_t p;
     for (;;) {
-        if (!node.running) {
+        if (!node.running || node.role == ROLE_HUB) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
             continue;
         }
@@ -131,17 +143,28 @@ static void scan_task(void *arg)
         uint32_t a5, p5;
         proto_split(&p, &a2, &a5, &p2, &p5);
         uint32_t start = node_ms();
-        part(&p, a2, a5, false, gen);
-        if (node.running) {
-            part(&p, p2, p5, true, gen);
+        bool air = node.role == ROLE_AIR;
+        if (air) {
+            chunks(&p, a2, a5, false, gen);
+            chunks(&p, p2, p5, true, gen);
+        } else {
+            part(&p, a2, a5, false, gen);
+            if (node.running) {
+                part(&p, p2, p5, true, gen);
+            }
         }
         if (!a2 && !a5 && !p2 && !p5) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+            if (air) {
+                air_handover();
+            }
         }
         if (node.running) {
             node.last_sweep = node_ms() - start;
             node.sweeps++;
-            led_pulse();
+            if (!air) {
+                led_pulse();
+            }
         }
     }
 }
@@ -161,7 +184,7 @@ void scan_init(const char *country)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
     apply_country(country);
-    xTaskCreate(scan_task, "scan", 3584, NULL, 4, &task);
+    xTaskCreate(scan_task, "scan", 4608, NULL, 4, &task);
 }
 
 void scan_wake(void)

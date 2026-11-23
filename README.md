@@ -98,6 +98,8 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 The same command updates it. To remove it: `sudo apt remove quartermaster`. Your logs and settings stay where they are.
 
+**Settings > Check for updates** tells you when a newer version is out. It only asks the App Store and GitHub, and never downloads anything. An app from the App Store is updated in the AppStore app on the Cardputer: it lists the apps with a newer version, and key 7 updates them.
+
 ## Your first wardrive
 
 1. Plug in your GPS, and any Wi-Fi adapters you have.
@@ -138,6 +140,37 @@ Tested on a CardputerZero with an ALFA AWUS036AXM and the HackerGadgets AC1200 s
 
 Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is on USB but not starting, replug it, try the other port, or use a powered hub. One ALFA AWUS036AXML did not start on the test device.
 
+## Nodes
+
+A Quartermaster Node is a small ESP32-C5 board on USB that scans Wi-Fi on 2.4 and 5 GHz, and Bluetooth when you ask, beside your adapters. Quartermaster shares the channels out between the nodes, so with more nodes each channel is heard more often. Up to 8 nodes can be used at once.
+
+1. Plug the board in. If it already runs the node firmware, Quartermaster says **New node found**. If not, open **Settings > Flash a node**, pick the board and choose **Install**.
+2. Open **Settings > Nodes** and press **OK** on the new node to add it. It scans in every wardrive and in Recon from then on.
+3. Press **OK** on a node to rename it, turn its Bluetooth on (that halves its time for Wi-Fi), blink its light, update its firmware or remove it.
+
+Set **Settings > Country** to where you are: the nodes only use the Wi-Fi channels allowed there. The Hardware screen has a card for each node with the channels it scans.
+
+Flashing waits until no wardrive or Recon runs. If a board does not answer, put it in download mode and try again:
+
+- **Seeed XIAO ESP32-C5:** hold BOOT while you plug it in.
+- **M5Stack Stamp-C5:** hold G28 to GND while you plug it in.
+- **ESP32-C5-DevKitC-1:** hold BOOT and press RESET.
+
+<table>
+  <tr>
+    <td><img src="docs/screens/nodes.png" width="270" alt="Nodes"></td>
+    <td><img src="docs/screens/node-detail.png" width="270" alt="A node"></td>
+    <td><img src="docs/screens/flashing.png" width="270" alt="Flashing a node"></td>
+  </tr>
+  <tr>
+    <td align="center">Nodes</td>
+    <td align="center">A node</td>
+    <td align="center">Flashing a node</td>
+  </tr>
+</table>
+
+The firmware, the boards it runs on and the serial protocol are described in [firmware/README.md](firmware/README.md).
+
 ## Controls
 
 | Key | What it does |
@@ -163,6 +196,9 @@ Every screen shows its own keys along the bottom.
 | | Bluetooth scan | On, Off | On |
 | | Random BLE addresses | Log, Skip | Log |
 | | Bluetooth check | 0.5 s, 1 s, 2 s, 5 s | 1 s |
+| | Country | 44 countries, or Anywhere else | United States |
+| Nodes | Nodes | The nodes in use, and new ones to add | |
+| | Flash a node | Install or update the node firmware | |
 | Logging | Rows per device | Closest + furthest, Full track | Closest + furthest |
 | | Log when signal changes (Full track) | 2, 4, 6, 10 dB | 4 dB |
 | | Log again after moving (Full track) | 10, 25, 50, 100 m | 25 m |
@@ -180,6 +216,7 @@ Every screen shows its own keys along the bottom.
 | Screen | Live list shows | Wi-Fi + BLE, Wi-Fi, Bluetooth | Wi-Fi + BLE |
 | | Start wardrive on launch | No, Yes | No |
 | | Boot animation | On, Off | On |
+| About | Check for updates | Asks the App Store and GitHub | |
 
 ## Logs
 

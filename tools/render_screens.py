@@ -11,16 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quartermaster import accounts, config, uploads, wigle  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
+from quartermaster.nodes import NodeManager  # noqa: E402
 from quartermaster.recon_engine import Recon  # noqa: E402
-from quartermaster.ui import splash  # noqa: E402
-from quartermaster.ui.app import App  # noqa: E402
+from quartermaster.ui import screens, splash  # noqa: E402
+from quartermaster.ui.app import App, FlashJob  # noqa: E402
 from quartermaster.ui.keys import ScriptedInput  # noqa: E402
-from tests.fakes import ADAPTERS, FIX, Ble, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent  # noqa: E402
+from tests.fakes import (ADAPTERS, FIX, Ble, Clock, Display, FakeBus, FakeNode, Fleet, Gps, Hardware, NoBle,  # noqa: E402
+                         QuietFleet, Silent, usb_serial)
 
 NOW = 1795000000
 KEYS = {"wigle_name": "AID0f1e2d3c4b5a69788796a5b4c3d2e1f0", "wigle_token": "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
         "wdgwars_key": "c7" * 32, "wardrift_key": ""}
 BLUETOOTH = [("C4:7C:8D:11:22:01", "Galaxy Buds2 Pro", -58), ("E4:5F:01:77:88:04", "JBL Flip 6", -80)]
+MAST, SPARE = "dc5475c8a1b2", "48ca43e91a2b"
 
 
 class Site:
@@ -52,7 +55,11 @@ def build(root):
     uploader = uploads.Uploader(root, cfg, accounts_path=root / "accounts.json", sender=sender, clock=lambda: NOW)
     recon = Recon(cfg, gps, root=root, adapters=ADAPTERS, ble=NoBle(), fleet=QuietFleet, sound=Silent(),
                   clock=lambda: NOW)
-    app = App(Display(), ScriptedInput(), gps, cfg, root=root, splash=False,
+    clock = Clock()
+    bus = FakeBus(clock)
+    sys_tty, dev, by_id = usb_serial(root / "usb", {})
+    nodes = NodeManager(cfg, bus.factory, sys_tty, dev, by_id, clock=clock, threads=False)
+    app = App(Display(), ScriptedInput(), gps, cfg, root=root, splash=False, nodes=nodes,
               wardrive=lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
                                              clock=lambda: next(ticks)),
               recon=recon, uploader=uploader, hw=Hardware(), accounts_path=root / "accounts.json",
@@ -60,7 +67,29 @@ def build(root):
               tester=lambda service, saved: uploads.Outcome(uploads.DONE, "Signed in to %s as blackbeard"
                                                             % accounts.SERVICE_NAMES[service]))
     uploader.active = app.active_log
+    app.bus = bus
     return app
+
+
+def plug_in_nodes(app, root):
+    """One node in the settings that scans, and one just plugged in."""
+    bus, nodes = app.bus, app.nodes
+    ports = {"ttyACM0": ("303a:1001", "usb-Espressif_USB_JTAG_serial_debug_unit_DC:54:75:C8:A1:B2-if00"),
+             "ttyACM1": ("303a:1001", "usb-Espressif_USB_JTAG_serial_debug_unit_48:CA:43:E9:1A:2B-if00")}
+    _, dev, _ = usb_serial(root / "usb", ports)
+    bus.add(dev / "ttyACM0", FakeNode(MAST, bus.clock, firmware="1.1.0"))
+    bus.add(dev / "ttyACM1", FakeNode(SPARE, bus.clock, caps="wifi24+wifi5", board="stamp-c5", flash_mb=4,
+                                      psram_mb=0))
+    app.change("nodes", [{"id": MAST, "name": "Crow's nest", "ble": False}])
+    nodes.configure(app.cfg)
+    nodes.scan()
+    nodes.attach(app, lambda found, adapter: None)
+    for _ in range(40):
+        nodes.pump()
+    mast = bus.devices[str(dev / "ttyACM0")]
+    mast.networks, mast.sweeps = 1204, 37
+    for _ in range(12):
+        nodes.pump()
 
 
 def old_logs(root):
@@ -165,7 +194,25 @@ def main():
     app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "ignore")
     press(app, "ENTER")
     shot("ignore-list")
-    press(app, "ESC", "ESC", "A")
+    press(app, "ESC")
+    plug_in_nodes(app, root)
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == "nodes")
+    press(app, "ENTER")
+    shot("nodes")
+    press(app, "DOWN", "ENTER")
+    shot("node-detail")
+    job = FlashJob(app.nodes, {"node": SPARE, "path": "/dev/ttyACM1", "native": True, "title": "Stamp-C5 1A2B",
+                               "detail": "", "mode": "update", "configured": False}, "update")
+    job.state = "writing"
+    job.progress(611 * 1024, 1005216 + 8192)
+    app.push(screens.Flashing(job))
+    shot("flashing")
+    app.pop()
+    app.nodes.detach(app)
+    for device in app.bus.devices.values():
+        device.unplug()
+    app.nodes.pump()
+    press(app, "ESC", "ESC", "ESC", "A")
     shot("about")
     press(app, "T")
     shot("tips")

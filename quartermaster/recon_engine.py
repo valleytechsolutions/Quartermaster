@@ -69,8 +69,9 @@ class AlertSound:
 
 class Recon:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, sound=None,
-                 clock=time.time):
+                 clock=time.time, nodes=None):
         self.cfg = dict(cfg)
+        self.nodes = nodes
         self.gps = gps
         self.root = Path(root)
         self.adapters = adapters
@@ -131,6 +132,8 @@ class Recon:
             self.state = "running"
             self.fleet = self.fleet_class(self._usable(), self._wifi_sink, 0.0)
             self.fleet.start()
+            if self.nodes is not None:
+                self.nodes.attach(self, self._wifi_sink, self._node_ble)
             self._threads = [threading.Thread(target=self._housekeeping, daemon=True, name="recon-housekeeping")]
             if self.ble is None:
                 self.ble = BleScanner()
@@ -159,7 +162,8 @@ class Recon:
                 self.fleet.refresh(self._usable())
             except OSError:
                 pass
-        errors = [s["error"] for s in self.fleet.status() if s.get("error")]
+        errors = [("%s: %s" % (s["label"], s["error"]) if s.get("method") == "node" else s["error"])
+                  for s in self.radio_status() if s.get("error")]
         if errors:
             self.errors["wifi"] = errors[0]
         else:
@@ -170,6 +174,8 @@ class Recon:
             return
         self.state = "stopping"
         self._stop.set()
+        if self.nodes is not None:
+            self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
         for thread in self._threads:
@@ -189,14 +195,23 @@ class Recon:
     def elapsed(self):
         return time.monotonic() - self.started if self.state == "running" else 0
 
+    def radio_status(self):
+        """The radios Recon listens with: the Wi-Fi adapters, then the nodes."""
+        found = self.fleet.status() if self.fleet else []
+        return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
+
     def _wifi_sink(self, networks, adapter):
         for net in networks:
             self._observe("wifi", net)
 
-    def _observe(self, transport, item):
+    def _node_ble(self, seen):
+        for item in seen:
+            self._observe("ble", item, partial=True)
+
+    def _observe(self, transport, item, partial=False):
         """One device that cannot be read must not hide the others heard with it."""
         try:
-            self.observe(transport, item)
+            self.observe(transport, item, partial=partial)
         except Exception:
             faults.note("Recon, a %s device" % transport)
 
@@ -238,10 +253,15 @@ class Recon:
             self._cache[key] = recon.classify_ble(item["address"], item.get("address_type", 1), ad)
         return self._cache[key]
 
-    def observe(self, transport, item, now=None):
+    def observe(self, transport, item, now=None, partial=False):
+        """partial: the item carries less than a full advertisement (a node's line), so what was found from a
+        fuller one is kept."""
         now = self.clock() if now is None else now
         address = item["bssid"] if transport == "wifi" else item["address"]
         result = self.classify(transport, item)
+        known = self.devices.get((transport, address)) if partial else None
+        if known is not None and known.get("result", result)["confidence"] > result["confidence"]:
+            result = known["result"]
         category = result.get("category")
         shown = bool(category) and self.enabled(category) and result["confidence"] >= self.display_min()
         gps = self.gps.snapshot()
@@ -265,7 +285,9 @@ class Recon:
             device["last_seen"] = now
             device["rssi"] = rssi
             device["rssi_history"].append((now, rssi))
-            device["name"] = item.get("ssid") if transport == "wifi" else (item.get("name") or result.get("name", ""))
+            device["name"] = item.get("ssid") if transport == "wifi" else (
+                item.get("name") or result.get("name", "") or (device.get("name", "") if partial else ""))
+            device["result"] = result
             for field in ("channel", "frequency", "security", "band", "address_type"):
                 if item.get(field) not in (None, ""):
                     device[field] = item[field]
@@ -381,7 +403,7 @@ class Recon:
                 "strong": sum(1 for d in active if d.get("category") and d.get("confidence", 0) >= recon.STRONG),
                 "following": sum(1 for d in devices if d.get("follow")),
                 "wifi_total": self.totals["wifi"], "ble_total": self.totals["ble"],
-                "radios": len(self.fleet.status()) if self.fleet else 0}
+                "radios": len(self.radio_status())}
 
 
 def _plain(value):

@@ -106,6 +106,9 @@ typedef struct {
 } proto_adv_t;
 
 uint8_t proto_xor(const char *s, size_t n);
+int proto_put(char *out, size_t cap, int len, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
+int proto_end(char *out, size_t cap, int len);
+int proto_text(char *out, size_t cap, int len, const char *s, size_t max);
 unsigned proto_freq(unsigned channel);
 
 int proto_hello(char *out, size_t cap, const proto_hello_t *h);

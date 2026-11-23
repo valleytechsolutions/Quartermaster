@@ -87,8 +87,10 @@ def _record(device):
 
 
 class Wardrive:
-    def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time):
+    def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
+                 nodes=None):
         self.cfg = dict(cfg)
+        self.nodes = nodes
         self.gps = gps
         self.root = Path(root)
         self.logs = self.root / "logs"
@@ -154,7 +156,7 @@ class Wardrive:
         if self.adapters is None:
             self.adapters = hardware.wifi_adapters()
         chosen = self._chosen_adapters()
-        if not chosen and not self.cfg.get("ble", True):
+        if not chosen and not self.cfg.get("ble", True) and not (self.nodes is not None and self.nodes.in_use()):
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
         radios.claim("wardrive")
         self._stop.clear()
@@ -162,6 +164,9 @@ class Wardrive:
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self.fleet.start()
+        if self.nodes is not None:
+            self.nodes.attach(self, self._wifi_sink, self._node_ble, ble=self.cfg.get("ble", True),
+                              bands=self._bands)
         self._threads = [threading.Thread(target=self._housekeeping, daemon=True, name="wardrive-housekeeping")]
         if self.cfg.get("ble", True):
             if self.ble is None:
@@ -294,6 +299,8 @@ class Wardrive:
         if self.state != "running":
             return
         self._stop.set()
+        if self.nodes is not None:
+            self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
         for thread in self._threads:
@@ -415,6 +422,10 @@ class Wardrive:
                 last_rssi.clear()
             self._stop.wait(interval)
 
+    def _node_ble(self, seen):
+        """A node reports a device again only when it has something new to say."""
+        self._ble_sink(seen, {})
+
     def _ble_sink(self, seen, last_rssi):
         _, now, fix = self._position()
         include_random = self.cfg.get("ble_random", True)
@@ -452,10 +463,15 @@ class Wardrive:
         summary.update(state=self.state, rows=self.rows + kept, files=len(paths),
                        log=str(paths[0]) if paths else "", skipped_no_fix=self.skipped_no_fix,
                        elapsed=self.elapsed(),
-                       adapters=self.fleet.status() if self.fleet else [], ble_error=self.ble_error,
+                       adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
+
+    def radio_status(self):
+        """The radios of the wardrive: the Wi-Fi adapters, then the nodes."""
+        found = self.fleet.status() if self.fleet else []
+        return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
 
     def _set_aside(self, devices):
         """Summary lines of devices dropped from memory wait in a file until the wardrive ends."""

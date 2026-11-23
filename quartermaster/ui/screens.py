@@ -4,14 +4,18 @@ Esc goes back everywhere, the arrow keys move and OK opens or confirms.
 """
 
 import calendar
+import functools
+import json
+import os
 import re
 import time
 
-from .. import __version__, accounts, config, qr, recon, uploads, wigle
+from .. import __version__, accounts, config, flasher, hardware, qr, recon, updates_check, uploads, wigle
+from ..nodes import NEWER, NOT_PLUGGED, OLDER, UNPLUGGED
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
 from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN,
-                  LINE, MUTED, RED, SURFACE, SURFACE_2, TEXT, W, clock, font, image, rssi_color)
+                  LINE, MUTED, RED, SURFACE, SURFACE_2, TEXT, W, ago, clock, font, image, rssi_color)
 
 TOP = CONTENT_TOP + 3
 WHITE = (255, 255, 255)
@@ -19,6 +23,9 @@ SECURITY_COLOR = {"OPEN": RED, "WEP": RED, "WPA": AMBER, "OWE": CYAN}
 STAMP = re.compile(r"quartermaster_(\d{8})-(\d{6})")
 SITE_SHORT = {"wigle": "WiGLE", "wdgwars": "WDG", "wardrift": "DRIFT"}
 REPO = "github.com/valleytechsolutions/Quartermaster"
+BOARD_NAMES = {"stamp-c5": "Stamp-C5"}
+BOOT_HELP = ("XIAO: hold BOOT while you plug it in.", "Stamp-C5: hold G28 to GND while you plug it in.",
+             "DevKit: hold BOOT and press RESET.")
 
 
 class Screen:
@@ -122,6 +129,50 @@ def plural(count, word):
     return "%d %s%s" % (count, word, "" if count == 1 else "s")
 
 
+@functools.lru_cache(maxsize=1)
+def bundled_firmware():
+    """The version of the node firmware that came with Quartermaster."""
+    try:
+        with open(flasher.MANIFEST, encoding="utf-8") as f:
+            return str(json.load(f)["version"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def board_name(node):
+    return BOARD_NAMES.get(node.get("board") or "", "ESP32-C5")
+
+
+def default_name(node):
+    return "%s %s" % (board_name(node), node["id"][-4:].upper())
+
+
+def old_firmware(node):
+    """True when the firmware that came with Quartermaster is newer than the node's."""
+    return node["error"] == OLDER or updates_check.newer(bundled_firmware(), node["firmware"] or "")
+
+
+def node_word(node):
+    """The word the lists show for a node, and its colour."""
+    if node["updating"]:
+        return "Updating", GOLD
+    if not node["connected"]:
+        return "Not plugged in", FAINT
+    if node["error"] == OLDER:
+        return "Old firmware", AMBER
+    if node["error"] == NEWER:
+        return "Newer firmware", AMBER
+    if node["state"] == "run":
+        return "Scanning", GREEN
+    if old_firmware(node):
+        return "Old firmware", AMBER
+    return "Ready", MUTED
+
+
+def channels_text(node):
+    return "ch " + " ".join(str(channel) for channel in node["plan_channels"])
+
+
 def gps_text(fix):
     if fix.get("valid"):
         text = "%.5f, %.5f" % (fix["latitude"], fix["longitude"])
@@ -172,7 +223,7 @@ class Home(Screen):
         if label == "Wardrive":
             if app.wardriving:
                 return "REC " + clock(app.drive.elapsed()), RED
-            radios = len(app.hw.adapters)
+            radios = len(app.hw.adapters) + len(app.nodes.in_use())
             return (plural(radios, "radio") if radios else "BLE only"), MUTED
         if label == "Recon":
             if app.recon_running:
@@ -298,7 +349,10 @@ class Wardrive(Screen):
         for band in ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
-        c.text_right(W - 4, y + 1, plural(len(s["adapters"]), "radio"), font("ui", 8), MUTED)
+        nodes = sum(1 for a in s["adapters"] if a.get("method") == "node")
+        radios = [plural(count, word) for count, word in ((len(s["adapters"]) - nodes, "radio"), (nodes, "node"))
+                  if count]
+        c.text_right(W - 4, y + 1, " + ".join(radios) or "0 radios", font("ui", 8), MUTED)
         y += 14
         warning = self.warning(app, s)
         if warning:
@@ -418,9 +472,14 @@ class Hardware(Screen):
             elif not adapter["bands"]:
                 card.update(detail="No usable bands reported", detail_color=AMBER, right="")
             cards.append(card)
-        if not app.hw.adapters:
+        known = app.nodes.known()
+        if not app.hw.adapters and not any(node["connected"] for node in known):
             cards.append({"tag": "WIFI", "color": AMBER, "title": "No Wi-Fi adapter found",
                           "detail": "Bluetooth still scans. Plug in a USB adapter any time."})
+        cards.extend(self.node_card(node) for node in known)
+        for node in app.nodes.found():
+            cards.append({"tag": "NEW", "color": GOLD, "title": "New node found  " + default_name(node),
+                          "detail": "Add it under Settings > Nodes."})
         fix = app.gps.snapshot()
         source = fix.get("source", "none")
         plugged = [port for port in app.hw.gps_ports if port.get("kind") == "usb" and port.get("likely")]
@@ -444,6 +503,23 @@ class Hardware(Screen):
                               "detail": "Scans Bluetooth LE and classic" if app.cfg.get("ble", True)
                               else "Bluetooth scan is off in Settings"})
         return cards
+
+    @staticmethod
+    def node_card(node):
+        card = {"tag": "NODE", "color": GOLD, "title": "%s  %s" % (node["name"], board_name(node))}
+        if node["updating"]:
+            card.update(detail="Being updated", detail_color=GOLD)
+        elif not node["connected"]:
+            card.update(color=FAINT, detail="Not plugged in", detail_color=FAINT)
+        elif node["error"]:
+            card.update(color=AMBER, edge=AMBER, detail=node["error"], detail_color=AMBER)
+        elif node["in_use"]:
+            card.update(bands=node["plan_bands"], detail=channels_text(node), right=plural(node["sweeps"], "sweep"))
+        elif old_firmware(node):
+            card.update(detail="Old firmware. Update it under Settings > Nodes.", detail_color=AMBER)
+        else:
+            card.update(detail="Ready. It scans in the next wardrive or Recon.", right="firmware " + node["firmware"])
+        return card
 
     def render(self, c, app):
         cards = self.cards(app)
@@ -878,6 +954,13 @@ class Settings(Screen, ListMixin):
             return plural(len(app.cfg.get("ignore", ())), "name")
         if key == "recon_categories":
             return "%d of %d" % (len(app.cfg.get(key, ())), len(recon.CATEGORIES))
+        if key == "nodes":
+            found = len(app.nodes.found())
+            return plural(len(app.cfg.get("nodes", ())), "node") + (", %d new" % found if found else "")
+        if key == "flash_node":
+            return ""
+        if key == "check_updates":
+            return "v" + __version__
         return config.shown(key, app.cfg.get(key))
 
     def skip_headers(self, direction):
@@ -928,6 +1011,13 @@ class Settings(Screen, ListMixin):
         elif name == "recon_categories":
             from .recon_screens import Categories
             app.push(Categories())
+        elif name == "nodes":
+            app.push(Nodes())
+        elif name == "flash_node":
+            app.push(FlashTargets())
+        elif name == "check_updates":
+            app.push(Updates())
+            app.check_updates()
         elif self.locked(app, name):
             app.toast("Stop the wardrive to change this", AMBER)
         elif key == "ENTER" and len(choices) > 2:
@@ -986,6 +1076,346 @@ class IgnoreList(Screen, ListMixin):
         else:
             return super().handle(key, app)
         return True
+
+
+class Nodes(Screen, ListMixin):
+    title = "NODES"
+    VISIBLE = 6
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    @staticmethod
+    def rows(app):
+        return [("new", node) for node in app.nodes.found()] + [("known", node) for node in app.nodes.known()]
+
+    def hints(self, app):
+        rows = self.rows(app)
+        if not rows:
+            return [("Esc", "Back")]
+        self.clamp(len(rows), self.VISIBLE)
+        return [("OK", "Add" if rows[self.index][0] == "new" else "Open"), ("F/X", "Move"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        rows = self.rows(app)
+        if not rows:
+            empty_state(c, "chip", "No nodes yet",
+                        app.nodes.error or "Plug in an ESP32-C5 board that runs the node firmware. To put the "
+                        "firmware on a board, use Settings > Flash a node.")
+            return
+        self.clamp(len(rows), self.VISIBLE)
+        for row, (kind, node) in enumerate(rows[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 17
+            if self.top + row == self.index:
+                c.select(y, 15)
+            if kind == "new":
+                c.text((11, y + 2), "New node found", font("bold", 10), GOLD, width=130)
+                c.text((150, y + 3), default_name(node), font("mono", 8), MUTED, width=95)
+                c.text_right(W - 14, y + 2, "OK to add", font("ui", 9), GOLD)
+                continue
+            word, color = node_word(node)
+            c.text((11, y + 2), node["name"], font("ui", 10), TEXT, width=130)
+            c.text((150, y + 3), board_name(node) if node["board"] else "", font("mono", 8), MUTED, width=95)
+            c.text_right(W - 14, y + 2, word, font("ui", 9), color)
+        self.scrollbar(c, len(rows), self.VISIBLE, y1=TOP + self.VISIBLE * 17 - 2)
+        note, color = (app.nodes.error, AMBER) if app.nodes.error else \
+            ("Up to %d nodes. Each one scans its share of the channels." % config.MAX_NODES, FAINT)
+        c.text((10, CONTENT_BOTTOM - 13), note, font("ui", 8), color, width=W - 20)
+
+    def handle(self, key, app):
+        rows = self.rows(app)
+        self.clamp(len(rows), self.VISIBLE)
+        if self.move(key, len(rows), self.VISIBLE):
+            return True
+        if key == "ENTER" and rows:
+            kind, node = rows[self.index]
+            if kind == "known":
+                app.push(NodeDetail(node["id"]))
+                return True
+            name = default_name(node)
+            try:
+                app.nodes.add(node["id"], name)
+            except ValueError as exc:
+                app.toast(str(exc), AMBER)
+                return True
+            app.toast("%s added" % name, GREEN)
+            self.index = next((i for i, (kind, item) in enumerate(self.rows(app))
+                               if kind == "known" and item["id"] == node["id"]), self.index)
+            return True
+        return super().handle(key, app)
+
+
+class NodeDetail(Screen, ListMixin):
+    title = "NODE"
+    VISIBLE = 5
+    HELP = {"name": "The name shown in lists and on the Hardware screen.",
+            "ble": "Bluetooth halves the node's time for Wi-Fi.",
+            "identify": "Blinks its light for 5 seconds, so you can tell it from the others.",
+            "update": "Writes the firmware that came with Quartermaster. Its settings are kept.",
+            "remove": "Quartermaster stops using it. Plug it in again to add it back."}
+
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.index = self.top = 0
+
+    def node(self, app):
+        return next((node for node in app.nodes.known() if node["id"] == self.node_id), None)
+
+    @staticmethod
+    def actions(node):
+        actions = [("name", "Name", node["name"]), ("ble", "Bluetooth", "On" if node["ble"] else "Off"),
+                   ("identify", "Identify", "Blink its light")]
+        if old_firmware(node):
+            actions.append(("update", "Update firmware", "%s to %s" % (node["firmware"], bundled_firmware())))
+        return actions + [("remove", "Remove", "")]
+
+    def hints(self, app):
+        return [("OK", "Change"), ("F/X", "Move"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        node = self.node(app)
+        if node is None:
+            return
+        actions = self.actions(node)
+        self.clamp(len(actions), self.VISIBLE)
+        word, color = node_word(node)
+        y0 = TOP - 2
+        c.rect((4, y0, W - 4, y0 + 38), fill=SURFACE, radius=5)
+        c.text((10, y0 + 2), node["name"], font("bold", 11), TEXT, width=200)
+        c.text_right(W - 10, y0 + 3, word, font("ui", 9), color)
+        if node["firmware"]:
+            facts = "%s  firmware %s  chip %s  %d MB flash" % (
+                board_name(node), node["firmware"], node["chip"], node["flash_mb"] or 0)
+        else:
+            facts = "Not seen since Quartermaster started"
+        c.text((10, y0 + 16), facts, font("mono", 8), MUTED, width=W - 20)
+        if node["error"] and (node["connected"] or node["error"] not in (NOT_PLUGGED, UNPLUGGED)):
+            left, tint = node["error"], AMBER
+        elif node["plan_channels"]:
+            left, tint = channels_text(node), TEXT
+        else:
+            left, tint = "Channels are shared out when a scan starts", FAINT
+        right = []
+        if node["connected"]:
+            right.append("{:,} network{}".format(node["networks"], "" if node["networks"] == 1 else "s"))
+        if node["last_heard"] is not None:
+            right.append("heard %s ago" % ago(node["last_heard"]))
+        right = "  ".join(right)
+        c.text_right(W - 10, y0 + 27, right, font("mono", 8), MUTED)
+        room = W - 26 - (int(c.text_width(right, font("mono", 8))) if right else 0)
+        c.text((10, y0 + 27), left, font("mono", 8), tint, width=room)
+        for row, (key, label, value) in enumerate(actions):
+            y = y0 + 43 + row * 15
+            selected = row == self.index
+            if selected:
+                c.select(y - 1, 14)
+            c.text((11, y), label, font("ui", 10), RED if key == "remove" else TEXT)
+            c.text_right(W - 22, y + 1, value, font("mono", 9), GOLD if selected else MUTED)
+            c.text((W - 18, y - 1), "›", font("bold", 11), FAINT)
+        c.text((10, y0 + 45 + len(actions) * 15), self.HELP[actions[self.index][0]], font("ui", 9), MUTED,
+               width=W - 20)
+
+    def handle(self, key, app):
+        node = self.node(app)
+        if node is None:
+            return super().handle(key, app)
+        actions = self.actions(node)
+        self.clamp(len(actions), self.VISIBLE)
+        if self.move(key, len(actions), self.VISIBLE):
+            return True
+        if key.name not in ("ENTER", "LEFT", "RIGHT", "SPACE"):
+            return super().handle(key, app)
+        if key.repeat:
+            return True
+        action, node_id = actions[self.index][0], self.node_id
+        if action == "ble":
+            app.nodes.set_ble(node_id, not node["ble"])
+        elif key != "ENTER":
+            return True
+        elif action == "name":
+            app.push(TextInput("Node name", lambda value: app.nodes.rename(node_id, value), initial=node["name"],
+                               hint="Up to %d letters." % config.NODE_NAME_MAX, limit=config.NODE_NAME_MAX))
+        elif action == "identify":
+            if app.nodes.identify(node_id):
+                app.toast("Its light blinks for 5 seconds")
+            else:
+                app.toast("It is not plugged in", AMBER)
+        elif action == "update":
+            target = next((t for t in flash_targets(app) if t["node"] == node_id), None)
+            if target is None:
+                app.toast("Plug it in first", AMBER)
+            else:
+                app.ask_flash(target)
+        elif action == "remove":
+            app.confirm("Remove this node?", "%s is no longer used. Plug it in again to add it back." % node["name"],
+                        "Remove", lambda: app.remove_node(node_id), danger=True)
+        return True
+
+
+def flash_targets(app):
+    """What can be flashed: the nodes plugged in, then the ports of ESP32-C5 boards that run no node firmware."""
+    ports = {port["real"]: port for port in app.hw.serial_ports}
+    targets = []
+    for node in app.nodes.known() + app.nodes.found():
+        if not node["connected"]:
+            continue
+        port = ports.pop(os.path.realpath(node["port"]), None)
+        targets.append({"node": node["id"], "path": node["port"], "native": port["native"] if port else True,
+                        "title": node["name"] if node["configured"] else default_name(node),
+                        "detail": "%s to %s" % (node["firmware"], bundled_firmware()) if old_firmware(node)
+                        else "Up to date", "mode": "update", "configured": node["configured"]})
+    gps = app.cfg.get("gps_source", "auto")
+    gps = os.path.realpath(gps) if gps.startswith("/") else None
+    for port in ports.values():
+        if hardware.port_mark(port["real"]) in ("gps", "node") or port["real"] == gps:
+            continue
+        targets.append({"node": None, "path": port["path"], "native": port["native"],
+                        "title": "%s on %s" % ("ESP32-C5" if port["native"] else "USB serial", port["name"]),
+                        "detail": "No node firmware", "mode": "first", "configured": False})
+    return targets
+
+
+def boot_help(c, y, color=MUTED):
+    for i, line in enumerate(BOOT_HELP):
+        c.text((10, y + i * 12), line, font("ui", 9), color, width=W - 20)
+
+
+class FlashTargets(Screen, ListMixin):
+    title = "FLASH A NODE"
+    VISIBLE = 5
+
+    def __init__(self):
+        self.index = self.top = 0
+
+    def hints(self, app):
+        if app.flash_blocked() or not flash_targets(app):
+            return [("Esc", "Back")]
+        return [("OK", "Flash"), ("F/X", "Move"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        blocked = app.flash_blocked()
+        if blocked:
+            empty_state(c, "chip", blocked, "Flashing restarts the board and takes over its port, so it cannot "
+                                            "happen while Quartermaster scans.")
+            return
+        targets = flash_targets(app)
+        if not targets:
+            icons.draw(c, "chip", W // 2 - 12, TOP + 2, 24, LINE)
+            c.text_center(W // 2, TOP + 30, "No board found", font("bold", 12), TEXT)
+            c.text_center(W // 2, TOP + 47, "Plug in an ESP32-C5 board. If it does not show up:", font("ui", 9), MUTED)
+            boot_help(c, TOP + 65, FAINT)
+            return
+        self.clamp(len(targets), self.VISIBLE)
+        for row, target in enumerate(targets[self.top:self.top + self.VISIBLE]):
+            y = TOP + row * 17
+            if self.top + row == self.index:
+                c.select(y, 15)
+            c.text((11, y + 2), target["title"], font("ui", 10), TEXT, width=170)
+            c.text_right(W - 14, y + 3, target["detail"], font("mono", 9),
+                         AMBER if target["detail"] not in ("Up to date", "No node firmware") else MUTED)
+        self.scrollbar(c, len(targets), self.VISIBLE, y1=TOP + self.VISIBLE * 17 - 2)
+        c.text((10, CONTENT_BOTTOM - 25), "First install erases the board. Update keeps its settings.",
+               font("ui", 8), FAINT, width=W - 20)
+        c.text((10, CONTENT_BOTTOM - 13), "Firmware %s came with Quartermaster." % bundled_firmware(), font("ui", 8),
+               FAINT, width=W - 20)
+
+    def handle(self, key, app):
+        targets = [] if app.flash_blocked() else flash_targets(app)
+        self.clamp(len(targets), self.VISIBLE)
+        if self.move(key, len(targets), self.VISIBLE):
+            return True
+        if key == "ENTER" and targets:
+            app.ask_flash(targets[self.index])
+            return True
+        return super().handle(key, app)
+
+
+class Flashing(Screen):
+    title = "FLASHING"
+    refresh = 0.25
+
+    def __init__(self, job):
+        self.job = job
+
+    def hints(self, app):
+        if self.job.state == "failed":
+            return [("OK", "Try again"), ("Esc", "Back")]
+        if self.job.state == "done":
+            return [("OK", "Done")]
+        return []
+
+    def render(self, c, app):
+        job = self.job
+        c.text((10, TOP), job.target["title"], font("bold", 12), GOLD, width=W - 20)
+        what = "Update to firmware %s" if job.mode == "update" else "First install of firmware %s"
+        c.text((10, TOP + 17), what % bundled_firmware(), font("ui", 9), MUTED, width=W - 20)
+        bar = (10, TOP + 36, W - 52, TOP + 46)
+        if job.state == "failed":
+            c.text((10, TOP + 34), "It did not work", font("bold", 11), RED)
+            lines = c.wrap(job.error, W - 20, font("ui", 9))[:3]
+            for i, line in enumerate(lines):
+                c.text((10, TOP + 50 + i * 12), line, font("ui", 9), TEXT)
+            if job.needs_boot:
+                boot_help(c, TOP + 54 + len(lines) * 12)
+            return
+        done = job.state == "done"
+        c.progress(bar, 1.0 if done else job.fraction, GREEN if done else GOLD)
+        c.text_right(W - 10, TOP + 35, "%d %%" % round(100 * (1.0 if done else job.fraction)), font("bold", 10),
+                     GREEN if done else GOLD)
+        if done:
+            lines = [("Done. It starts again as a node by itself.", GREEN)]
+            if not job.target["configured"]:
+                lines.append(("Then add it under Settings > Nodes.", MUTED))
+        elif job.state == "writing":
+            lines = [("Writing the firmware. This takes about a minute.", MUTED),
+                     ("Do not unplug the board.", AMBER)]
+        elif job.waiting:
+            lines = [("Waiting for the port…", MUTED), ("It is busy for a moment.", FAINT)]
+        else:
+            lines = [("Getting the board ready…", MUTED), ("Do not unplug the board.", AMBER)]
+        for i, (line, color) in enumerate(lines):
+            c.text((10, TOP + 56 + i * 13), line, font("ui", 9), color, width=W - 20)
+
+    def handle(self, key, app):
+        state = self.job.state
+        if state == "failed" and key == "ENTER":
+            app.retry_flash(self.job)
+        elif state in ("done", "failed") and key in ("ENTER", "ESC", "BACKSPACE"):
+            app.pop()
+        elif state not in ("done", "failed") and key in ("ESC", "BACKSPACE"):
+            app.toast("Wait until it is done. Do not unplug the board.", AMBER)
+        else:
+            return False
+        return True
+
+
+class Updates(Screen):
+    title = "UPDATES"
+    refresh = 0.5
+    COLORS = {updates_check.LATEST: GREEN, updates_check.STORE: GOLD, updates_check.GITHUB: GOLD}
+
+    def hints(self, app):
+        return [("OK", "Check again"), ("Esc", "Back")]
+
+    def render(self, c, app):
+        state, text = app.update_state()
+        c.text((10, TOP + 2), "Quartermaster %s" % __version__, font("bold", 12), GOLD)
+        if state in ("busy", ""):
+            text, color = "Checking…", MUTED
+        else:
+            color = self.COLORS.get(state, AMBER)
+        for i, line in enumerate(c.wrap(text, W - 20, font("ui", 10))[:3]):
+            c.text((10, TOP + 24 + i * 14), line, font("ui", 10), color)
+        note = c.wrap("Apps never update by themselves. Use the AppStore on the Cardputer. Quartermaster only asks, "
+                      "and never downloads anything.", W - 20, font("ui", 8))[:3]
+        for i, line in enumerate(note):
+            c.text((10, CONTENT_BOTTOM - 2 - (len(note) - i) * 11), line, font("ui", 8), FAINT)
+
+    def handle(self, key, app):
+        if key == "ENTER":
+            app.check_updates()
+            return True
+        return super().handle(key, app)
 
 
 class About(Screen):

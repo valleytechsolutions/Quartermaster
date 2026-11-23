@@ -3,6 +3,11 @@
 ## 1.1.0
 
 - A log now holds at most two rows per device: its closest and its farthest sighting, each with its own position and time. A far sighting below -92 dBm or less sure than 25 m is left out. The rows wait in a hidden file until the wardrive stops, and a log cut short by a crash or a power cut is finished at the next wardrive. Settings, Rows per device, Full track logs as before.
+- Quartermaster Nodes: ESP32-C5 boards on USB that scan Wi-Fi, and Bluetooth when asked, beside your adapters. The channels are shared out between them. Settings, Nodes lists them: a node that is plugged in is said once, and OK adds it. Each node can be renamed, given Bluetooth, made to blink its light, updated and removed.
+- Settings, Flash a node puts the node firmware on an ESP32-C5 board, as a first install or an update, with a progress bar. When a board does not answer, the screen says how to put it in download mode. Flashing waits until no wardrive or Recon runs.
+- Settings, Country: the nodes only use the Wi-Fi channels allowed there. It waits for a wardrive to stop, like the other scanning settings.
+- The Hardware screen has a card for each node, with the channels it scans. The Wardrive screen counts the nodes next to the radios.
+- Settings, Check for updates asks the App Store and GitHub whether a newer version is out. It never downloads anything.
 
 ## 1.0.5
 

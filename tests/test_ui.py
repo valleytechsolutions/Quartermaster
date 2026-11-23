@@ -2,25 +2,33 @@ import http.client
 import os
 from pathlib import Path
 import shutil
+import threading
 import time
 
 import pytest
 
-from quartermaster import accounts, config, radios, recon, uploads
+from quartermaster import accounts, config, flasher, hardware, radios, recon, updates_check, uploads
 from quartermaster.engine import Wardrive
+from quartermaster.nodes import NOT_PLUGGED, UNPLUGGED
 from quartermaster.recon_engine import Recon
 from quartermaster.ui import gfx, recon_screens, screens
-from quartermaster.ui.app import App
+from quartermaster.ui.app import App, serial_ports
 from quartermaster.ui.keys import ScriptedInput
-from tests.fakes import (ADAPTERS, FIX, NO_FIX, Display, Fleet, Gps, Hardware, NoBle, QuietFleet, Silent, networks,
-                         on_a_card)
+from tests.fakes import (ADAPTERS, FIX, NO_FIX, Boards, Display, FakeFlasher, FakeNode, Fleet, Gps, Hardware, NoBle,
+                         QuietFleet, Silent, Talker, networks, on_a_card, usb_serial)
 from tests.test_core import NOW
+from tests.test_nodes import BRIDGE, NATIVE, ONE, THREE, TWO, Rig, node_cfg
 from tests.test_uploads import KEYS
 
 
-def make_app(tmp_path, fix=FIX, hw=None, splash=False, keys=None, **settings):
+def offline():
+    return updates_check.OFFLINE, None, "Could not check. Is Wi-Fi connected?"
+
+
+def make_app(tmp_path, fix=FIX, hw=None, splash=False, keys=None, manager=None, flasher_class=flasher.Flasher,
+             updates=offline, **settings):
     cfg = config.load(tmp_path / "config.json")
-    cfg.update(ble=False, **settings)
+    cfg.update(dict(ble=False), **settings)
     if keys:
         accounts.save(keys, tmp_path / "accounts.json")
     gps = Gps(fix)
@@ -33,10 +41,11 @@ def make_app(tmp_path, fix=FIX, hw=None, splash=False, keys=None, **settings):
                                 clock=lambda: NOW)
     app = App(Display(), ScriptedInput(), gps, cfg, root=tmp_path, splash=splash,
               wardrive=lambda c, g: Wardrive(c, g, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=Fleet,
-                                             clock=lambda: NOW),
+                                             clock=lambda: NOW, nodes=manager),
               recon=Recon(cfg, gps, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=QuietFleet, sound=Silent(),
-                          clock=lambda: NOW),
-              uploader=uploader, hw=hw or Hardware(), accounts_path=tmp_path / "accounts.json",
+                          clock=lambda: NOW, nodes=manager),
+              nodes=manager, flasher_class=flasher_class, updates=updates,
+              uploader=uploader, hw=hw or Boards(), accounts_path=tmp_path / "accounts.json",
               config_path=tmp_path / "config.json",
               tester=lambda service, saved: uploads.Outcome(uploads.DONE, "Signed in to " + service))
     uploader.active = app.active_log
@@ -770,3 +779,518 @@ def test_a_wardrive_without_a_log_is_never_called_saved(tmp_path, drawn):
     press(app, "ESC", "ESC", "W", "ENTER")
     text = screen_text(app, drawn).replace("\n", " ")
     assert "The wardrive stops. Nothing has been logged yet." in text and "saved" not in text
+
+
+@pytest.fixture
+def ports_let_go():
+    yield
+    hardware._held.clear()
+    hardware._marks.clear()
+
+
+def node_app(tmp_path, ports=None, configured=(), **settings):
+    """An app with nodes on fake USB ports: by default ONE on its own port with the firmware that came with
+    Quartermaster, and TWO, a Stamp-C5 with older firmware, behind a bridge."""
+    if ports is None:
+        stamp = FakeNode(TWO, board="stamp-c5", caps="wifi24+wifi5", flash_mb=4, psram_mb=0)
+        ports = {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE, firmware=screens.bundled_firmware())),
+                 "ttyUSB1": ("1a86:55d4", BRIDGE, stamp)}
+    cfg = node_cfg(*configured)
+    rig = Rig(tmp_path / "bus", ports, cfg)
+    settings.setdefault("country", "US")
+    app = make_app(tmp_path, manager=rig.manager, hw=Boards(serial_ports(rig.sys_tty, rig.dev, rig.by_id)),
+                   nodes=cfg["nodes"], **settings)
+    rig.manager.scan()
+    rig.settle()
+    return app, rig
+
+
+def open_setting(app, name):
+    app.home()
+    press(app, "S")
+    app.screen.index = next(i for i, item in enumerate(app.screen.items) if item[0] == name)
+    press(app, "ENTER")
+
+
+def finish(app):
+    deadline = time.monotonic() + 5
+    while app.flashing() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    app.step(0)
+
+
+def test_a_new_node_is_said_once_and_added_with_the_name_of_its_board(tmp_path, drawn, later, ports_let_go):
+    app, rig = node_app(tmp_path)
+    press(app)
+    assert app.toast_text == "New node found. Settings > Nodes to add it."
+    app.toast_text = ""
+    one = rig.devices["ttyACM0"]
+    one.unplug()
+    rig.settle()
+    one.replug()
+    rig.clock.advance(5)
+    rig.manager.scan()
+    later(2)
+    press(app)
+    assert rig.manager.node(ONE)["connected"] and app.toast_text == ""
+    open_setting(app, "nodes")
+    assert isinstance(app.screen, screens.Nodes)
+    text = screen_text(app, drawn)
+    assert "New node found" in text and "ESP32-C5 E4F5" in text and "Stamp-C5 E4F6" in text and "Add" in text
+    press(app, "ENTER")
+    assert config.load(tmp_path / "config.json")["nodes"] == [{"id": ONE, "name": "ESP32-C5 E4F5", "ble": False}]
+    assert app.toast_text == "ESP32-C5 E4F5 added"
+    text = screen_text(app, drawn)
+    assert "Ready" in text and "Open" in text
+    press(app, "DOWN", "ESC")
+    assert "1 node, 1 new" in screen_text(app, drawn)
+    _, dev, _ = usb_serial(tmp_path / "bus", {"ttyACM2": ("303a:1001", "")})
+    rig.bus.add(dev / "ttyACM2", FakeNode(THREE, clock=rig.clock))
+    rig.manager.scan()
+    later(2)
+    press(app)
+    assert app.toast_text == "New node found. Settings > Nodes to add it."
+
+
+def test_the_nodes_list_says_how_each_node_is(tmp_path, drawn, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE, TWO, THREE), ble=True)
+    open_setting(app, "nodes")
+    assert {"N0", "N1", "N2", "Ready", "Old firmware", "Not plugged in"} <= set(drawn)
+    press(app, "ESC", "ESC", "W")
+    rig.settle(3)
+    open_setting(app, "nodes")
+    words = screen_text(app, drawn).split("\n")
+    assert words.count("Scanning") == 2 and "Not plugged in" in words and "Old firmware" not in words
+    app.nodes = Rig(tmp_path / "empty", {}).manager
+    assert "No nodes yet" in screen_text(app, drawn)
+
+
+def test_a_node_is_renamed_given_bluetooth_identified_and_removed_from_its_screen(tmp_path, drawn, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE,), ble=True)
+    one = rig.devices["ttyACM0"]
+    press(app, "W")
+    rig.settle(3)
+    open_setting(app, "nodes")
+    press(app, "DOWN", "ENTER")
+    assert isinstance(app.screen, screens.NodeDetail)
+    text = screen_text(app, drawn)
+    assert "Scanning" in text and "ch 1 2 3" in text and "chip 1.0" in text and "8 MB flash" in text
+    assert "Update firmware" not in text and "Bluetooth" in text and "Off" in drawn
+    press(app, "ENTER", "BACKSPACE", "BACKSPACE")
+    typed(app, "Mast")
+    press(app, "ENTER")
+    assert config.load(tmp_path / "config.json")["nodes"][0]["name"] == "Mast" and "Mast" in screen_text(app, drawn)
+    press(app, "DOWN")
+    assert "Bluetooth halves the node's time for Wi-Fi." in screen_text(app, drawn)
+    assert not one.plan["ble"]
+    press(app, "ENTER")
+    rig.settle()
+    assert one.plan["ble"] and config.load(tmp_path / "config.json")["nodes"][0]["ble"] is True
+    press(app, "DOWN", "ENTER")
+    rig.settle()
+    assert one.idents == [5] and app.toast_text == "Its light blinks for 5 seconds"
+    one.unplug()
+    rig.settle()
+    press(app, "ENTER")
+    assert app.toast_text == "It is not plugged in" and "Not plugged in" in screen_text(app, drawn)
+    press(app, "DOWN", "ENTER")
+    assert isinstance(app.screen, screens.Confirm)
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.NodeDetail) and len(app.cfg["nodes"]) == 1
+    press(app, "ENTER", "RIGHT", "ENTER")
+    assert isinstance(app.screen, screens.Nodes) and app.toast_text == "Mast removed"
+    assert config.load(tmp_path / "config.json")["nodes"] == [] and rig.manager.known() == []
+
+
+def test_a_node_with_old_firmware_is_let_go_for_its_update_and_taken_back(tmp_path, drawn, ports_let_go):
+    log = []
+    app, rig = node_app(tmp_path, configured=(TWO,))
+    path = str(rig.by_id / BRIDGE)
+    app.flasher_class = FakeFlasher(log, error=flasher.LOST, during=lambda: (TWO in rig.manager.links,
+                                                                             hardware.port_holder(path)))
+    open_setting(app, "nodes")
+    press(app, "DOWN", "ENTER")
+    text = screen_text(app, drawn)
+    assert "Old firmware" in text and "Update firmware" in text and "1.0.0 to %s" % screens.bundled_firmware() in text
+    press(app, "DOWN", "DOWN", "DOWN", "ENTER")
+    assert isinstance(app.screen, screens.Picker) and app.screen.options[app.screen.index][0] == "update"
+    press(app, "ENTER")
+    finish(app)
+    assert log == [("open", path), ("connect", False, (False, "node")), ("close",)]
+    assert flasher.LOST in screen_text(app, drawn).replace("\n", " ") and rig.manager.away == {}
+    app.flasher_class.error = ""
+    del log[:]
+    press(app, "ENTER")
+    finish(app)
+    assert log == [("open", path), ("connect", False, (False, "flash")), ("install", "update"), ("close",)]
+    assert rig.manager.away == {} and hardware.port_holder(str(rig.by_id / BRIDGE)) is None
+    text = screen_text(app, drawn)
+    assert "Done. It starts again as a node by itself." in text and "100 %" in text and "Then add it" not in text
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.NodeDetail)
+    rig.manager.scan()
+    assert rig.manager.node(TWO)["connected"]
+
+
+def test_a_board_without_node_firmware_is_flashed_with_progress_plain_errors_and_boot_help(
+        tmp_path, drawn, ports_let_go):
+    log, gate = [], threading.Event()
+    gps = "usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_0001-if00-port0"
+    app, rig = node_app(tmp_path, ports={"ttyACM0": ("303a:1001", NATIVE, Talker(b"")),
+                                         "ttyUSB0": ("10c4:ea60", gps, Talker())})
+    hardware.mark_port(rig.path("ttyUSB0"), "gps")
+    path = str(rig.by_id / NATIVE)
+    fake = FakeFlasher(log, error=flasher.NO_ANSWER, during=lambda: hardware.port_holder(path))
+    app.flasher_class = fake
+    assert hardware.port_holder(path) is None and rig.manager.found() == []
+    open_setting(app, "flash_node")
+    text = screen_text(app, drawn)
+    assert "ESP32-C5 on ttyACM0" in text and "No node firmware" in text and "Update keeps its settings." in text
+    assert "ttyUSB0" not in text and [port["name"] for port in app.hw.serial_ports] == ["ttyACM0", "ttyUSB0"]
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Confirm) and app.screen.choice == 1
+    assert "erases the board" in app.screen.detail
+    press(app, "ENTER")
+    finish(app)
+    assert log[:2] == [("open", path), ("connect", True, "flash")] and hardware.port_holder(path) is None
+    text = screen_text(app, drawn)
+    assert "It did not work" in text and flasher.NO_ANSWER in text.replace("\n", " ") and "Try again" in text
+    assert all(line in text for line in screens.BOOT_HELP)
+    fake.error, fake.gate = "", gate
+    press(app, "ENTER")
+    deadline = time.monotonic() + 5
+    while app.flash_job.state != "writing" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    press(app, "ESC")
+    assert isinstance(app.screen, screens.Flashing) and "Wait until it is done" in app.toast_text
+    assert "50 %" in screen_text(app, drawn) and "Do not unplug the board." in drawn
+    gate.set()
+    finish(app)
+    text = screen_text(app, drawn)
+    assert ("install", "first") in log and "Then add it under Settings > Nodes." in text and "100 %" in text
+    fake.error, fake.at, fake.gate = flasher.MISMATCH, "install", None
+    press(app, "ESC", "ENTER", "ENTER")
+    finish(app)
+    text = screen_text(app, drawn)
+    assert flasher.MISMATCH in text.replace("\n", " ") and screens.BOOT_HELP[0] not in text
+
+
+def test_flashing_waits_until_no_wardrive_or_recon_runs_and_says_why(tmp_path, drawn, ports_let_go):
+    log = []
+    app, rig = node_app(tmp_path, configured=(TWO,))
+    app.flasher_class = FakeFlasher(log)
+    press(app, "W")
+    open_setting(app, "flash_node")
+    text = screen_text(app, drawn)
+    assert "Stop the wardrive first" in text and "cannot happen while Quartermaster scans" in text
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.FlashTargets)
+    open_setting(app, "nodes")
+    press(app, "DOWN", "ENTER", "DOWN", "DOWN", "DOWN", "ENTER")
+    assert app.toast_text == "Stop the wardrive first. Flashing restarts the board."
+    assert isinstance(app.screen, screens.NodeDetail)
+    app.flash({"node": TWO, "path": "/dev/ttyUSB1", "native": False, "title": "N0", "mode": "update",
+               "configured": True}, "update")
+    assert app.flash_job is None and log == []
+    press(app, "ESC", "ESC", "ESC", "SPACE", "ENTER", "ESC", "R", "SPACE")
+    assert app.recon_running
+    open_setting(app, "flash_node")
+    assert "Stop Recon first" in screen_text(app, drawn)
+    press(app, "ESC", "ESC", "R", "SPACE")
+    assert not app.recon_running
+    open_setting(app, "flash_node")
+    assert "N0" in screen_text(app, drawn)
+
+
+def test_the_hardware_and_wardrive_screens_show_the_nodes(tmp_path, drawn, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE, THREE))
+    assert "4 radios" in screen_text(app, drawn)
+    press(app, "H", "DOWN", "DOWN", "DOWN")
+    text = screen_text(app, drawn)
+    assert "N0  ESP32-C5" in text and "Ready. It scans in the next wardrive or Recon." in text
+    assert "N1  ESP32-C5" in text and "Not plugged in" in text
+    assert "New node found  Stamp-C5 E4F6" in text and "Add it under Settings > Nodes." in text
+    press(app, "ESC", "W")
+    rig.settle(5)
+    assert "3 radios + 1 node" in screen_text(app, drawn)
+    press(app, "ESC", "H", "DOWN", "DOWN", "DOWN")
+    text = screen_text(app, drawn)
+    assert "ch 1 2 3 4" in text and "2 sweeps" in text
+
+
+def test_the_country_is_locked_while_a_wardrive_runs_and_shares_the_channels_again_in_recon(tmp_path, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE,))
+    one = rig.devices["ttyACM0"]
+    open_setting(app, "country")
+    assert isinstance(app.screen, screens.Picker) and len(app.screen.options) == len(config.COUNTRIES)
+    press(app, *["DOWN"] * 6 + ["ENTER"])
+    assert app.cfg["country"] == config.load(tmp_path / "config.json")["country"] == "JP" == rig.manager.country
+    press(app, "ESC", "W")
+    open_setting(app, "country")
+    assert app.cfg["country"] == "JP" and "Stop the wardrive" in app.toast_text
+    press(app, "ESC", "SPACE", "ENTER", "ESC", "R", "SPACE")
+    rig.settle()
+    assert one.plan["country"] == "JP"
+    open_setting(app, "country")
+    press(app, "UP", "UP", "UP", "UP", "UP", "UP", "ENTER")
+    rig.settle()
+    assert app.cfg["country"] == "US" and one.plan["country"] == "US"
+
+
+def test_check_for_updates_asks_in_the_background_and_says_what_to_do(tmp_path, drawn):
+    gate, asked = threading.Event(), []
+
+    def opener(url, current):
+        asked.append(url)
+        gate.wait(5)
+        return b'{"apps": [{"id": "quartermaster", "package": "quartermaster", "version": "1.1.1"}]}'
+    app = make_app(tmp_path, updates=lambda: updates_check.check("1.1.0", opener))
+    open_setting(app, "check_updates")
+    assert isinstance(app.screen, screens.Updates) and "Checking…" in screen_text(app, drawn)
+    press(app, "ENTER")
+    gate.set()
+    deadline = time.monotonic() + 5
+    while app.update[0] == "busy" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    text = screen_text(app, drawn)
+    assert "1.1.1 is ready. Open the AppStore and press 7 to update it." in text and asked == [updates_check.REGISTRY]
+    app.updates = offline
+    press(app, "ENTER")
+    deadline = time.monotonic() + 5
+    while app.update[0] == "busy" and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert "Could not check. Is Wi-Fi connected?" in screen_text(app, drawn)
+
+
+def test_the_hardware_check_lists_the_ports_an_esp32_c5_board_may_be_on(tmp_path, monkeypatch):
+    from quartermaster import power
+    from quartermaster.ui import app as app_module
+    sys_tty, dev, by_id = usb_serial(tmp_path, {"ttyUSB0": ("1546:01a7", ""), "ttyUSB1": ("1a86:55d4", BRIDGE),
+                                                "ttyACM0": ("303a:1001", NATIVE)})
+    found = serial_ports(sys_tty, dev, by_id)
+    assert [(port["name"], port["path"], port["native"]) for port in found] == [
+        ("ttyACM0", str(by_id / NATIVE), True), ("ttyUSB1", str(by_id / BRIDGE), False)]
+    monkeypatch.setattr(power, "battery", lambda: None)
+    for name in ("wifi_adapters", "bluetooth_adapters", "gps_candidates", "stalled_usb_adapters"):
+        monkeypatch.setattr(hardware, name, lambda: [])
+    monkeypatch.setattr(app_module, "serial_ports", lambda: found)
+    watch = app_module.HardwareWatch()
+    watch.refresh()
+    assert watch.serial_ports == found
+
+
+def wait_for(test):
+    deadline = time.monotonic() + 5
+    while not test() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert test()
+
+
+def test_a_board_the_gps_search_is_trying_is_listed_and_flashed_once_the_gps_lets_go_of_it(
+        tmp_path, drawn, ports_let_go, monkeypatch):
+    from quartermaster.ui import app as app_module
+    log = []
+    app, rig = node_app(tmp_path, ports={"ttyUSB0": ("1a86:55d4", BRIDGE, Talker(b""))})
+    path = str(rig.by_id / BRIDGE)
+    hardware.mark_port(path, "checked")
+    assert hardware.hold_port(path, "gps")
+    app.flasher_class = FakeFlasher(log, during=lambda: hardware.port_holder(path))
+    open_setting(app, "flash_node")
+    assert "USB serial on ttyUSB0" in screen_text(app, drawn)
+    press(app, "ENTER", "ENTER")
+    wait_for(lambda: app.flash_job.waiting)
+    assert "Waiting for the port…" in screen_text(app, drawn) and log == []
+    hardware.let_go_port(path, "gps")
+    finish(app)
+    assert log == [("open", path), ("connect", False, "flash"), ("install", "first"), ("close",)]
+    assert hardware.port_holder(path) is None
+    monkeypatch.setattr(app_module, "PORT_WAIT", 0.05)
+    del log[:]
+    assert hardware.hold_port(path, "gps")
+    press(app, "ESC", "ENTER", "ENTER")
+    finish(app)
+    assert app_module.BUSY in screen_text(app, drawn).replace("\n", " ") and log == []
+    assert hardware.port_holder(path) == "gps"
+
+
+def test_a_board_that_turns_out_to_be_a_node_is_flashed_as_one(tmp_path, ports_let_go):
+    log = []
+    app, rig = node_app(tmp_path)
+    path = rig.manager.node(ONE)["port"]
+    app.flasher_class = FakeFlasher(log, during=lambda: (ONE in rig.manager.links, hardware.port_holder(path)))
+    app.flash({"node": None, "path": path, "native": True, "title": "ESP32-C5 on ttyACM0", "mode": "first",
+               "configured": False}, "first")
+    finish(app)
+    assert log == [("open", path), ("connect", True, (False, "node")), ("install", "first"), ("close",)]
+    assert app.flash_job.state == "done" and rig.manager.away == {}
+
+
+def test_a_node_behind_a_bridge_is_flashed_as_one_before_the_hardware_check_has_seen_its_port(
+        tmp_path, ports_let_go):
+    log = []
+    app, rig = node_app(tmp_path, configured=(TWO,))
+    app.hw.serial_ports = []
+    app.flasher_class = FakeFlasher(log)
+    target = next(target for target in screens.flash_targets(app) if target["node"] == TWO)
+    app.flash(target, "update")
+    finish(app)
+    assert log[1][:2] == ("connect", False) and app.flash_job.state == "done"
+
+
+def test_a_node_with_newer_firmware_asks_for_a_newer_quartermaster_and_is_never_offered_an_older_one(
+        tmp_path, drawn, ports_let_go):
+    bundled = screens.bundled_firmware()
+    ports = {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE, firmware="9.0.0", protocol=2)),
+             "ttyUSB1": ("1a86:55d4", BRIDGE, FakeNode(TWO, firmware=bundled, protocol=0))}
+    app, rig = node_app(tmp_path, ports=ports, configured=(ONE, TWO))
+    one, two = rig.manager.node(ONE), rig.manager.node(TWO)
+    assert screens.node_word(one)[0] == "Newer firmware" and screens.node_word(two)[0] == "Old firmware"
+    assert "update" not in [action for action, _, _ in screens.NodeDetail.actions(one)]
+    assert ("update", "Update firmware", "%s to %s" % (bundled, bundled)) in screens.NodeDetail.actions(two)
+    details = {target["node"]: target["detail"] for target in screens.flash_targets(app)}
+    assert details[ONE] == "Up to date" and details[TWO] == "%s to %s" % (bundled, bundled)
+    open_setting(app, "nodes")
+    press(app, "ENTER")
+    assert "Update Quartermaster to use this node" in screen_text(app, drawn) and "Update firmware" not in drawn
+
+
+def test_the_new_node_toast_waits_while_the_nodes_list_is_open_and_never_comes_for_a_node_seen_there(
+        tmp_path, later, ports_let_go):
+    app, rig = node_app(tmp_path)
+    app._booted = True
+    app.push(screens.Nodes())
+    app.step(0)
+    assert app.toast_text == "" and rig.manager.found()
+    press(app, "ESC")
+    later(2)
+    app.step(0)
+    assert app.toast_text == ""
+
+
+def test_the_nodes_are_looked_for_while_the_app_runs_and_let_go_when_it_ends(tmp_path, monkeypatch, ports_let_go):
+    app, rig = node_app(tmp_path)
+    calls = []
+    monkeypatch.setattr(rig.manager, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(rig.manager, "stop", lambda: calls.append("stop"))
+    app.running = False
+    app.run()
+    assert calls == ["start", "stop"]
+
+
+def test_one_board_is_flashed_at_a_time_and_quitting_waits_for_it(tmp_path, ports_let_go):
+    from quartermaster.ui import app as app_module
+    log, gate = [], threading.Event()
+    app, rig = node_app(tmp_path, configured=(ONE, TWO))
+    app.hw = Boards(app.hw.serial_ports, battery={"percent": 1, "charging": False})
+    app.flasher_class = FakeFlasher(log, gate=gate)
+    target = next(target for target in screens.flash_targets(app) if target["node"] == TWO)
+    app.flash(target, "update")
+    job = app.flash_job
+    wait_for(lambda: job.state == "writing")
+    assert screens.node_word(rig.manager.node(TWO)) == ("Updating", gfx.GOLD)
+    app.flash(target, "update")
+    assert app.flash_job is job and app.toast_text == "Another board is being flashed"
+    app.ask_quit()
+    assert app.toast_text == "Wait until the board is flashed" and isinstance(app.screen, screens.Flashing)
+    app._booted, app._closing = True, time.monotonic() - 1
+    app.step(0)
+    assert app.running and app.toast_text == app_module.FLASH_LAST
+    gate.set()
+    finish(app)
+    app._closing = time.monotonic() - 1
+    app.step(0)
+    assert not app.running
+    gate.clear()
+    rig.manager.scan()
+    app.flash(target, "update")
+    wait_for(lambda: app.flash_job.state == "writing")
+    threading.Timer(0.1, gate.set).start()
+    app.shutdown()
+    assert app.flash_job.state == "done"
+
+
+def test_bluetooth_flips_once_per_press_and_the_side_keys_do_nothing_on_the_other_rows(
+        tmp_path, drawn, ports_let_go):
+    from quartermaster.ui.keys import Key
+    app, rig = node_app(tmp_path, configured=(ONE,))
+    one = rig.devices["ttyACM0"]
+    open_setting(app, "nodes")
+    press(app, "DOWN", "ENTER", "DOWN")
+    app.keyboard.queue.extend([Key("RIGHT"), Key("RIGHT", repeat=True)])
+    press(app)
+    assert rig.manager.node(ONE)["ble"] is True
+    press(app, "DOWN", "LEFT", "RIGHT", "DOWN", "RIGHT")
+    rig.settle()
+    assert one.idents == [] and isinstance(app.screen, screens.NodeDetail)
+
+
+def test_a_node_that_was_unplugged_says_so_once_on_its_screen(tmp_path, drawn, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE,))
+    open_setting(app, "nodes")
+    press(app, "DOWN", "ENTER")
+    rig.devices["ttyACM0"].unplug()
+    rig.settle()
+    assert rig.manager.node(ONE)["error"] in (UNPLUGGED, NOT_PLUGGED)
+    text = screen_text(app, drawn)
+    assert text.count("plugged") == 1 and "Channels are shared out when a scan starts" in text
+
+
+def test_a_wardrive_with_only_nodes_counts_them_as_nodes(tmp_path, drawn, ports_let_go):
+    app, rig = node_app(tmp_path, configured=(ONE,))
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=tmp_path, adapters=[], ble=NoBle(), fleet=Fleet,
+                                                 clock=lambda: NOW, nodes=rig.manager)
+    press(app, "W")
+    rig.settle(3)
+    text = screen_text(app, drawn)
+    assert "1 node" in drawn and "radio" not in text
+
+
+def test_an_update_check_that_hangs_or_breaks_says_it_could_not_check(tmp_path, drawn, monkeypatch):
+    from quartermaster.ui import app as app_module
+    gate = threading.Event()
+
+    def hangs():
+        gate.wait(5)
+        return updates_check.LATEST, "1.0.5", "You have the latest version (1.0.5)."
+    app = make_app(tmp_path, updates=hangs)
+    open_setting(app, "check_updates")
+    assert "Checking…" in screen_text(app, drawn)
+    monkeypatch.setattr(app_module, "UPDATE_SECONDS", 0)
+    assert updates_check.OFFLINE_TEXT in screen_text(app, drawn)
+
+    def breaks():
+        raise RuntimeError("boom")
+    app.updates = breaks
+    press(app, "ENTER")
+    gate.set()
+    wait_for(lambda: app.update[0] != "busy")
+    time.sleep(0.05)
+    assert app.update == (updates_check.UNKNOWN, updates_check.UNKNOWN_TEXT)
+    assert updates_check.UNKNOWN_TEXT in screen_text(app, drawn)
+
+
+def test_a_check_that_answers_after_a_newer_one_is_not_shown(tmp_path, monkeypatch):
+    from quartermaster.ui import app as app_module
+    gate, answers = threading.Event(), []
+
+    def slow():
+        answers.append("slow")
+        gate.wait(5)
+        return updates_check.GITHUB, "1.1.1", "1.1.1 is on GitHub. It reaches the AppStore after review."
+    app = make_app(tmp_path, updates=slow)
+    monkeypatch.setattr(app_module, "UPDATE_SECONDS", 0)
+    app.check_updates()
+    wait_for(lambda: answers)
+    app.updates = offline
+    app.check_updates()
+    wait_for(lambda: app.update[0] != "busy")
+    gate.set()
+    time.sleep(0.1)
+    assert app.update == (updates_check.OFFLINE, updates_check.OFFLINE_TEXT)
+
+
+def test_the_port_of_the_gps_named_in_the_settings_is_never_offered_for_flashing(tmp_path, ports_let_go):
+    app, rig = node_app(tmp_path, ports={"ttyUSB0": ("1a86:55d4", BRIDGE, Talker(b""))})
+    assert [target["path"] for target in screens.flash_targets(app)] == [str(rig.by_id / BRIDGE)]
+    app.cfg["gps_source"] = rig.path("ttyUSB0")
+    assert screens.flash_targets(app) == []

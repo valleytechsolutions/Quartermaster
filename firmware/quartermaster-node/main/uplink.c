@@ -6,6 +6,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/ringbuf.h"
 #include "freertos/task.h"
 
 #include "node.h"
@@ -19,6 +20,7 @@
 #define HOST_RETRY_MS 500
 #define DETAIL_MAX 32
 #define LOG_MAX 64
+#define RAW_POLL_MS 10
 
 enum { PORT_USB, PORT_UART, PORTS, PORT_UNKNOWN = -1 };
 
@@ -34,10 +36,14 @@ typedef struct {
             bool ok;
         } a;
         char text[LOG_MAX + 1];
+        wire_cluster_t c;
+        wire_node_t n;
+        wire_joiner_t j;
     };
 } rec_t;
 
 static QueueHandle_t queue;
+static RingbufHandle_t raw;
 static uint32_t seq;
 static volatile int host_port = PORT_UNKNOWN;
 
@@ -98,16 +104,45 @@ static void write_rec(const rec_t *r)
         n = proto_hello(line, sizeof(line), &h);
         break;
     }
+    case 'C':
+        n = wire_cluster_line(line, sizeof(line), seq++, &r->c);
+        break;
+    case 'N':
+        n = wire_node_line(line, sizeof(line), seq++, &r->n);
+        break;
+    case 'J':
+        n = wire_join_line(line, sizeof(line), seq++, &r->j);
+        break;
     }
-    emit(line, n);
+    if (node.role == ROLE_AIR) {
+        if (n > 0) {
+            air_line(line, n);
+        }
+    } else {
+        emit(line, n);
+    }
+}
+
+static void drain_raw(void)
+{
+    size_t n;
+    char *s;
+    while (raw && (s = xRingbufferReceive(raw, &n, 0))) {
+        emit(s, n);
+        vRingbufferReturnItem(raw, s);
+    }
 }
 
 static void tx_task(void *arg)
 {
     rec_t r;
     for (;;) {
-        if (xQueueReceive(queue, &r, portMAX_DELAY)) {
+        bool hub = node.role == ROLE_HUB;
+        if (xQueueReceive(queue, &r, hub ? pdMS_TO_TICKS(RAW_POLL_MS) : portMAX_DELAY)) {
             write_rec(&r);
+        }
+        if (hub) {
+            drain_raw();
         }
     }
 }
@@ -177,9 +212,10 @@ void uplink_init(size_t tx_buf)
     ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(UART_PORT, UART_TX, UART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     queue = xQueueCreate(QUEUE_LEN, sizeof(rec_t));
-    assert(queue);
+    raw = xRingbufferCreate(tx_buf, RINGBUF_TYPE_NOSPLIT);
+    assert(queue && raw);
     xTaskCreate(tx_task, "uplink", 4096, NULL, 5, NULL);
-    xTaskCreate(rx_task, "cmd", 4608, NULL, 6, NULL);
+    xTaskCreate(rx_task, "cmd", 6144, NULL, 6, NULL);
 }
 
 static bool put(const rec_t *r, TickType_t wait)
@@ -243,4 +279,29 @@ void uplink_flush(uint32_t ms)
     uart_wait_tx_done(UART_PORT, pdMS_TO_TICKS(50));
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(50));
     vTaskDelay(pdMS_TO_TICKS(20));
+}
+
+void uplink_raw(const char *line, size_t n)
+{
+    if (xRingbufferSend(raw, line, n, 0) != pdTRUE) {
+        __atomic_add_fetch(&node.dropped, 1, __ATOMIC_RELAXED);
+    }
+}
+
+void uplink_cluster(const wire_cluster_t *c)
+{
+    rec_t r = {.kind = 'C', .c = *c};
+    put(&r, pdMS_TO_TICKS(100));
+}
+
+void uplink_node(const wire_node_t *n)
+{
+    rec_t r = {.kind = 'N', .n = *n};
+    put(&r, pdMS_TO_TICKS(100));
+}
+
+void uplink_join(const wire_joiner_t *j)
+{
+    rec_t r = {.kind = 'J', .j = *j};
+    put(&r, pdMS_TO_TICKS(100));
 }

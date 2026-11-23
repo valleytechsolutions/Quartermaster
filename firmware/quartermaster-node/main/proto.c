@@ -34,7 +34,7 @@ unsigned proto_freq(unsigned ch)
     return 0;
 }
 
-static int finish(char *out, size_t cap, int len)
+int proto_end(char *out, size_t cap, int len)
 {
     if (len < 0 || (size_t)len + 4 > cap || len + 4 > PROTO_LINE_MAX) {
         return -1;
@@ -43,8 +43,7 @@ static int finish(char *out, size_t cap, int len)
     return len + 4;
 }
 
-__attribute__((format(printf, 4, 5)))
-static int put(char *out, size_t cap, int len, const char *fmt, ...)
+int proto_put(char *out, size_t cap, int len, const char *fmt, ...)
 {
     if (len < 0 || (size_t)len >= cap) {
         return -1;
@@ -73,7 +72,7 @@ static int hex(char *out, size_t cap, int len, const uint8_t *b, size_t n)
     return len;
 }
 
-static int text(char *out, size_t cap, int len, const char *s, size_t max)
+int proto_text(char *out, size_t cap, int len, const char *s, size_t max)
 {
     if (len < 0) {
         return -1;
@@ -95,63 +94,63 @@ static int mac(char *out, size_t cap, int len, const uint8_t *m, int reverse)
     for (int i = 0; i < 6; i++) {
         b[i] = m[reverse ? 5 - i : i];
     }
-    return put(out, cap, len, "%02X:%02X:%02X:%02X:%02X:%02X", b[0], b[1], b[2], b[3], b[4], b[5]);
+    return proto_put(out, cap, len, "%02X:%02X:%02X:%02X:%02X:%02X", b[0], b[1], b[2], b[3], b[4], b[5]);
 }
 
 int proto_hello(char *out, size_t cap, const proto_hello_t *h)
 {
-    int n = put(out, cap, 0, "@H,%d,%s,%s,%u.%u,%u,%u,%s,%s,%s,%lu,%s", PROTO_VERSION, h->id, h->fw,
+    int n = proto_put(out, cap, 0, "@H,%d,%s,%s,%u.%u,%u,%u,%s,%s,%s,%lu,%s", PROTO_VERSION, h->id, h->fw,
                 h->rev_major, h->rev_minor, h->flash_mb, h->psram_mb, h->board, h->caps, h->country,
                 (unsigned long)h->plan, h->running ? "run" : "idle");
-    return finish(out, cap, n);
+    return proto_end(out, cap, n);
 }
 
 int proto_wifi(char *out, size_t cap, uint32_t seq, uint32_t age, const proto_wifi_t *w)
 {
-    int n = put(out, cap, 0, "@W,%lu,%lu,", (unsigned long)seq, (unsigned long)age);
+    int n = proto_put(out, cap, 0, "@W,%lu,%lu,", (unsigned long)seq, (unsigned long)age);
     n = mac(out, cap, n, w->bssid, 0);
-    n = put(out, cap, n, ",%d,%u,%u,%u,%u,%u,%x,", w->rssi, w->channel, proto_freq(w->channel), w->auth,
+    n = proto_put(out, cap, n, ",%d,%u,%u,%u,%u,%u,%x,", w->rssi, w->channel, proto_freq(w->channel), w->auth,
             w->pairwise, w->group, w->flags);
     n = hex(out, cap, n, w->ssid, w->ssid_len > 32 ? 32 : w->ssid_len);
-    return finish(out, cap, n);
+    return proto_end(out, cap, n);
 }
 
 int proto_ble(char *out, size_t cap, uint32_t seq, uint32_t age, const proto_ble_t *b)
 {
-    int n = put(out, cap, 0, "@B,%lu,%lu,", (unsigned long)seq, (unsigned long)age);
+    int n = proto_put(out, cap, 0, "@B,%lu,%lu,", (unsigned long)seq, (unsigned long)age);
     n = mac(out, cap, n, b->addr, 1);
-    n = put(out, cap, n, ",%u,%d,%x,", b->addr_type, b->rssi, b->flags);
+    n = proto_put(out, cap, n, ",%u,%d,%x,", b->addr_type, b->rssi, b->flags);
     if (b->has_mfr) {
-        n = put(out, cap, n, "%04x", b->mfr);
+        n = proto_put(out, cap, n, "%04x", b->mfr);
     }
-    n = put(out, cap, n, ",");
+    n = proto_put(out, cap, n, ",");
     n = hex(out, cap, n, b->name, b->name_len > PROTO_NAME_MAX ? PROTO_NAME_MAX : b->name_len);
-    return finish(out, cap, n);
+    return proto_end(out, cap, n);
 }
 
 int proto_status(char *out, size_t cap, uint32_t seq, const proto_status_t *s)
 {
-    int n = put(out, cap, 0, "@S,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%s", (unsigned long)seq,
+    int n = proto_put(out, cap, 0, "@S,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%s", (unsigned long)seq,
                 (unsigned long)s->uptime, (unsigned long)s->sweeps, (unsigned long)s->last_sweep,
                 (unsigned long)s->networks, (unsigned long)s->devices, (unsigned long)s->dropped,
                 (unsigned long)s->plan, (unsigned long)s->heap, s->running ? "run" : "idle");
-    return finish(out, cap, n);
+    return proto_end(out, cap, n);
 }
 
 int proto_ack(char *out, size_t cap, uint32_t seq, const char *cmd, int ok, const char *detail)
 {
-    int n = put(out, cap, 0, "@A,%lu,", (unsigned long)seq);
-    n = text(out, cap, n, cmd, 16);
-    n = put(out, cap, n, ",%s,", ok ? "ok" : "err");
-    n = text(out, cap, n, detail, PROTO_TEXT_MAX);
-    return finish(out, cap, n);
+    int n = proto_put(out, cap, 0, "@A,%lu,", (unsigned long)seq);
+    n = proto_text(out, cap, n, cmd, 16);
+    n = proto_put(out, cap, n, ",%s,", ok ? "ok" : "err");
+    n = proto_text(out, cap, n, detail, PROTO_TEXT_MAX);
+    return proto_end(out, cap, n);
 }
 
 int proto_log(char *out, size_t cap, uint32_t seq, const char *s)
 {
-    int n = put(out, cap, 0, "@L,%lu,", (unsigned long)seq);
-    n = text(out, cap, n, s, PROTO_TEXT_MAX);
-    return finish(out, cap, n);
+    int n = proto_put(out, cap, 0, "@L,%lu,", (unsigned long)seq);
+    n = proto_text(out, cap, n, s, PROTO_TEXT_MAX);
+    return proto_end(out, cap, n);
 }
 
 static int hexval(char c)

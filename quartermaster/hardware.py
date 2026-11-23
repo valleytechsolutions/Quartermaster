@@ -10,9 +10,16 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 
 SYS_NET = Path("/sys/class/net")
 SYS_TTY = Path("/sys/class/tty")
+BY_ID = Path("/dev/serial/by-id")
+USB_TTY = re.compile(r"tty(ACM|USB)\d+")
+
+# The ESP32-C5's own USB port, and the USB-serial bridges of ESP32-C5 boards. A bridge can be a GPS as well.
+NODE_NATIVE = "303a:1001"
+NODE_BRIDGES = ("10c4:ea60", "1a86:55d4", "1a86:7523", "1a86:55d3")
 
 # Driver name -> chipset family, for the adapter line in the UI.
 DRIVER_CHIPSETS = {
@@ -165,22 +172,97 @@ def wifi_adapters(sys_net=SYS_NET, runner=subprocess.run):
     return adapters
 
 
-def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
-    """Serial ports that may carry NMEA, most likely first: USB receivers, then the cap and Grove UART."""
-    found = []
+_ports_lock = threading.Lock()
+_held, _marks = {}, {}
+
+
+def _real(path):
+    return os.path.realpath(str(path))
+
+
+def hold_port(path, owner):
+    """Take a serial port for one owner, "gps" or "node". False while the other one has it."""
+    real = _real(path)
+    with _ports_lock:
+        if _held.get(real, owner) != owner:
+            return False
+        _held[real] = owner
+        return True
+
+
+def let_go_port(path, owner):
+    real = _real(path)
+    with _ports_lock:
+        if _held.get(real) == owner:
+            del _held[real]
+
+
+def port_holder(path):
+    return _held.get(_real(path))
+
+
+def mark_port(path, kind):
+    """Note what answered on a port ("gps" or "node", or "checked": the GPS layer heard no GPS there), until it is
+    unplugged. None forgets it."""
+    real = _real(path)
+    with _ports_lock:
+        if kind:
+            _marks[real] = kind
+        else:
+            _marks.pop(real, None)
+
+
+def port_mark(path):
+    return _marks.get(_real(path))
+
+
+def forget_ports(paths):
+    """Ports that are gone: whatever is plugged in there next has to show what it is."""
+    with _ports_lock:
+        for path in paths:
+            _marks.pop(_real(path), None)
+
+
+def usb_serial_names(sys_tty=SYS_TTY):
     try:
-        ttys = sorted(p.name for p in Path(sys_tty).iterdir() if re.fullmatch(r"tty(ACM|USB)\d+", p.name))
+        return sorted(name for name in os.listdir(sys_tty) if USB_TTY.fullmatch(name))
     except OSError:
-        ttys = []
-    for name in ttys:
+        return []
+
+
+def usb_id_of(name, sys_tty=SYS_TTY):
+    usb = _usb_parent(Path(sys_tty) / name / "device")
+    if usb is None:
+        return ""
+    return "%s:%s" % (_read(usb / "idVendor").lower(), _read(usb / "idProduct").lower())
+
+
+def by_id_links(by_id=BY_ID):
+    """{device path: its stable name in /dev/serial/by-id}."""
+    try:
+        names = sorted(os.listdir(by_id))
+    except OSError:
+        return {}
+    return {_real(os.path.join(str(by_id), name)): os.path.join(str(by_id), name) for name in names}
+
+
+def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
+    """Serial ports that may carry NMEA, most likely first: USB receivers, then the cap and Grove UART.
+
+    A Quartermaster Node is never one: neither the ESP32-C5's own port nor a bridge a node answered on."""
+    found = []
+    for name in usb_serial_names(sys_tty):
         usb = _usb_parent(Path(sys_tty) / name / "device")
         usb_id = product = ""
         if usb is not None:
             usb_id = "%s:%s" % (_read(usb / "idVendor").lower(), _read(usb / "idProduct").lower())
             product = " ".join(x for x in (_read(usb / "manufacturer"), _read(usb / "product")) if x)
+        path = str(Path(dev) / name)
+        if usb_id == NODE_NATIVE or "node" in (port_holder(path), port_mark(path)):
+            continue
         known = USB_GPS.get(usb_id) or USB_GPS.get(usb_id.split(":")[0])
         looks_gps = bool(known) or bool(re.search(r"gps|gnss|u-blox|quectel|lc29|nmea", product, re.I))
-        found.append({"path": str(Path(dev) / name), "kind": "usb", "usb_id": usb_id,
+        found.append({"path": path, "kind": "usb", "usb_id": usb_id,
                       "label": known or product or "USB serial", "likely": looks_gps})
     found.sort(key=lambda item: not item["likely"])
     # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's first UART.

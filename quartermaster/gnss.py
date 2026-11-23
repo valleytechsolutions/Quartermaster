@@ -12,7 +12,7 @@ import socket
 import threading
 import time
 
-from . import faults
+from . import faults, hardware
 
 UART_BAUDS = (115200, 9600, 38400, 460800)
 STALE_SECONDS = 10
@@ -79,6 +79,15 @@ def nmea_fix(line):
         return result
     except (ValueError, IndexError, UnicodeError):
         return None
+
+
+def _mark_gpsd(message):
+    """The ports gpsd reads are GPS ports: nothing else may write to them."""
+    devices = message.get("devices") if message.get("class") == "DEVICES" else [message]
+    for device in devices if isinstance(devices, list) else ():
+        path = device.get("path") or device.get("device") if isinstance(device, dict) else None
+        if isinstance(path, str) and path.startswith("/") and hardware.port_mark(path) != "gps":
+            hardware.mark_port(path, "gps")
 
 
 class GPS:
@@ -206,6 +215,8 @@ class GPS:
                             continue
                         if message.get("class") == "DEVICES" and message.get("devices") == []:
                             return False
+                        if message.get("class") in ("DEVICES", "DEVICE", "TPV"):
+                            _mark_gpsd(message)
                         if message.get("class") == "SKY":
                             used = [s for s in message.get("satellites", []) if isinstance(s, dict) and s.get("used")]
                             with self._lock:
@@ -228,31 +239,51 @@ class GPS:
             return
         mode = self.mode
         for candidate in self._ports():
-            usb = bool(_USB_PORT.search(candidate["path"]))
-            if not usb and self.power and self.rails is not None and self.rails.on():
-                stopped.wait(WAKE_SECONDS)
-            for baud in UART_BAUDS:
-                if stopped.is_set() or self.mode != mode:
+            path = candidate["path"]
+            if hardware.port_mark(path) == "node" or not hardware.hold_port(path, "gps"):
+                continue
+            try:
+                if self._try(serial, candidate, mode, stopped):
                     return
-                try:
-                    with serial.Serial(candidate["path"], baud, timeout=0.5, exclusive=True) as port:
-                        valid_until = time.monotonic() + 3
-                        seen = False
-                        while not stopped.is_set() and self.mode == mode:
-                            report = nmea_fix(port.read_until(b"\n", size=129))
-                            if report is not None:
-                                if usb and not seen:
+            finally:
+                hardware.let_go_port(path, "gps")
+            if stopped.is_set() or self.mode != mode:
+                return
+
+    def _try(self, serial, candidate, mode, stopped):
+        """Read one port at each speed in turn. True once a receiver that answered there has gone quiet."""
+        path = candidate["path"]
+        usb = bool(_USB_PORT.search(path))
+        if not usb and self.power and self.rails is not None and self.rails.on():
+            stopped.wait(WAKE_SECONDS)
+        for baud in UART_BAUDS:
+            if stopped.is_set() or self.mode != mode:
+                return False
+            try:
+                with serial.Serial(path, baud, timeout=0.5, exclusive=True) as port:
+                    valid_until = time.monotonic() + 3
+                    seen = False
+                    while not stopped.is_set() and self.mode == mode:
+                        report = nmea_fix(port.read_until(b"\n", size=129))
+                        if report is not None:
+                            if not seen:
+                                hardware.mark_port(path, "gps")
+                                if usb:
                                     self.unpower()
-                                seen = True
-                                self.source = "%s (%s)" % (candidate.get("label", "GPS"), candidate["path"])
-                                self.port = candidate["path"]
-                                self.update(report)
-                            elif not seen and time.monotonic() > valid_until:
-                                break  # wrong baud or not a GPS: try the next
-                            elif seen and time.monotonic() - self._updated > 15:
-                                break  # receiver unplugged or silent: probe again
-                        if seen:
-                            self.port, self.source = None, "none"
-                            return
-                except (OSError, ValueError):
-                    break  # port busy or gone: next candidate
+                            seen = True
+                            self.source = "%s (%s)" % (candidate.get("label", "GPS"), path)
+                            self.port = path
+                            self.update(report)
+                        elif not seen and time.monotonic() > valid_until:
+                            break  # wrong baud or not a GPS: try the next
+                        elif seen and time.monotonic() - self._updated > 15:
+                            hardware.mark_port(path, None)
+                            break  # receiver unplugged or silent: probe again
+                    if seen:
+                        self.port, self.source = None, "none"
+                        return True
+            except (OSError, ValueError):
+                return False  # port busy or gone: next candidate
+        if hardware.port_mark(path) is None:
+            hardware.mark_port(path, "checked")
+        return False

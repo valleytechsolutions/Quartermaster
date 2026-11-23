@@ -378,3 +378,372 @@ class Rom:
             self._answer(op, data=hashlib.md5(bytes(self.flash[offset:offset + size])).hexdigest().encode())
         else:
             self._answer(op, status=1, reason=0x05)
+
+
+NODE_COUNTRIES = ("01", "AT", "AU", "BE", "BG", "BR", "CA", "CH", "CN", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR",
+                  "GB", "GR", "HK", "HR", "HU", "IE", "IN", "IS", "IT", "JP", "KR", "LI", "LT", "LU", "LV", "MT", "MX",
+                  "NL", "NO", "NZ", "PL", "PT", "RO", "SE", "SI", "SK", "TW", "US")
+GHZ5 = (36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161,
+        165, 169, 173, 177)
+GGA = b"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n"
+
+
+def line_xor(text):
+    return functools.reduce(operator.xor, text.encode("ascii"), 0)
+
+
+class Clock:
+    """Time for the fakes. It moves when a test says so, and while a port waits for something to read."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class FakeNode:
+    """A Quartermaster Node as firmware/PROTOCOL.md describes it, on the far side of a FakePort.
+
+    wifi() and ble() put a sighting on the air: the node reports it only while it runs, only on a channel of its
+    plan, and Bluetooth only when the plan asks for it. garble: the next lines carry a wrong checksum. lose: the next
+    lines are counted but never sent."""
+
+    def __init__(self, node_id="a0b1c2d3e4f5", clock=None, caps="wifi24+wifi5+ble", board="c5-8mb", flash_mb=8,
+                 psram_mb=8, firmware="1.0.0", protocol=1):
+        self.node_id, self.caps, self.board, self.firmware, self.protocol = node_id, caps, board, firmware, protocol
+        self.flash_mb, self.psram_mb = flash_mb, psram_mb
+        self.clock = clock or Clock()
+        self.plugged, self.taken = True, False
+        self.country, self.led = "01", None
+        self.commands, self.idents, self.resets = [], [], 0
+        self.garble = self.lose = 0
+        self.out, self._in = bytearray(), b""
+        self._boot()
+
+    def _boot(self):
+        self.seq, self.plan, self.running = 0, None, False
+        self.sweeps = self.networks = self.devices = self.dropped = 0
+        self.last_host = self.last_status = self.last_hello = self.clock()
+        self.out += b"ESP-ROM:esp32c5-eco2-20250121\r\nrst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)\r\n"
+        self._hello()
+
+    def reset(self):
+        self.resets += 1
+        self._boot()
+
+    def unplug(self):
+        self.plugged = False
+
+    def replug(self):
+        self.plugged, self.taken = True, False
+        self.out.clear()
+        self.reset()
+
+    def _emit(self, kind, *fields, seq=True):
+        if seq:
+            fields = (str(self.seq),) + fields
+            self.seq = (self.seq + 1) & 0xFFFFFFFF
+        body = ",".join((kind,) + fields)
+        if self.lose:
+            self.lose -= 1
+            return
+        check = line_xor(body)
+        if self.garble:
+            self.garble -= 1
+            check ^= 0x5A
+        self.out += ("@%s*%02X\n" % (body, check)).encode("ascii")
+
+    def _hello(self):
+        self.last_hello = self.clock()
+        self._emit("H", str(self.protocol), self.node_id, self.firmware, "1.0", str(self.flash_mb), str(self.psram_mb),
+                   self.board, self.caps, self.country, str(self.plan["version"] if self.plan else 0),
+                   "run" if self.running else "idle", seq=False)
+
+    def _ack(self, name, ok, detail=""):
+        self._emit("A", name, "ok" if ok else "err", detail)
+
+    def tick(self):
+        now = self.clock()
+        if self.running and now - self.last_host >= 30:
+            self.running = False
+            self._emit("L", "no host for 30 s_ stopped")
+        if self.running and now - self.last_status >= 2:
+            self.last_status = now
+            self.sweeps += 1
+            self._emit("S", str(int(now * 1000) % 100000000), str(self.sweeps), "1800", str(self.networks),
+                       str(self.devices), str(self.dropped), str(self.plan["version"]), "180224", "run")
+        if now - self.last_hello >= (30 if self.running else 10):
+            self._hello()
+
+    def receive(self, data):
+        self._in += data
+        *lines, self._in = self._in.split(b"\n")
+        for raw in lines:
+            line = raw.decode("ascii", "replace").rstrip("\r ")
+            if not line.startswith("#") or len(line) < 2:
+                continue
+            body, star, check = line[1:].partition("*")
+            self.last_host = self.clock()
+            name, *args = body.split(",")
+            if star and (len(check) != 2 or not all(c in "0123456789abcdefABCDEF" for c in check)
+                         or int(check, 16) != line_xor(body)):
+                self._ack(name, False, "checksum")
+                continue
+            self.commands.append(name)
+            self._command(name, args)
+
+    def _command(self, name, args):
+        if name == "HELLO":
+            self._ack(name, True)
+            self._hello()
+        elif name == "PLAN":
+            refused = self._plan(args)
+            self._ack(name, not refused, refused or args[0])
+        elif name == "START":
+            if self.plan is None:
+                self.plan = {"version": 0, "country": self.country, "ghz2": 0x7FFE, "ghz5": 0x1FFFFFFE, "ble": False}
+            self.running, self.sweeps, self.networks, self.devices = True, 0, 0, 0
+            self.last_status = self.clock()
+            self._ack(name, True)
+        elif name == "STOP":
+            self.running = False
+            self._ack(name, True)
+        elif name == "IDENT":
+            seconds = args[0] if args else "5"
+            ok = len(args) <= 1 and seconds.isdigit() and 1 <= int(seconds) <= 60
+            if ok:
+                self.idents.append(int(seconds))
+            self._ack(name, ok, seconds if ok else "seconds")
+        elif name == "LED":
+            self.led = args
+            self._ack(name, True)
+        elif name in ("BOOTLOADER", "REBOOT"):
+            self._ack(name, True)
+            self.reset()
+        else:
+            self._ack(name, False, "unknown")
+
+    def _plan(self, args):
+        """None for a plan the node takes, else the first field it refuses, as proto_plan() does."""
+        def number(text, base, top):
+            digits = "0123456789" if base == 10 else "0123456789abcdefABCDEF"
+            if not text or len(text) > 10 or any(c not in digits for c in text) or int(text, base) > top:
+                return None
+            return int(text, base)
+        if len(args) != 8:
+            return "args"
+        version = number(args[0], 10, 0xFFFFFFFF)
+        if not version:
+            return "version"
+        if args[1] not in NODE_COUNTRIES:
+            return "country"
+        ghz2, ghz5 = number(args[2], 16, 0x7FFF), number(args[3], 16, 0x1FFFFFFF)
+        if ghz2 is None or ghz5 is None:
+            return "bitmap"
+        times = [number(value, 10, 1500) for value in args[4:7]]
+        if None in times or times[1] == 0 or times[0] > times[1] or times[2] == 0:
+            return "time"
+        if args[7] not in ("0", "1"):
+            return "ble"
+        self.plan = {"version": version, "country": args[1], "ghz2": ghz2, "ghz5": ghz5, "ble": args[7] == "1",
+                     "times": tuple(times)}
+        self.country = args[1]
+        self.networks = self.devices = 0
+        return None
+
+    def scans(self, channel):
+        plan = self.plan
+        if channel <= 14:
+            return not plan["ghz2"] & 1 and bool(plan["ghz2"] >> channel & 1)
+        return channel in GHZ5 and not plan["ghz5"] & 1 and bool(plan["ghz5"] >> (GHZ5.index(channel) + 1) & 1)
+
+    def wifi(self, bssid, ssid=b"", rssi=-60, channel=6, auth=3, pairwise=4, group=4, flags=0, age=200):
+        """Hear a network. True when the node reports it."""
+        if not self.running or not self.scans(channel):
+            return False
+        freq = 2484 if channel == 14 else 2407 + 5 * channel if channel < 14 else 5000 + 5 * channel
+        self.networks += 1
+        self._emit("W", str(age), bssid.upper(), str(rssi), str(channel), str(freq), str(auth), str(pairwise),
+                   str(group), "%x" % flags, ssid.hex())
+        return True
+
+    def ble(self, address, rssi=-70, kind=1, flags=1, maker=None, name=b"", age=100):
+        if not self.running or not self.plan["ble"]:
+            return False
+        self.devices += 1
+        self._emit("B", str(age), address.upper(), str(kind), str(rssi), "%x" % flags,
+                   "" if maker is None else "%04x" % maker, name.hex())
+        return True
+
+
+class Talker:
+    """Something on a USB serial port that is not a node: it says its text over and over and records what it got."""
+
+    def __init__(self, text=GGA):
+        self.text, self.plugged, self.taken = text, True, False
+        self.out, self.heard = bytearray(), bytearray()
+
+    def tick(self):
+        if len(self.out) < 4 * len(self.text):
+            self.out += self.text
+
+    def receive(self, data):
+        self.heard += data
+
+    def reset(self):
+        pass
+
+
+class FakeBus:
+    """The devices on the USB serial ports by path. factory() builds an unopened port, as serial.Serial() does."""
+
+    def __init__(self, clock=None):
+        self.clock = clock or Clock()
+        self.devices, self.ports = {}, []
+
+    def add(self, path, device):
+        self.devices[os.path.realpath(str(path))] = device
+        return device
+
+    def factory(self):
+        port = FakePort(self)
+        self.ports.append(port)
+        return port
+
+
+class FakePort:
+    """Just enough of pyserial's Serial. RTS up while DTR is down resets the device, as on an ESP32-C5 board."""
+
+    def __init__(self, bus):
+        self.bus, self.device = bus, None
+        self.port, self.baudrate, self.timeout, self.write_timeout, self.exclusive = None, 9600, None, None, False
+        self._dtr = self._rts = True
+        self.is_open, self.events = False, []
+
+    @property
+    def dtr(self):
+        return self._dtr
+
+    @dtr.setter
+    def dtr(self, value):
+        self._dtr = value
+        self._lines()
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, value):
+        self._rts = value
+        self._lines()
+
+    def _lines(self):
+        self.events.append((self._dtr, self._rts))
+        if self.is_open and self._rts and not self._dtr:
+            self.device.reset()
+
+    def open(self):
+        device = self.bus.devices.get(os.path.realpath(str(self.port)))
+        if device is None or not device.plugged or self.exclusive and device.taken:
+            raise OSError(2, "could not open port %s" % self.port)
+        self.device, self.is_open, device.taken = device, True, True
+        self.events.append(("open", self.baudrate))
+        self._lines()
+
+    def close(self):
+        if self.is_open:
+            self.is_open, self.device.taken = False, False
+
+    def _alive(self):
+        if not self.is_open or not self.device.plugged:
+            raise OSError(5, "Input/output error")
+        self.device.tick()
+
+    @property
+    def in_waiting(self):
+        self._alive()
+        return len(self.device.out)
+
+    def read(self, size=1):
+        self._alive()
+        if not self.device.out:
+            self.bus.clock.advance(self.timeout or 0)
+            self.device.tick()
+        data = bytes(self.device.out[:size])
+        del self.device.out[:size]
+        self.bus.clock.advance(len(data) * 10 / 921600)
+        return data
+
+    def write(self, data):
+        self._alive()
+        self.device.receive(bytes(data))
+        return len(data)
+
+
+def usb_serial(root, ports):
+    """A /sys/class/tty, /dev and /dev/serial/by-id with USB serial ports, given as {name: (usb id, by-id name)}."""
+    sys_tty, dev, by_id = root / "tty", root / "dev", root / "by-id"
+    for folder in (sys_tty, dev, by_id):
+        folder.mkdir(parents=True, exist_ok=True)
+    for name, (usb_id, link) in ports.items():
+        usb = root / "usb" / name
+        (usb / "1-1:1.0").mkdir(parents=True)
+        vendor, product = usb_id.split(":")
+        (usb / "idVendor").write_text(vendor + "\n")
+        (usb / "idProduct").write_text(product + "\n")
+        (sys_tty / name).mkdir()
+        (sys_tty / name / "device").symlink_to(usb / "1-1:1.0")
+        (dev / name).write_text("")
+        if link:
+            (by_id / link).symlink_to(dev / name)
+    return sys_tty, dev, by_id
+
+
+class Boards(Hardware):
+    """Hardware with the USB serial ports an ESP32-C5 board may be on, as HardwareWatch lists them."""
+
+    def __init__(self, serial_ports=(), **kwargs):
+        super().__init__(**kwargs)
+        self.serial_ports = [dict(port) for port in serial_ports]
+
+
+class FakeFlasher:
+    """Stands in for flasher.Flasher. Each step goes in log; error is raised at the step named in at. While gate is
+    set, writing waits half way for it to open."""
+
+    def __init__(self, log, error="", at="connect", gate=None, size=1136288, during=None):
+        self.log, self.error, self.at, self.gate, self.size, self.during = log, error, at, gate, size, during
+        self.path = None
+
+    def __call__(self, path):
+        self.path = path
+        self.log.append(("open", path))
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.log.append(("close",))
+
+    def connect(self, native_usb):
+        self.log.append(("connect", native_usb, self.during() if self.during else None))
+        self._fail("connect")
+
+    def install(self, manifest_path, mode="first", progress=None):
+        self.log.append(("install", mode))
+        progress(self.size // 2, self.size)
+        if self.gate is not None:
+            self.gate.wait(5)
+        self._fail("install")
+        progress(self.size, self.size)
+
+    def _fail(self, step):
+        from quartermaster.flasher import FlashError
+        if self.at == step and self.error:
+            raise FlashError(self.error)

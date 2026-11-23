@@ -10,6 +10,9 @@
 #define TICK_MS 20
 #define PULSE_MS 40
 #define BLINK_MS 250
+#define FAST_MS 125
+#define SLOW_MS 2000
+#define SLOW_ON_MS 120
 #define RMT_HZ 10000000
 
 enum { OFF, PULSE, IDENT };
@@ -20,6 +23,7 @@ static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static proto_led_t want, cur;
 static volatile bool changed;
 static volatile uint32_t ident_until, pulse_until;
+static volatile int blink;
 static rmt_channel_handle_t chan;
 static rmt_encoder_handle_t enc;
 
@@ -103,6 +107,10 @@ static void led_task(void *arg)
             level = (now / BLINK_MS) & 1 ? OFF : IDENT;
         } else if ((int32_t)(pulse_until - now) > 0) {
             level = PULSE;
+        } else if (blink == BLINK_FAST) {
+            level = (now / FAST_MS) & 1 ? OFF : PULSE;
+        } else if (blink == BLINK_SLOW) {
+            level = now % SLOW_MS < SLOW_ON_MS ? PULSE : OFF;
         }
         if (level != shown) {
             show(level);
@@ -134,4 +142,9 @@ void led_ident(unsigned seconds)
 void led_pulse(void)
 {
     pulse_until = node_ms() + PULSE_MS;
+}
+
+void led_blink(int mode)
+{
+    blink = mode;
 }
