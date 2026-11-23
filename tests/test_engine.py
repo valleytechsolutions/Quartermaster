@@ -1055,6 +1055,7 @@ def test_a_journal_that_reaches_the_rotation_size_becomes_a_log_of_its_own(tmp_p
     for sweep in range(12):
         drive._wifi_sink([dict(net, rssi=-90 + 4 * ((sweep + i) % 12)) for i, net in enumerate(heard)], ADAPTERS[0])
         clock[0] += 1
+    drive._parts.join()
     assert len(drive.log_paths) > 2
     finished = [path for path in drive.log_paths if path.exists()]
     assert finished == drive.log_paths[:-1] and not wigle.journal_path(finished[0]).exists()
@@ -1073,6 +1074,45 @@ def test_a_journal_that_reaches_the_rotation_size_becomes_a_log_of_its_own(tmp_p
     summary = summary_of(drive.log_paths[0])
     assert {(row["Type"], row["MAC"]): int(row["LogRows"]) for row in summary} == total
     assert [path for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == []
+
+
+def test_a_part_is_finished_away_from_the_scanners_so_that_none_waits_for_it(tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 5000)
+    drive, clock = closest_and_furthest(tmp_path)
+    release, real = threading.Event(), wigle.compact
+
+    def slow(*args, **kwargs):
+        release.wait(10)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(wigle, "compact", slow)
+    heard = networks(60)
+    drive._wifi_sink(heard[:40], ADAPTERS[0])
+    first = drive.log_path
+    scanner = threading.Thread(target=drive._wifi_sink, args=(heard[40:], ADAPTERS[0]))
+    scanner.start()
+    scanner.join(2)
+    alive = scanner.is_alive()
+    counted = drive.status()["rows"]
+    release.set()
+    scanner.join()
+    assert not alive and len(drive.log_paths) == 2 and not first.exists() and counted == 60
+    drive._parts.join()
+    assert first.exists() and drive.rows == len(whole(first)) and drive.status()["rows"] == 60
+    drive.stop()
+    assert drive.rows == 60 == sum(len(whole(path)) for path in drive.log_paths)
+    assert {int(row["LogRows"]) for row in summary_of(first)} == {1}
+
+
+def test_with_closest_and_furthest_fewer_devices_are_kept_in_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "MAX_TRACKED_EXTREMES", 10)
+    drive, clock = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(20), ADAPTERS[0])
+    clock[0] += 600
+    drive._tidy()
+    assert len(drive.tracker.devices) == 8
+    drive.stop()
+    assert len(summary_of(drive.log_path)) == 20 and drive.rows == 20
 
 
 def test_a_journal_left_by_a_power_cut_is_finished_at_the_next_start(tmp_path):
@@ -1231,6 +1271,7 @@ def test_a_part_that_cannot_be_compacted_counts_no_rows_and_loses_no_summary_lin
         return real(src, dst)
     monkeypatch.setattr(os, "replace", replace)
     drive._wifi_sink(heard[20:], ADAPTERS[0])
+    drive._parts.join()
     assert drive.failed == "Cannot write the log: No space left on device" and drive.log_path != first
     monkeypatch.setattr(os, "replace", real)
     drive.stop()
@@ -1350,3 +1391,47 @@ def test_with_aircraft_on_a_wardrive_starts_without_wifi_or_bluetooth(tmp_path):
     wait_for(lambda: fake.processes)
     assert drive.state == "running"
     drive.stop()
+
+
+def test_finishing_a_journal_keeps_where_rows_start_not_the_rows_themselves(tmp_path):
+    import tracemalloc
+
+    def peak(name, devices=1000):
+        journal = tmp_path / (".quartermaster_20261118-11064%d.wigle.csv.part" % len(name))
+        lines = [",".join(wigle.pre_header()) + "\n", ",".join(wigle.COLUMNS) + "\n"]
+        for i in range(devices):
+            for k, rssi in enumerate((-50, -70, -88)):
+                lines.append("aa:bb:cc:dd:%02x:%02x,%s,[ESS],2026-11-18 11:%02d:%02d,6,2437,%d,25.1,-77.3,10,4.5,,,"
+                             "WIFI\n" % (i >> 8, i & 255, name, k, i % 60, rssi))
+        journal.write_text("".join(lines))
+        tracemalloc.start()
+        try:
+            kept = wigle.compact(journal, wigle.log_of(journal))
+            return tracemalloc.get_traced_memory()[1], kept
+        finally:
+            tracemalloc.stop()
+    short, kept = peak("N")
+    long, _ = peak("N" * 300)
+    assert len(kept) == 1000 and set(kept.values()) == {2}
+    assert long - short < 1000 * 300
+
+
+def test_a_node_line_heard_late_is_placed_where_and_when_it_was_heard(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for second in range(21):
+        drive.gps.fix = dict(FIX, latitude=25 + second / 1000, speed=14.0)
+        drive._wifi_sink([], ADAPTERS[0])
+        clock[0] += 1
+    clock[0] -= 1
+    drive._wifi_sink([dict(NET, rssi=-60, lag=10.0, air=False)], ADAPTERS[0])
+    drive._wifi_sink([dict(NET, bssid="AA:BB:CC:DD:EE:02", rssi=-60, lag=60.0, air=False)], ADAPTERS[0])
+    wireless = dict(NET, bssid="AA:BB:CC:DD:EE:03", lag=0.0, air=True)
+    drive._wifi_sink([dict(wireless, rssi=-60), dict(wireless, rssi=-85)], ADAPTERS[0])
+    drive.stop()
+    rows = {(row[0][-2:], row[6]): row for row in whole(drive.log_path)}
+    assert sorted(rows) == [("01", "-60"), ("02", "-60"), ("03", "-60")]
+    usb = rows[("01", "-60")]
+    assert (usb[3], usb[7], usb[10]) == (engine._utc(NOW + 10), "25.0100000", "4.5")
+    old = rows[("02", "-60")]
+    assert (old[3], old[7], old[10]) == (engine._utc(NOW - 40), "25.0000000", str(4.5 + 14 * 40))
+    assert rows[("03", "-60")][10] == "54.5"

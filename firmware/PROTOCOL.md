@@ -33,7 +33,7 @@ A Quartermaster Node is an ESP32-C5 that scans Wi-Fi (2.4 and 5 GHz) and, when a
 
 ### What gets reported
 
-The node remembers up to 2048 networks and 1024 Bluetooth devices, each with the strongest and weakest RSSI it has reported. A sighting is reported when the device is new, stronger than any reported RSSI, weaker than any reported RSSI, or last reported 30 s ago or more. A Bluetooth sighting that carries a name is also reported when no name was reported for that device yet. A sighting that cannot be queued is counted as dropped and is not remembered, so it is reported the next time it is heard. When the table is full, the entry reported longest ago is dropped. A new plan, `#START` and a reboot clear the table.
+The node remembers up to 2048 networks and 1024 Bluetooth devices, each with the strongest and weakest RSSI it has reported. A sighting is reported when the device is new, stronger than any reported RSSI, weaker than any reported RSSI of -92 dBm or more, or last reported 30 s ago or more. Weaker sightings below -92 dBm are not reported again. A Bluetooth sighting that carries a name, or a manufacturer id, is also reported when none was reported for that device yet. A sighting that cannot be queued is counted as dropped and is not remembered, so it is reported the next time it is heard. While running, the node waits for the host to read each line for as long as the USB port is connected, rather than dropping lines it already queued; new sightings that do not fit in the queue meanwhile are the ones dropped. When the table is full, the entry reported longest ago is dropped. A new plan, `#START` and a reboot clear the table.
 
 ## Host to node
 
@@ -79,7 +79,7 @@ A hub has at most 8 air nodes. An air node belongs to one hub.
 
 ### Roles
 
-- A node that hears no host line in the first 10 s after it starts becomes an air node. `#AIR` makes it one at once.
+- A node that hears no host line in its first 10 s without a computer on its USB port becomes an air node. While a computer is connected to the USB port the node waits for the host, however long it takes. `#AIR` makes it an air node at once.
 - Any host line on either serial port turns an air node back into a USB node before the line is carried out, so the flasher and `#HELLO` always work. A node that has heard a host line since it started does not become an air node by itself again until it restarts.
 - The role is not saved. A hub saves its key and its list of admitted nodes; an air node saves its hub, the key and the home channel.
 - `@H` is unchanged. Its `capabilities` also list `espnow` on firmware that can be a hub or an air node.
@@ -94,7 +94,7 @@ A hub has at most 8 air nodes. An air node belongs to one hub.
 | `#UNPAIR` | | any node, in any role: clear this node's own pairing with a hub, as holding BOOT does. Replies `ok`. As an air node later it asks to join again. |
 | `#AIR` | | become an air node now. The `@A` is written first; after it the node writes nothing more to its serial ports, and the next host line makes it a USB node again. |
 | `#PAIR` | seconds (0 to 600, 60 if left out) | hub only. Open a pairing window for that long; `0` closes it. The reply's detail is the seconds; it is followed by `@C` and `@N`. A refusal names `role` or `seconds`. |
-| `#ADMIT` | node id | hub only. Admit a node that asked to join (`@J`) in the last 30 s while the window was open. The hub hands it the key; the node then shows in `@N` as `new` and, once heard, `up`. The window stays open at least 30 s more. Admitting a node that is already admitted hands it the key again (after a reset of the node). The reply's detail is the node id in lower case. A refusal names `role`, `node` (not asking to join), `full` (8 nodes) or `radio`. |
+| `#ADMIT` | node id | hub only. Admit a node that asked to join (`@J`) in the last 30 s while the window was open. The hub hands it the key; the node then shows in `@N` as `new` and, once heard, `up`. The window stays open at least 30 s more. Admitting a node that is already admitted hands it the key again (after a reset of the node). If joins with two different keys arrive under one node id while the window is open, the hub stops answering that node id and refuses to admit it with `node` until the window has closed and is opened again. The reply's detail is the node id in lower case. A refusal names `role`, `node` (not asking to join), `full` (8 nodes) or `radio`. |
 | `#FORGET` | node id | hub only. Remove a node. The hub tells the node at its next contact within 60 s; the node then forgets its hub and asks to join again. A node that does not get in touch within those 60 s keeps its pairing and searches for ever: clear it with `#UNPAIR` over USB or by holding BOOT. The reply's detail is the node id in lower case. A refusal names `role` or `node`. |
 | `#TO` | node id, command, the command's arguments | hub only. Pass a command to an air node: `#TO,a0b1c2d3e4f5,IDENT,5` carries `#IDENT,5`. Allowed: `HELLO`, `PLAN`, `IDENT`, `LED` and `REBOOT`. The checksum, if any, is for the whole `#TO` line. `ok` means queued and its detail is the node id in lower case; the node's own `@A` arrives later in an `@R`. Up to 4 commands wait per node; they are delivered in order, each once, at the node's next contact (within about 1 s while it scans, 2 s while idle). A refusal names `role`, `args`, `node`, `command` or `busy` (4 waiting). |
 
@@ -112,7 +112,7 @@ A hub has at most 8 air nodes. An air node belongs to one hub.
 | `@J` | seq, node id, link RSSI, firmware version, board | a node asks to join while the pairing window is open; at most every 5 s per node |
 | `@R` | node id, then one line of that air node without its checksum | every line an air node sends |
 
-- `@C`: `lines relayed` counts the `@R` lines since the hub started; `lines dropped` is the hub's own count (as in its `@S`), which includes `@R` lines it could not queue for the serial port.
+- `@C`: `lines relayed` counts the `@R` lines since the hub started; `lines dropped` is the hub's own count (as in its `@S`). When the hub has no room left to queue an air node's lines for the serial port, it does not take them: it answers that it is busy and the air node keeps them and sends them again.
 - `@N`: `new` is admitted but not heard yet; `up` was heard in the last 60 s; `lost` was not, or was not heard since `#HUB`. `heard ms ago` and `link RSSI` (dBm, of the node's last frame at the hub) are empty when it has not been heard. `frames` counts the frames of new lines from the node since `#HUB`, `frames resent` the frames it got again because the node missed the hub's answer.
 - `@J`: show it as a new wireless node, which `#ADMIT` adds. `firmware version` and `board` are the node's own, as in its `@H`, at most 8 characters each; a comma, `*` or a byte outside printable ASCII is sent as `_`.
 
@@ -153,12 +153,12 @@ For reference; the host never sees these frames. Every frame starts with `Q`, th
 | 2 wait | hub | broadcast, plain | node address (6), home channel (1), pairing seconds left (2) |
 | 3 admit | hub | broadcast, plain | node address (6), home channel (1), the hub's one-off P-256 public key (65), wrapped key (16), check (8) |
 | 4 data | air node | to the hub, encrypted | session (4, random at each start), frame seq (4), node clock ms (4), last command id run (1), flags (1: bit 0 command id valid, bit 1 poll, bit 2 scanning), lines (1), then per line: length (1), node clock ms when the line was written (4), the line without its checksum |
-| 5 answer | hub | to the node, encrypted | session (4), frame seq (4), flags (1: bit 0 run, bit 1 forgotten, bit 2 answers a poll), commands (1), then per command: id (1), length (1), the command line without a checksum |
+| 5 answer | hub | to the node, encrypted | session (4), frame seq (4), flags (1: bit 0 run, bit 1 forgotten, bit 2 answers a poll, bit 3 busy), commands (1), then per command: id (1), length (1), the command line without a checksum |
 | 6 bye | hub | to the node, encrypted | nothing |
 
 - Joining: both sides compute the ECDH secret of the node's key and the hub's one-off key. `kek` = SHA-256(`qm-join` ‖ secret ‖ node address ‖ hub address). The wrapped key is the cluster key XOR the first 16 bytes of `kek`; the check is the first 8 bytes of HMAC-SHA-256 with the last 16 bytes of `kek` as key over the cluster key. A node only takes a key whose check is right.
 - After joining, frames are encrypted by ESP-NOW (CCMP). The primary master key is the first 16 bytes of HMAC-SHA-256(cluster key, `qm-pmk`); the key of each node's link is the first 16 bytes of HMAC-SHA-256(cluster key, `qm-lmk` ‖ node address). The hub and each node only take data and answers from each other.
-- A data frame is up to 1400 bytes (ESP-NOW version 2), or 250 if the radio refuses longer ones. Each try waits 40 ms for the answer, and a handover lasts at most about 150 ms. A frame is given up after 6 tries that the hub's radio took without an answer; tries it did not take do not count. The hub answers every data frame, passes new frames on and drops frames it already has.
+- A data frame is up to 1400 bytes (ESP-NOW version 2), or 250 if the radio refuses longer ones. Each try waits 40 ms for the answer, and a handover lasts at most about 150 ms. A frame is given up after 6 tries that the hub's radio took without an answer; tries it did not take do not count. The hub answers every data frame, passes new frames on and drops frames it already has. When it has no room to queue a new frame's lines for the host, it answers with bits 2 and 3 set and does not take the frame; the node keeps the lines, ends the handover and sends them again at the next one. Such answers do not count as tries.
 - A command stays in the hub's answers until the node reports its id as run. After `#HUB` the hub numbers a node's commands on from the id in the node's first frame, so commands queued before that frame are not taken as already run.
 
 ### Example

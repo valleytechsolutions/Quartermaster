@@ -29,6 +29,7 @@ JOURNAL_SECONDS = 30.0
 STALE_SECONDS = 30.0
 RETRY_SECONDS = 30.0
 STOP_WAIT = 3.0
+RETIME_SECONDS = 2.0
 MAX_KM = 600.0
 EARTH_KM = 6371.0088
 WARDRIFT_BATCH = 5000
@@ -44,12 +45,14 @@ SUMMARY_COLUMNS = ("ICAO", "Callsign", "Squawk", "Category", "FirstSeen", "LastS
 HOLDERS = ("readsb", "dump1090", "rtl_")
 BUSY_WORDS = ("usb_claim_interface", "resource busy", "error -6")
 GONE_WORDS = ("no supported devices", "no rtl-sdr", "device not found")
+DENIED_WORDS = ("usb_open error -3", "access denied", "insufficient permissions")
 
-OFF, NO_DONGLE, NO_READSB, BUSY, RUNNING, SYSTEM, FAILED, READY = (
-    "off", "no_dongle", "no_readsb", "busy", "running", "system", "failed", "ready")
+OFF, NO_DONGLE, NO_READSB, BUSY, RUNNING, SYSTEM, FAILED, READY, DENIED = (
+    "off", "no_dongle", "no_readsb", "busy", "running", "system", "failed", "ready", "denied")
 WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_READSB: "Install readsb: sudo apt install readsb",
          BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the readsb that already runs",
-         FAILED: "readsb stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive."}
+         FAILED: "readsb stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
+         DENIED: "No permission. Run: sudo adduser $USER plugdev"}
 
 _HEX = re.compile(r"[0-9a-f]{6}")
 _NAME = re.compile(r"quartermaster_\d{8}-\d{6}(-\d+)?\.aircraft\.json\.gz")
@@ -257,6 +260,14 @@ class Sky:
             self.changed = True
         return taken
 
+    def shift(self, delta):
+        """Move every time by delta seconds: the times were the system clock's, and the GPS has told the real one."""
+        for plane in self.planes.values():
+            plane.first, plane.last = plane.first + delta, plane.last + delta
+            plane.near = plane.near and plane.near[:6] + (plane.near[6] + delta,)
+            plane.far = plane.far and plane.far[:6] + (plane.far[6] + delta,)
+        self.changed = self.changed or bool(self.planes)
+
     def dump(self, name, now):
         return {"name": name, "now": now, "aircraft": [plane.dump() for plane in self.planes.values()]}
 
@@ -278,7 +289,7 @@ class Sky:
 
 def _replace(path, write):
     """Write a file under a hidden name, put it on disk and only then give it its name."""
-    tmp = path.with_name("." + path.name + ".tmp")
+    tmp = path.with_name(("" if path.name.startswith(".") else ".") + path.name + ".tmp")
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as out:
@@ -561,6 +572,7 @@ class Receiver:
         self.target = self.journal = self.started = None
         self._journaled = self._failed_at = None
         self._last, self._blind = None, False
+        self._offset = None
         self._stop = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
@@ -586,6 +598,9 @@ class Receiver:
 
     def start(self, epoch):
         self.prepare(epoch)
+        fix = self.gps.snapshot()
+        if fix.get("utc"):
+            self._offset = self.epoch(fix) - self.clock()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="aircraft")
         self._thread.start()
@@ -616,9 +631,37 @@ class Receiver:
                     pass
             return path if written else None
 
+    def _time(self, fix):
+        """UTC: the GPS's when it has it, else the system clock moved by what the GPS last said of it.
+
+        The CardputerZero has no battery clock, so the system clock may be days off. Aircraft heard before the GPS
+        first gives the time are moved to it then, and their file is named again."""
+        if not fix.get("utc"):
+            return self.epoch(fix) if self._offset is None else self.clock() + self._offset
+        epoch = self.epoch(fix)
+        first, self._offset = self._offset is None, epoch - self.clock()
+        if first:
+            self._retime(self._offset)
+        return epoch
+
+    def _retime(self, delta):
+        with self._lock:
+            if self.started is None or abs(delta) < RETIME_SECONDS:
+                return
+            old = self.journal
+            self.sky.shift(delta)
+            self.prepare(self.started + delta)
+            if old is not None and old != self.journal and old.exists():
+                try:
+                    save_journal(self.journal, self.sky, self.name().name, self._now())
+                    old.unlink(missing_ok=True)
+                except OSError:
+                    faults.note("Saving the aircraft journal")
+
     def _now(self):
         """The time a file is stamped with: never before the last aircraft heard, should the clock fall back."""
-        now = self.epoch(self.gps.snapshot())
+        fix = self.gps.snapshot()
+        now = self.epoch(fix) if fix.get("utc") or self._offset is None else self.clock() + self._offset
         return max([now] + [plane.last for plane in self.sky.planes.values()])
 
     def _here(self, fix, epoch):
@@ -659,12 +702,14 @@ class Receiver:
         if proc is not None and proc.poll() is not None:
             said = _tail(Path(self.feed).parent / "readsb.log") if self.feed else ""
             self._end()
+            said = said.lower()
             self.state = BUSY if any(w in said for w in BUSY_WORDS) else \
+                DENIED if any(w in said for w in DENIED_WORDS) else \
                 NO_DONGLE if any(w in said for w in GONE_WORDS) or not self.dongles() else FAILED
             self._failed_at = time.monotonic()
         elif proc is not None and self._blind:
             fix = self.gps.snapshot()
-            if self._here(fix, self.epoch(fix)) is not None:
+            if self._here(fix, self._time(fix)) is not None:
                 self._end()
         elif proc is None and self.feed is not None and read_feed(self.feed, self.clock()) is None:
             self.feed = None
@@ -697,7 +742,7 @@ class Receiver:
         except OSError:
             pass
         fix = self.gps.snapshot()
-        here = self._here(fix, self.epoch(fix))
+        here = self._here(fix, self._time(fix))
         count = self.cpus() or 1
         argv = command(binary, out, here, options(binary, self.runner), calm(count - 1 if count >= 4 else None,
                                                                              self.tools))
@@ -724,7 +769,7 @@ class Receiver:
             return
         self._last = data["now"]
         fix = self.gps.snapshot()
-        epoch = self.epoch(fix)
+        epoch = self._time(fix)
         if epoch < wigle.MIN_EPOCH:
             return
         with self._lock:

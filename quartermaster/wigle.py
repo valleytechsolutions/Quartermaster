@@ -129,14 +129,16 @@ def _named(line, ssid, auth):
 def compact(journal, path, names=None):
     """Write the strongest and the weakest row of each device in a journal to a log, in the order they were seen.
 
-    One pass over the journal keeps only the rows that may still be chosen. Both rows of a device carry the last
-    name and capabilities known for it: names(type, mac, ssid, auth) gives the ones to write, or None to leave
-    the device out. The log appears under its name only once it is whole and on disk. A journal without rows
-    writes nothing. Returns the number of rows written for each (type, mac).
+    One pass over the journal keeps where each row that may still be chosen starts, and a second reads only those.
+    Both rows of a device carry the last name and capabilities known for it: names(type, mac, ssid, auth) gives the
+    ones to write, or None to leave the device out. The log appears under its name only once it is whole and on
+    disk. A journal without rows writes nothing. Returns the number of rows written for each (type, mac).
     """
-    found, header = {}, []
-    with open(journal, encoding="utf-8", errors="replace", newline="") as source:
-        for seq, line in enumerate(source):
+    found, header, offset, same = {}, [], 0, {}
+    with open(journal, "rb") as source:
+        for seq, raw in enumerate(source):
+            at, offset = offset, offset + len(raw)
+            line = raw.decode("utf-8", "replace")
             if seq < 2:
                 header.append(line)
                 continue
@@ -146,7 +148,8 @@ def compact(journal, path, names=None):
             entry = found.get((row[13], row[0]))
             if entry is None:
                 entry = found[(row[13], row[0])] = [Ends(), "", ""]
-            entry[0].add((int(row[6]), seq, line, row[3], None, row[10]))
+            entry[0].add((int(row[6]), seq, at, same.setdefault(row[3], row[3]), None,
+                          same.setdefault(row[10], row[10])))
             entry[1], entry[2] = row[1] or entry[1], row[2] or entry[2]
     if len(header) < 2 or not header[0].startswith("WigleWifi-1.6,") or header[1] != ",".join(COLUMNS) + "\n":
         return {}
@@ -166,10 +169,11 @@ def compact(journal, path, names=None):
     tmp = path.with_name("." + path.name + ".tmp")
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
-            out.writelines(header)
-            for _, _, line, ssid, auth in kept:
-                out.write(_named(line, ssid, auth))
+        with os.fdopen(fd, "wb") as out, open(journal, "rb") as source:
+            out.write("".join(header).encode("utf-8"))
+            for _, _, at, ssid, auth in kept:
+                source.seek(at)
+                out.write(_named(source.readline().decode("utf-8", "replace"), ssid, auth).encode("utf-8"))
             out.flush()
             fsync(out.fileno())
         os.replace(tmp, path)

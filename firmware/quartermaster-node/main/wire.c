@@ -367,6 +367,14 @@ void wire_peer_init(wire_peer_t *p, const uint8_t mac[6], uint8_t state, uint32_
     p->next_id = 1;
 }
 
+int wire_peer_fresh(const wire_peer_t *p, const wire_data_t *d)
+{
+    if (d->flags & WD_POLL) {
+        return 0;
+    }
+    return !(p->have_seq && p->session == d->session && (int32_t)(d->seq - p->seq) <= 0);
+}
+
 int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t now)
 {
     p->heard = now;
@@ -395,7 +403,7 @@ int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t n
     if (d->flags & WD_POLL) {
         return 0;
     }
-    if (p->have_seq && p->session == d->session && (int32_t)(d->seq - p->seq) <= 0) {
+    if (!wire_peer_fresh(p, d)) {
         p->resent++;
         return 0;
     }
@@ -455,7 +463,7 @@ wire_cand_t *wire_pair_find(wire_pair_t *p, const uint8_t mac[6], uint32_t now)
     }
     for (unsigned i = 0; i < WIRE_NODES; i++) {
         wire_cand_t *c = &p->cand[i];
-        if (c->used && memcmp(c->mac, mac, 6) == 0 && now - c->heard < WIRE_JOIN_KEEP_MS) {
+        if (c->used && !c->clash && memcmp(c->mac, mac, 6) == 0 && now - c->heard < WIRE_JOIN_KEEP_MS) {
             return c;
         }
     }
@@ -469,23 +477,32 @@ wire_cand_t *wire_pair_heard(wire_pair_t *p, const uint8_t mac[6], int8_t rssi, 
     if (!wire_pair_left(p, now)) {
         return NULL;
     }
-    wire_cand_t *c = NULL, *oldest = &p->cand[0];
+    wire_cand_t *c = NULL, *oldest = NULL;
     for (unsigned i = 0; i < WIRE_NODES && !c; i++) {
         wire_cand_t *e = &p->cand[i];
         if (e->used && memcmp(e->mac, mac, 6) == 0) {
             c = e;
         } else if (!e->used) {
-            oldest = e;
-        } else if (oldest->used && (int32_t)(e->heard - oldest->heard) < 0) {
+            if (!oldest || oldest->used) {
+                oldest = e;
+            }
+        } else if (!e->clash && (!oldest || (oldest->used && (int32_t)(e->heard - oldest->heard) < 0))) {
             oldest = e;
         }
     }
     if (!c) {
+        if (!oldest) {
+            return NULL;
+        }
         c = oldest;
         memset(c, 0, sizeof(*c));
         c->used = 1;
         memcpy(c->mac, mac, 6);
+        c->join = *j;
         *tell = 1;
+    } else if (c->clash || memcmp(c->join.pub, j->pub, WIRE_PUB) != 0) {
+        c->clash = 1;
+        return NULL;
     } else if (now - c->told >= WIRE_JOIN_TELL_MS) {
         *tell = 1;
     }
@@ -796,6 +813,21 @@ int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, si
     }
     out[len] = 0;
     return proto_end(out, cap, len);
+}
+
+size_t wire_relay_need(const uint8_t mac[6], const wire_data_t *d)
+{
+    char out[PROTO_LINE_MAX + 1];
+    size_t pos = 0, len, need = 0;
+    uint32_t stamp;
+    const char *l;
+    while (wire_rec_next(d, &pos, &stamp, &l, &len)) {
+        int n = wire_relay(out, sizeof(out), mac, l, len, d->now - stamp);
+        if (n > 0) {
+            need += WIRE_RING_ITEM(n);
+        }
+    }
+    return need;
 }
 
 int wire_unrelay(const char *in, size_t n, char id[13], char *out, size_t cap)

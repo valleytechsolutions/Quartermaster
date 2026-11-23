@@ -86,7 +86,8 @@ static seen_entry_t *find(const seen_t *t, const uint8_t *key, unsigned h)
 
 static int quiet(const seen_entry_t *e, int8_t rssi, uint32_t now, uint8_t info)
 {
-    return rssi <= e->hi && rssi >= e->lo && now - e->at < SEEN_REFRESH_MS && !(info & ~e->info);
+    return rssi <= e->hi && (rssi < SEEN_FLOOR || rssi >= e->lo) && now - e->at < SEEN_REFRESH_MS &&
+           !(info & ~e->info);
 }
 
 seen_result_t seen_check(const seen_t *t, const uint8_t key[SEEN_KEY], int8_t rssi, uint32_t now, uint8_t info)
@@ -109,7 +110,7 @@ seen_result_t seen_note(seen_t *t, const uint8_t key[SEEN_KEY], int8_t rssi, uin
         if (rssi > e->hi) {
             e->hi = rssi;
         }
-        if (rssi < e->lo) {
+        if (rssi >= SEEN_FLOOR && (rssi < e->lo || e->lo < SEEN_FLOOR)) {
             e->lo = rssi;
         }
         e->at = now;

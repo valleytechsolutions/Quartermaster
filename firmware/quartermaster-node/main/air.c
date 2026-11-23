@@ -37,6 +37,7 @@ static uint8_t frame[WIRE_FRAME_MAX];
 static char cmd[WIRE_CMD_MAX + 1];
 static volatile bool reboot_pending;
 static volatile uint32_t reboot_at;
+static uint8_t answer;
 
 static void link_hub(void)
 {
@@ -72,6 +73,7 @@ static void acked(const wire_ack_t *a)
     xSemaphoreTake(out_lock, portMAX_DELAY);
     wire_out_ack(&out, a->seq, a->flags);
     xSemaphoreGive(out_lock);
+    answer = a->flags;
     if (a->flags & WA_BYE) {
         unpair();
         uplink_log("wireless: hub let this node go");
@@ -145,7 +147,7 @@ static bool exchange(uint8_t ch, uint32_t budget, bool search)
             heard = true;
             misses = 0;
             wire_air_linked(&st, ch, node_ms());
-            if ((poll && !search) || empty()) {
+            if ((poll && !search) || (answer & WA_BUSY) || empty()) {
                 break;
             }
         } else {

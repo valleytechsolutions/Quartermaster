@@ -31,12 +31,13 @@
 #define WIRE_REC_HEAD 5
 #define WIRE_TX_STALE_MS 1000u
 #define WIRE_HOLD_MS 2000u
+#define WIRE_RING_ITEM(n) ((((size_t)(n) + 3u) & ~(size_t)3u) + 8u)
 
 enum { WIRE_JOIN = 1, WIRE_WAIT, WIRE_ADMIT, WIRE_DATA, WIRE_ACK, WIRE_BYE };
 
 enum { WD_CMD_ACK = 1, WD_POLL = 2, WD_RUN = 4 };
 
-enum { WA_RUN = 1, WA_BYE = 2, WA_POLL = 4 };
+enum { WA_RUN = 1, WA_BYE = 2, WA_POLL = 4, WA_BUSY = 8 };
 
 enum { PEER_FREE, PEER_NEW, PEER_UP, PEER_LEAVING };
 
@@ -103,7 +104,7 @@ typedef struct {
 } wire_peer_t;
 
 typedef struct {
-    uint8_t used;
+    uint8_t used, clash;
     uint8_t mac[6];
     int8_t rssi;
     uint32_t heard, told;
@@ -181,6 +182,7 @@ void wire_out_missed(wire_out_t *o);
 int wire_seen_fresh(wire_seen_t *s, uint8_t id);
 
 void wire_peer_init(wire_peer_t *p, const uint8_t mac[6], uint8_t state, uint32_t now);
+int wire_peer_fresh(const wire_peer_t *p, const wire_data_t *d);
 int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t now);
 int wire_peer_cmd(wire_peer_t *p, const char *line, size_t n);
 void wire_peer_node(const wire_peer_t *p, uint32_t now, wire_node_t *n);
@@ -215,6 +217,7 @@ const char *wire_to_args(const proto_cmd_t *c, uint8_t mac[6], char *line, size_
 int wire_remote_ok(const char *name);
 
 int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra);
+size_t wire_relay_need(const uint8_t mac[6], const wire_data_t *d);
 int wire_unrelay(const char *in, size_t n, char id[13], char *out, size_t cap);
 int wire_cluster_line(char *out, size_t cap, uint32_t seq, const wire_cluster_t *c);
 int wire_node_line(char *out, size_t cap, uint32_t seq, const wire_node_t *n);

@@ -850,6 +850,127 @@ static void test_hub_lines(void)
     CHECK(strncmp(b, "@J,44,a0b1c2d3e4f5,-48,1.1.0,c5__x*", 35) == 0);
 }
 
+static void test_seen_floor_keeps_the_far_edge(void)
+{
+    seen_t t;
+    uint8_t k[SEEN_KEY] = {9};
+    CHECK(seen_init(&t, 4) == 0);
+    CHECK(seen_note(&t, k, -80, 1000, 0) == SEEN_NEW);
+    CHECK(seen_note(&t, k, -95, 2000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -90, 3000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -91, 4000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -91, 5000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -92, 6000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -99, 7000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -92, 8000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -99, 6000 + SEEN_REFRESH_MS, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -92, 6001 + SEEN_REFRESH_MS, 0) == SEEN_SKIP);
+
+    seen_clear(&t);
+    CHECK(seen_note(&t, k, -80, 1000, 0) == SEEN_NEW);
+    CHECK(seen_note(&t, k, -90, 2000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -95, 3000, 0) == SEEN_SKIP);
+    CHECK(seen_check(&t, k, -95, 2000 + SEEN_REFRESH_MS - 1, 0) == SEEN_SKIP);
+
+    seen_clear(&t);
+    CHECK(seen_note(&t, k, -96, 1000, 0) == SEEN_NEW);
+    CHECK(seen_note(&t, k, -97, 2000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -93, 3000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -94, 4000, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -88, 5000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -92, 6000, 0) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -90, 7000, 0) == SEEN_SKIP);
+    seen_free(&t);
+}
+
+static void test_seen_reports_the_first_manufacturer(void)
+{
+    seen_t t;
+    uint8_t k[SEEN_KEY] = {7, 1};
+    CHECK(seen_init(&t, 4) == 0);
+    CHECK(seen_note(&t, k, -60, 1000, 0) == SEEN_NEW);
+    CHECK(seen_check(&t, k, -60, 1100, 2) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -60, 1100, 2) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -60, 1200, 0) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -60, 1300, 2) == SEEN_SKIP);
+    CHECK(seen_note(&t, k, -60, 1400, 1) == SEEN_AGAIN);
+    CHECK(seen_note(&t, k, -60, 1500, 3) == SEEN_SKIP);
+    seen_free(&t);
+}
+
+static void test_a_busy_hub_keeps_the_lines_on_the_node(void)
+{
+    uint8_t buf[600], f[WIRE_FRAME_MAX];
+    wire_out_t o;
+    wire_out_init(&o, buf, sizeof(buf), 3);
+    wire_data_t h = {.session = 9, .now = 5000}, d;
+    const char *l1 = "@W,2,10,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,1c,486f6d65";
+    const char *l2 = "@L,3,later";
+    add(&o, 4000, l1);
+    add(&o, 4500, l2);
+    int n = wire_out_frame(&o, f, sizeof(f), &h);
+    CHECK(wire_data_get(f, n, &d) == 0 && d.count == 2);
+
+    char r[PROTO_LINE_MAX + 1];
+    size_t want = WIRE_RING_ITEM(wire_relay(r, sizeof(r), node_mac, l1, strlen(l1), 1000));
+    want += WIRE_RING_ITEM(wire_relay(r, sizeof(r), node_mac, l2, strlen(l2), 500));
+    CHECK(wire_relay_need(node_mac, &d) == want && want % 4 == 0 && want > strlen(l1) + strlen(l2));
+    CHECK(WIRE_RING_ITEM(1) == 12 && WIRE_RING_ITEM(4) == 12 && WIRE_RING_ITEM(5) == 16);
+
+    wire_peer_t p;
+    wire_peer_init(&p, node_mac, PEER_UP, 100);
+    CHECK(wire_peer_fresh(&p, &d));
+    wire_data_t held = d;
+    held.flags |= WD_POLL;
+    CHECK(wire_peer_data(&p, &held, -50, 200) == 0 && !p.have_seq && p.frames == 0 && p.resent == 0);
+    int k = wire_ack_put(f, sizeof(f), &p, d.session, d.seq, WA_RUN | WA_POLL | WA_BUSY);
+    wire_ack_t a;
+    CHECK(wire_ack_get(f, k, &a) == 0 && (a.flags & WA_BUSY));
+    CHECK(wire_out_ack(&o, a.seq, a.flags) == 0 && o.sent > 0 && o.tries == 0 && o.lost == 0);
+
+    n = wire_out_frame(&o, f, sizeof(f), &h);
+    CHECK(wire_data_get(f, n, &d) == 0 && d.count == 2 && d.seq == 3);
+    CHECK(wire_peer_fresh(&p, &d) && wire_peer_data(&p, &d, -50, 300) == 1);
+    CHECK(!wire_peer_fresh(&p, &d) && wire_peer_data(&p, &d, -50, 300) == 0 && p.resent == 1);
+    CHECK(wire_out_ack(&o, d.seq, WA_RUN) == 1 && o.len == 0);
+
+    n = wire_out_poll(&o, f, sizeof(f), &h);
+    CHECK(wire_data_get(f, n, &d) == 0 && !wire_peer_fresh(&p, &d) && wire_relay_need(node_mac, &d) == 0);
+}
+
+static void test_a_second_key_under_one_node_id_is_refused(void)
+{
+    wire_pair_t p;
+    memset(&p, 0, sizeof(p));
+    wire_join_t real = {.fw = "1.1.0", .board = "c5"}, fake = real;
+    real.pub[0] = 4;
+    real.pub[1] = 1;
+    fake.pub[0] = 4;
+    fake.pub[1] = 2;
+    int tell;
+    wire_pair_open(&p, 1000, 60);
+    wire_cand_t *c = wire_pair_heard(&p, node_mac, -40, &real, 1000, &tell);
+    CHECK(c && tell && c->join.pub[1] == 1);
+    CHECK(wire_pair_heard(&p, node_mac, -40, &real, 2000, &tell) == c && !tell);
+    CHECK(wire_pair_heard(&p, node_mac, -30, &fake, 3000, &tell) == NULL && !tell);
+    CHECK(c->clash && c->join.pub[1] == 1 && c->rssi == -40);
+    CHECK(wire_pair_find(&p, node_mac, 3000) == NULL);
+    CHECK(wire_pair_heard(&p, node_mac, -40, &real, 9000, &tell) == NULL && !tell);
+    CHECK(wire_pair_find(&p, node_mac, 9000) == NULL);
+
+    uint8_t other[6] = {1, 2, 3, 4, 5, 0};
+    for (int i = 0; i < WIRE_NODES + 3; i++) {
+        other[5] = i;
+        CHECK(wire_pair_heard(&p, other, -60, &real, 10000 + i, &tell) != NULL);
+    }
+    CHECK(wire_pair_heard(&p, node_mac, -40, &fake, 20000, &tell) == NULL && c->clash);
+
+    wire_pair_open(&p, 30000, 0);
+    wire_pair_open(&p, 30000, 60);
+    c = wire_pair_heard(&p, node_mac, -40, &fake, 30000, &tell);
+    CHECK(c && tell && !c->clash && wire_pair_find(&p, node_mac, 30000) == c);
+}
+
 int main(void)
 {
     test_checksum();
@@ -861,14 +982,18 @@ int main(void)
     test_led_and_ident();
     test_adv();
     test_seen();
+    test_seen_floor_keeps_the_far_edge();
+    test_seen_reports_the_first_manufacturer();
     test_frames();
     test_outbox();
     test_outbox_waits_while_the_hub_is_out_of_reach();
+    test_a_busy_hub_keeps_the_lines_on_the_node();
     test_peer_and_commands();
     test_commands_after_the_hub_starts_again_reach_the_node();
     test_a_late_send_report_is_not_taken_for_the_next_send();
     test_the_button_counts_only_after_it_was_seen_up();
     test_pairing();
+    test_a_second_key_under_one_node_id_is_refused();
     test_air_states();
     test_chunks();
     test_hub_commands();

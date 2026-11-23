@@ -351,10 +351,8 @@ static void joined(const radio_rx_t *r, uint32_t now)
         return;
     }
     admit_t *a = admit_for(r->mac, now);
-    if (a) {
-        if (memcmp(a->pub, j.pub, WIRE_PUB) == 0 || make_admit(a, r->mac, j.pub)) {
-            radio_send(NULL, a->frame, a->len);
-        }
+    if (a && memcmp(a->pub, j.pub, WIRE_PUB) == 0) {
+        radio_send(NULL, a->frame, a->len);
         return;
     }
     int tell;
@@ -387,6 +385,10 @@ static void data(const radio_rx_t *r, uint32_t now)
         int n = wire_ack_put(frame, sizeof(frame), NULL, d.session, d.seq, flags | WA_BYE);
         radio_send(p->mac, frame, n);
         return;
+    }
+    if (wire_peer_fresh(p, &d) && !uplink_raw_fits(wire_relay_need(p->mac, &d))) {
+        d.flags |= WD_POLL;
+        flags |= WA_POLL | WA_BUSY;
     }
     bool fresh = p->state == PEER_NEW;
     int forward = wire_peer_data(p, &d, r->rssi, now);

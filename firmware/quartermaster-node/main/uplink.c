@@ -46,6 +46,7 @@ static QueueHandle_t queue;
 static RingbufHandle_t raw;
 static uint32_t seq;
 static volatile int host_port = PORT_UNKNOWN;
+static volatile bool writing;
 
 static int port_write(int port, const char *s, size_t n)
 {
@@ -69,7 +70,8 @@ static void emit(const char *s, int n)
     }
     for (int port = 0; port < PORTS; port++) {
         uint32_t start = node_ms();
-        while (port_write(port, s, n) == 0 && port == host_port && node_ms() - start < HOST_RETRY_MS) {
+        while (port_write(port, s, n) == 0 && port == host_port &&
+               (node.running || node_ms() - start < HOST_RETRY_MS)) {
             vTaskDelay(1);
         }
     }
@@ -139,11 +141,14 @@ static void tx_task(void *arg)
     for (;;) {
         bool hub = node.role == ROLE_HUB;
         if (xQueueReceive(queue, &r, hub ? pdMS_TO_TICKS(RAW_POLL_MS) : portMAX_DELAY)) {
+            writing = true;
             write_rec(&r);
         }
         if (hub) {
+            writing = true;
             drain_raw();
         }
+        writing = false;
     }
 }
 
@@ -273,9 +278,14 @@ void uplink_status(void)
 void uplink_flush(uint32_t ms)
 {
     uint32_t start = node_ms();
-    while (uxQueueMessagesWaiting(queue) && node_ms() - start < ms) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
+    UBaseType_t raw_left = 0;
+    do {
+        vRingbufferGetInfo(raw, NULL, NULL, NULL, NULL, &raw_left);
+        if (!uxQueueMessagesWaiting(queue) && !raw_left && !writing) {
+            break;
+        }
+        vTaskDelay(1);
+    } while (node_ms() - start < ms);
     uart_wait_tx_done(UART_PORT, pdMS_TO_TICKS(50));
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(50));
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -286,6 +296,13 @@ void uplink_raw(const char *line, size_t n)
     if (xRingbufferSend(raw, line, n, 0) != pdTRUE) {
         __atomic_add_fetch(&node.dropped, 1, __ATOMIC_RELAXED);
     }
+}
+
+bool uplink_raw_fits(size_t need)
+{
+    UBaseType_t waiting = 0;
+    vRingbufferGetInfo(raw, NULL, NULL, NULL, NULL, &waiting);
+    return !waiting || need <= xRingbufferGetCurFreeSize(raw);
 }
 
 void uplink_cluster(const wire_cluster_t *c)

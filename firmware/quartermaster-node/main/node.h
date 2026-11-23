@@ -12,6 +12,7 @@
 #define NODE_BLE_MAX 1024
 #define NODE_HOST_TIMEOUT_MS 30000
 #define NODE_AIR_AFTER_MS 10000
+#define NODE_BUTTON_GPIO 28
 
 enum { ROLE_USB, ROLE_HUB, ROLE_AIR };
 
@@ -49,6 +50,7 @@ void uplink_hello(void);
 void uplink_status(void);
 void uplink_flush(uint32_t ms);
 void uplink_raw(const char *line, size_t n);
+bool uplink_raw_fits(size_t need);
 void uplink_cluster(const wire_cluster_t *c);
 void uplink_node(const wire_node_t *n);
 void uplink_join(const wire_joiner_t *j);

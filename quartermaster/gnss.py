@@ -82,11 +82,19 @@ def nmea_fix(line):
 
 
 def _mark_gpsd(message):
-    """The ports gpsd reads are GPS ports: nothing else may write to them."""
+    """The ports where gpsd found a GPS are GPS ports: nothing else may write to them.
+
+    gpsd says DEVICE as soon as it opens a port, which its hotplug rules do for any CP210x, before it knows what is
+    there. Only a port with a driver, or one that gave a fix, is a GPS, and a port known to be a node stays one."""
     devices = message.get("devices") if message.get("class") == "DEVICES" else [message]
     for device in devices if isinstance(devices, list) else ():
-        path = device.get("path") or device.get("device") if isinstance(device, dict) else None
-        if isinstance(path, str) and path.startswith("/") and hardware.port_mark(path) != "gps":
+        if not isinstance(device, dict):
+            continue
+        path = device.get("path") or device.get("device")
+        found = bool(device.get("driver")) and device.get("activated") != 0 or \
+            message.get("class") == "TPV" and device.get("mode") in (2, 3)
+        if found and isinstance(path, str) and path.startswith("/") and hardware.port_mark(path) not in ("gps",
+                                                                                                         "node"):
             hardware.mark_port(path, "gps")
 
 

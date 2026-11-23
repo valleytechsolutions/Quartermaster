@@ -78,8 +78,9 @@ def test_write_keeps_files_that_are_not_ours(tmp_path):
 
 
 def test_the_page_says_first_install_always_clears_settings():
-    page = " ".join((PAGE / "index.html").read_text().split())
-    assert "First install always clears the node's name, light and hub." in page
+    page = " ".join(flasher_page.files()["index.html"].decode().split())
+    assert "First install always clears the node's light, country and hub. Its name stays in Quartermaster." in page
+    assert "It keeps the node's light, country and hub." in page and "name, light" not in page
     assert re.search(r"\.wait\{visibility:hidden;animation:late 0s \d+s forwards\}", page)
 
 
@@ -100,3 +101,11 @@ def test_the_page_loads_only_the_pinned_installer():
     assert page.count("<script") == 1
     assert 'manifest="%s"' % flasher_page.FIRST in page and 'manifest="%s"' % flasher_page.UPDATE in page
     assert "Firmware %s" % INDEX["version"] in page
+
+
+def test_the_page_carries_the_licenses_of_what_the_firmware_includes():
+    out = flasher_page.files()
+    page = out["index.html"].decode()
+    assert '<a href="notices.txt">their licenses</a>' in page
+    notices = out[flasher_page.NOTICES].decode()
+    assert "ESP-IDF v5.5.6" in notices and "Apache License" in notices and "NimBLE" in notices

@@ -11,7 +11,7 @@ import re
 import time
 
 from .. import __version__, accounts, adsb, config, flasher, hardware, qr, recon, updates_check, uploads, wigle
-from ..nodes import NEWER, NO_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
+from ..nodes import NEWER, NO_HUB, NOT_ON_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
 from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN,
@@ -24,6 +24,9 @@ STAMP = re.compile(r"quartermaster_(\d{8})-(\d{6})")
 SITE_SHORT = {"wigle": "WiGLE", "wdgwars": "WDG", "wardrift": "DRIFT"}
 REPO = "github.com/valleytechsolutions/Quartermaster"
 BOARD_NAMES = {"stamp-c5": "Stamp-C5"}
+# The status light of each board, as #LED takes it, with the name in the list and the short name on the row.
+LIGHTS = (("gpio,27,1", "XIAO ESP32-C5", "XIAO"), ("ws2812,27", "ESP32-C5-DevKitC-1", "DevKitC"),
+          ("gpio,28", "Stamp-C5", "Stamp-C5"), ("none", "No light", "None"))
 BOOT_HELP = ("XIAO: hold BOOT while you plug it in.", "Stamp-C5: hold G28 to GND while you plug it in.",
              "DevKit: hold BOOT and press RESET.")
 
@@ -141,6 +144,12 @@ def bundled_firmware():
 
 def board_name(node):
     return BOARD_NAMES.get(node.get("board") or "", "ESP32-C5")
+
+
+def light_name(node):
+    if not node["led"]:
+        return "Not set"
+    return next((short for value, _, short in LIGHTS if value == node["led"]), node["led"])
 
 
 def default_name(node):
@@ -601,7 +610,8 @@ class Hardware(Screen):
 
     @staticmethod
     def wireless_card(node):
-        card = {"tag": "AIR", "color": GOLD, "title": "%s  wireless" % node["name"], "right": link_text(node)}
+        card = {"tag": "NODE", "color": GOLD, "title": "%s  wireless" % node["name"],
+                "right": "" if node["error"] else link_text(node)}
         if not node["connected"]:
             card.update(color=FAINT, detail=node["error"], detail_color=FAINT)
         elif node["error"]:
@@ -1115,6 +1125,9 @@ class Settings(Screen, ListMixin):
             app.push(Categories())
         elif name == "nodes":
             app.push(Nodes())
+            if not app.cfg.get("country_set") and not self.locked(app, "country"):
+                app.push(Picker("Where are you?", [(value, text, "") for value, text in config.COUNTRIES],
+                                app.cfg.get("country"), lambda value: app.change("country", value)))
         elif name == "flash_node":
             app.push(FlashTargets())
         elif name == "check_updates":
@@ -1269,11 +1282,13 @@ class NodeDetail(Screen, ListMixin):
     VISIBLE = 5
     HELP = {"name": "The name shown in lists and on the Hardware screen.",
             "ble": "Bluetooth halves the node's time for Wi-Fi.",
-            "identify": "Blinks its light for 5 seconds, so you can tell it from the others.",
-            "hub": "The hub stays plugged in and talks to the wireless nodes. It does not scan.",
-            "update": "Writes the firmware that came with Quartermaster. Its settings are kept.",
-            "remove": "Quartermaster stops using it. Plug it in again to add it back.",
+            "light": "Which light the board has. Identify needs it.",
+            "identify": "Blinks its light for 5 seconds, to tell it from the others.",
+            "hub": "Stays plugged in and talks to the wireless nodes. It does not scan.",
+            "update": "Writes the firmware that came with Quartermaster. Settings stay.",
+            "remove": "Quartermaster stops using it. Press OK on it in Nodes to add it back.",
             "forget": "The hub forgets it. Hold BOOT on it for 2 seconds to add it again."}
+    STRANDED = "Hold BOOT on it for 2 seconds, then add it from Nodes."
 
     def __init__(self, node_id):
         self.node_id = node_id
@@ -1289,6 +1304,7 @@ class NodeDetail(Screen, ListMixin):
         actions = [("name", "Name", node["name"])]
         if not node["hub"]:
             actions.append(("ble", "Bluetooth", "On" if node["ble"] else "Off"))
+        actions.append(("light", "Light", light_name(node)))
         actions.append(("identify", "Identify", "Blink its light"))
         if not node["wireless"] and (node["hub"] or "espnow" in node["capabilities"]):
             actions.append(("hub", "Hub for wireless nodes", "On" if node["hub"] else "Off"))
@@ -1333,7 +1349,7 @@ class NodeDetail(Screen, ListMixin):
             right.append(link_text(node))
         elif node["last_heard"] is not None:
             right.append("heard %s ago" % ago(node["last_heard"]))
-        right = "  ".join(part for part in right if part)
+        right = "  ".join(part for part in right if part) if tint != AMBER else ""
         c.text_right(W - 10, y0 + 27, right, font("mono", 8), MUTED)
         room = W - 26 - (int(c.text_width(right, font("mono", 8))) if right else 0)
         c.text((10, y0 + 27), left, font("mono", 8), tint, width=room)
@@ -1346,8 +1362,10 @@ class NodeDetail(Screen, ListMixin):
             c.text_right(W - 22, y + 1, value, font("mono", 9), GOLD if selected else MUTED)
             c.text((W - 18, y - 1), "›", font("bold", 11), FAINT)
         self.scrollbar(c, len(actions), self.VISIBLE, y0=y0 + 42, y1=y0 + 41 + self.VISIBLE * 15)
-        c.text((10, y0 + 45 + min(len(actions), self.VISIBLE) * 15), self.HELP[actions[self.index][0]],
-               font("ui", 9), MUTED, width=W - 20)
+        stranded = node["error"] == NOT_ON_HUB and actions[self.index][0] == "forget"
+        c.text((10, y0 + 45 + min(len(actions), self.VISIBLE) * 15),
+               self.STRANDED if node["error"] == NOT_ON_HUB and not stranded else self.HELP[actions[self.index][0]],
+               font("ui", 9), AMBER if node["error"] == NOT_ON_HUB and not stranded else MUTED, width=W - 20)
 
     def handle(self, key, app):
         node = self.node(app)
@@ -1366,9 +1384,12 @@ class NodeDetail(Screen, ListMixin):
             app.nodes.set_ble(node_id, not node["ble"])
         elif action == "hub":
             stranded = 0 if node["hub"] else app.nodes.stranded(node_id)
+            waiting = app.nodes.wireless() if node["hub"] else 0
             if stranded:
                 app.confirm("Move the hub here?", "Your %s must be added again. Hold BOOT on each one for 2 seconds."
                             % plural(stranded, "wireless node"), "Move", lambda: self.make_hub(app, node_id))
+            elif waiting:
+                app.confirm("Stop the hub?", self.stops(waiting), "Stop", lambda: self.make_hub(app, node_id, False))
             else:
                 self.make_hub(app, node_id, not node["hub"])
         elif key != "ENTER":
@@ -1376,9 +1397,17 @@ class NodeDetail(Screen, ListMixin):
         elif action == "name":
             app.push(TextInput("Node name", lambda value: app.nodes.rename(node_id, value), initial=node["name"],
                                hint="Up to %d letters." % config.NODE_NAME_MAX, limit=config.NODE_NAME_MAX))
+        elif action == "light":
+            current = node["led"] or ("gpio,28" if node["board"] == "stamp-c5" else None)
+            app.push(Picker("Its light", [(value, label, "") for value, label, _ in LIGHTS], current,
+                            lambda value: self.set_light(app, node_id, value)))
         elif action == "identify":
-            if app.nodes.identify(node_id):
+            if not node["led"] or node["led"] == "none":
+                app.toast("Set its light first", AMBER)
+            elif app.nodes.identify(node_id):
                 app.toast("Its light blinks for 5 seconds")
+            elif node["wireless"] and not node["port"]:
+                app.toast("It is not heard right now", AMBER)
             else:
                 app.toast("It is not plugged in", AMBER)
         elif action == "update":
@@ -1388,12 +1417,32 @@ class NodeDetail(Screen, ListMixin):
             else:
                 app.ask_flash(target)
         elif action == "remove":
-            app.confirm("Remove this node?", "%s is no longer used. Plug it in again to add it back." % node["name"],
+            waiting = app.nodes.wireless() if node["hub"] else 0
+            app.confirm("Remove this node?", "%s is no longer used. Press OK on it in Nodes to add it back.%s"
+                        % (node["name"], " " + self.stops(waiting) if waiting else ""),
                         "Remove", lambda: app.remove_node(node_id), danger=True)
         elif action == "forget":
             app.confirm("Remove this node?", "The hub forgets %s. Hold BOOT on it for 2 seconds to add it again."
                         % node["name"], "Remove", lambda: app.remove_node(node_id), danger=True)
         return True
+
+    @staticmethod
+    def stops(count):
+        return "Your %s stop%s until this node is the hub again." % (plural(count, "wireless node"),
+                                                                     "s" if count == 1 else "")
+
+    @staticmethod
+    def set_light(app, node_id, value):
+        def chosen():
+            try:
+                app.nodes.set_led(node_id, value)
+            except ValueError as exc:
+                app.toast(str(exc), AMBER)
+        if value == "gpio,28":
+            app.confirm("Use G28 as its light?", "Only on a Stamp-C5. Its BOOT button then stops working, so holding "
+                        "it cannot add the node to a hub again.", "Use G28", chosen)
+        else:
+            chosen()
 
     @staticmethod
     def make_hub(app, node_id, on=True):
@@ -1449,7 +1498,7 @@ class Pairing(Screen, ListMixin):
             first, second, color = "Waiting for the hub to answer.", hub["error"] or "This takes a few seconds.", AMBER
         elif left:
             first, second, color = "Hold BOOT on the new node for 2 seconds.", \
-                "Its light blinks fast while it looks for the hub.", TEXT
+                "If its light is set, it blinks fast while it looks.", TEXT
             c.text_right(W - 12, y0 + 5, "%d:%02d" % divmod(left, 60), font("display", 24), GOLD)
         else:
             first, second, color = "Pairing is closed.", "Press OK to open it again.", MUTED
@@ -1589,11 +1638,22 @@ class FlashTargets(Screen, ListMixin):
 class Flashing(Screen):
     title = "FLASHING"
     refresh = 0.25
+    PERMANENT = (flasher.NOT_C5, flasher.TOO_BIG, flasher.LOCKED, flasher.DAMAGED, flasher.NO_SERIAL)
+    PERMANENT_STARTS = tuple(words.split("%")[0] for words in (flasher.EARLY, flasher.NEWER, flasher.SMALL))
 
     def __init__(self, job):
         self.job = job
 
+    def permanent(self):
+        """A failure that trying again on the same board cannot mend."""
+        error = self.job.error or ""
+        return error in self.PERMANENT or error.startswith(self.PERMANENT_STARTS)
+
     def hints(self, app):
+        if self.job.state == "failed" and self.job.error == flasher.LAYOUT and self.job.mode != "first":
+            return [("OK", "First install"), ("Esc", "Back")]
+        if self.job.state == "failed" and self.permanent():
+            return [("Esc", "Back")]
         if self.job.state == "failed":
             return [("OK", "Try again"), ("Esc", "Back")]
         if self.job.state == "done":
@@ -1633,8 +1693,11 @@ class Flashing(Screen):
             c.text((10, TOP + 56 + i * 13), line, font("ui", 9), color, width=W - 20)
 
     def handle(self, key, app):
-        state = self.job.state
-        if state == "failed" and key == "ENTER":
+        state, job = self.job.state, self.job
+        if state == "failed" and key == "ENTER" and job.error == flasher.LAYOUT and job.mode != "first":
+            app.confirm("Install from scratch?", "This erases the board and its settings.", "Install",
+                        lambda: app.retry_flash(job, "first"), danger=True)
+        elif state == "failed" and key == "ENTER" and not self.permanent():
             app.retry_flash(self.job)
         elif state in ("done", "failed") and key in ("ENTER", "ESC", "BACKSPACE"):
             app.pop()

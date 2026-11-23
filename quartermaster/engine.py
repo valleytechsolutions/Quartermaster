@@ -1,8 +1,10 @@
 """The wardrive: scanners in, deduplicated devices and WiGLE logs out."""
 
+from collections import deque
 import csv
 import os
 from pathlib import Path
+import queue
 import shutil
 import threading
 import time
@@ -17,8 +19,14 @@ MIN_FREE_BYTES = 32 * 1024 * 1024
 # Every upload site takes a file this size: Wardrift stops at 10 MiB, WDGWars at 15 MB.
 ROTATE_BYTES = 8 * 1024 * 1024
 EXTREME_IDLE_SECONDS = 120
+# A wireless node is somewhere within radio range of the hub, not at the hub.
+AIR_RANGE_M = 50.0
+FIX_HISTORY = 40
 UPKEEP_SECONDS = 4.0
-MAX_TRACKED = 100_000       # devices kept in memory, about 1 KB each: the CardputerZero has 512 MB
+# Devices kept in memory: about 1 KB each with full tracks and 1.3 KB with closest + furthest. The CardputerZero
+# leaves about 350 MB to programs.
+MAX_TRACKED = 100_000
+MAX_TRACKED_EXTREMES = 60_000
 DEFAULT_ROOT = Path(os.environ.get("QUARTERMASTER_HOME", str(Path.home() / "quartermaster")))
 BANDS = {"2.4": {"2.4"}, "5": {"5"}, "6": {"6"}, "5+6": {"5", "6"}}
 SUMMARY_COLUMNS = ("MAC", "Type", "Name", "Security", "Channel", "FrequencyMHz", "Band", "FirstSeen", "LastSeen",
@@ -81,6 +89,65 @@ def _compact(journal, names=None):
     return kept
 
 
+_recovering = threading.Lock()
+_writing = set()
+
+
+def ignoring(items):
+    """The addresses and the names on an ignore list, which are shown but never logged."""
+    items = [str(item).strip() for item in items if str(item).strip()]
+    macs = {item.upper().replace("-", ":") for item in items if is_mac(item)}
+    return macs, {item for item in items if not is_mac(item)}
+
+
+def ignored_names(items):
+    """A names function for compact() that leaves out what the ignore list names."""
+    macs, names = ignoring(items)
+
+    def named(kind, mac, ssid, auth):
+        return None if mac.upper() in macs or ssid in names else (ssid, auth)
+    return named
+
+
+def leftovers(logs):
+    """Whether a crash or a power cut left a log to finish."""
+    try:
+        return any(Path(logs).glob(wigle.JOURNAL_GLOB)) or any(Path(logs).glob(adsb.JOURNAL_GLOB))
+    except OSError:
+        return False
+
+
+def recover(logs, names=None):
+    """Finish the logs of a wardrive that a crash or a power cut ended before its journal was compacted. Returns
+    how many logs were finished. Only one runs at a time, and never while a wardrive writes to the folder."""
+    with _recovering:
+        if os.path.realpath(str(logs)) in _writing:
+            return 0
+        return _recover(Path(logs), names)
+
+
+def _recover(logs, names):
+    done = 0
+    for journal in sorted(logs.glob(wigle.JOURNAL_GLOB)):
+        try:
+            if wigle.log_of(journal).exists():
+                journal.unlink()
+            elif _compact(journal, names):
+                done += 1
+        except OSError:
+            faults.note("Finishing an earlier log")
+    for leftover in logs.glob(wigle.JOURNAL_GLOB.replace(".part", ".tmp")):
+        try:
+            leftover.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        done += len(adsb.recover(logs))
+    except OSError:
+        faults.note("Finishing an earlier aircraft log")
+    return done
+
+
 def _record(device):
     return {"mac": device.mac, "name": device.name, "capabilities": device.capabilities,
             "channel": device.channel, "frequency": device.frequency, "mfgr": device.extra}
@@ -112,6 +179,10 @@ class Wardrive:
         self._taken = set()
         self._aside = None
         self.rows = 0
+        self._finishing = 0
+        self._fixes = deque(maxlen=FIX_HISTORY)
+        self._parts = queue.Queue()
+        self._finisher = None
         self._started = self._stopped = None
         self.skipped_no_fix = 0
         self.ble_error = ""
@@ -129,9 +200,7 @@ class Wardrive:
 
     def set_ignore(self, items):
         """Names and addresses that are shown but never logged. Takes effect at once."""
-        items = [str(item).strip() for item in items if str(item).strip()]
-        self.ignore_macs = {item.upper().replace("-", ":") for item in items if is_mac(item)}
-        self.ignore_names = {item for item in items if not is_mac(item)}
+        self.ignore_macs, self.ignore_names = ignoring(items)
 
     def elapsed(self):
         if self._started is None:
@@ -153,6 +222,14 @@ class Wardrive:
             except OSError:
                 pass
         self._recover()
+        try:
+            self._begin()
+        except BaseException:
+            if self.state != "running":
+                _writing.discard(os.path.realpath(str(self.logs)))
+            raise
+
+    def _begin(self):
         if shutil.disk_usage(self.logs).free < MIN_FREE_BYTES:
             raise RuntimeError("Storage is almost full (under 32 MB free)")
         self._hotplug = self.adapters is None
@@ -184,25 +261,14 @@ class Wardrive:
         for thread in self._threads:
             thread.start()
 
+    def leftovers(self):
+        return leftovers(self.logs)
+
     def _recover(self):
-        """Finish the logs of a wardrive that a crash or a power cut ended before its journal was compacted."""
-        for journal in sorted(self.logs.glob(wigle.JOURNAL_GLOB)):
-            try:
-                if wigle.log_of(journal).exists():
-                    journal.unlink()
-                else:
-                    _compact(journal, self._names)
-            except OSError:
-                faults.note("Finishing an earlier log")
-        for leftover in self.logs.glob(wigle.JOURNAL_GLOB.replace(".part", ".tmp")):
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            adsb.recover(self.logs)
-        except OSError:
-            faults.note("Finishing an earlier aircraft log")
+        """Finish what an earlier wardrive left, and keep any other recovery away from this folder until the stop."""
+        with _recovering:
+            _recover(self.logs, self._names)
+            _writing.add(os.path.realpath(str(self.logs)))
 
     def _housekeeping(self):
         """Put waiting rows on disk, follow adapters plugged in or pulled out, write the extremes of devices left."""
@@ -251,16 +317,57 @@ class Wardrive:
 
         A journal that cannot be compacted stays, and the next start finishes it.
         """
-        path = wigle.log_of(writer.path)
+        self.tracker.reset_part()
+        self._finished(writer.path, *self._compacted(writer.path))
+
+    def _compacted(self, journal):
         try:
-            kept = _compact(writer.path, self._names)
+            return _compact(journal, self._names), None
         except OSError as exc:
-            kept = {}
+            return {}, exc
+
+    def _finished(self, journal, kept, exc):
+        """Count the rows of a finished part. Call this with the lock held."""
+        if exc is not None:
             self.error = self.failed = "Cannot write the log: %s" % (exc.strerror or exc)
-        self.tracker.new_part(kept)
+        self.tracker.add_rows(kept)
         self.rows += sum(kept.values())
         if not kept:
+            path = wigle.log_of(journal)
             self.log_paths = [other for other in self.log_paths if other != path]
+
+    def _rotate(self, writer):
+        """A part has reached the rotation size: it is finished away from the lock, so that no scan waits on it.
+        Call this with the lock held."""
+        waiting = self.tracker.reset_part()
+        self._finishing += waiting
+        self._parts.put((writer.path, waiting))
+        if self._finisher is None:
+            self._finisher = threading.Thread(target=self._finish_parts, daemon=True, name="wardrive-parts")
+            self._finisher.start()
+
+    def _finish_parts(self):
+        while True:
+            item = self._parts.get()
+            try:
+                if item is None:
+                    return
+                journal, waiting = item
+                kept, exc = self._compacted(journal)
+                with self._lock:
+                    self._finishing -= waiting
+                    self._finished(journal, kept, exc)
+            except Exception:
+                faults.note("Finishing a part of the log")
+            finally:
+                self._parts.task_done()
+
+    def _parts_done(self):
+        """Wait until every part handed over has been finished."""
+        if self._finisher is not None:
+            self._parts.put(None)
+            self._finisher.join()
+            self._finisher = None
 
     def _names(self, kind, mac, ssid, auth):
         """The name and capabilities a device's rows are finished with, or None when it is not to be logged."""
@@ -286,7 +393,8 @@ class Wardrive:
         """Write the extremes of devices left behind and, on a very long drive, make room in memory."""
         idle = gps_epoch(self.gps.snapshot(), self.clock()) - EXTREME_IDLE_SECONDS
         self._flush_extremes(idle)
-        self._set_aside(self.tracker.forget(MAX_TRACKED, idle))
+        limit = min(MAX_TRACKED, MAX_TRACKED_EXTREMES) if self.extremes else MAX_TRACKED
+        self._set_aside(self.tracker.forget(limit, idle))
 
     def _follow_adapters(self):
         if self._hotplug and hasattr(self.fleet, "refresh"):
@@ -323,6 +431,7 @@ class Wardrive:
         if self.ble is not None:
             self.ble.close()
         self._flush_extremes()
+        self._parts_done()
         with self._lock:
             try:
                 if self.writer is not None:
@@ -338,6 +447,7 @@ class Wardrive:
         radios.release("wardrive")
         self._write_summary()
         self._write_aircraft()
+        _writing.discard(os.path.realpath(str(self.logs)))
 
     def _write_aircraft(self):
         if self.aircraft is None:
@@ -352,14 +462,9 @@ class Wardrive:
             if self.state != "running":
                 return False
             try:
-                if self.writer is not None and self.writer.size >= ROTATE_BYTES:
-                    writer = self.writer
-                    if self.extremes:
-                        self._ends_to(writer)
+                if not self.extremes and self.writer is not None and self.writer.size >= ROTATE_BYTES:
                     self.writer.close()
                     self.writer = None
-                    if self.extremes:
-                        self._finish(writer)
                 if self.writer is None:
                     if self.extremes:
                         path = wigle.new_log_path(self.logs, epoch, self._taken)
@@ -373,6 +478,12 @@ class Wardrive:
                 self.writer.write_row(row)
                 if not self.extremes:
                     self.rows += 1
+                elif self.writer.size >= ROTATE_BYTES:
+                    self._ends_to(self.writer)
+                    writer = self.writer
+                    writer.close()
+                    self.writer = None
+                    self._rotate(writer)
                 self.error = ""
                 return True
             except OSError as exc:
@@ -399,14 +510,34 @@ class Wardrive:
         """The fix, the time to stamp rows with, and the fix again only if it may be logged."""
         fix = self.gps.snapshot()
         now = gps_epoch(fix, self.clock())
-        return fix, now, fix if wigle.usable(fix, now, self.cfg.get("gps_max_hdop") or None) else None
+        usable = fix if wigle.usable(fix, now, self.cfg.get("gps_max_hdop") or None) else None
+        fixes = self._fixes
+        if usable is not None and (not fixes or fixes[-1][0] != now or fixes[-1][1] != usable):
+            fixes.append((now, usable))
+        return fix, now, usable
+
+    def _placed(self, record, now, fix):
+        """When and where a node heard what it reports "lag" seconds late: the fix nearest that moment, its accuracy
+        widened by the way driven between the two, and by the radio range of a wireless node."""
+        lag = record.get("lag")
+        if lag is None:
+            return now, fix
+        when = now - lag
+        if fix is None or not self._fixes:
+            return when, None
+        gap, found = min(((abs(epoch - when), earlier) for epoch, earlier in self._fixes), key=lambda item: item[0])
+        spread = (found.get("speed") or 0.0) * gap + (AIR_RANGE_M if record.get("air") else 0.0)
+        accuracy = wigle.accuracy_m(found)
+        if spread and accuracy != "":
+            found = dict(found, accuracy=round(accuracy + spread, 1))
+        return when, found
 
     def _wifi_sink(self, networks, adapter):
         _, now, fix = self._position()
         min_rssi = self.cfg.get("min_rssi", -100)
         for net in networks:
             try:
-                self._wifi_seen(net, now, fix, min_rssi)
+                self._wifi_seen(net, *self._placed(net, now, fix), min_rssi)
             except Exception:
                 faults.note("Logging a Wi-Fi network")
 
@@ -456,7 +587,7 @@ class Wardrive:
         min_rssi = self.cfg.get("min_rssi", -100)
         for item in seen:
             try:
-                self._ble_seen(item, last_rssi, now, fix, include_random, min_rssi)
+                self._ble_seen(item, last_rssi, *self._placed(item, now, fix), include_random, min_rssi)
             except Exception:
                 faults.note("Logging a Bluetooth device")
 
@@ -484,7 +615,7 @@ class Wardrive:
         hdop, limit = fix.get("hdop"), self.cfg.get("gps_max_hdop") or None
         paths = self.log_paths
         kept = self.tracker.kept if self.extremes and self.writer is not None else 0
-        summary.update(state=self.state, rows=self.rows + kept, files=len(paths),
+        summary.update(state=self.state, rows=self.rows + self._finishing + kept, files=len(paths),
                        log=str(paths[0]) if paths else "", skipped_no_fix=self.skipped_no_fix,
                        elapsed=self.elapsed(),
                        aircraft=self.aircraft.count if self.aircraft is not None else None,

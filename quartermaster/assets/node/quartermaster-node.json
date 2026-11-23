@@ -2,8 +2,8 @@
   "app": {
     "file": "quartermaster-node-1.1.0-app.bin",
     "offset": 131072,
-    "sha256": "31135ef6dec8b081ffd1d4a5f151d1551fea319390167fb013385d1ecbea28d3",
-    "size": 1005824
+    "sha256": "0c440889c7712fa01b2e93d9f74b286f14b2339fb50db6d7ab2c9032bb633cd3",
+    "size": 1006304
   },
   "bootloader_offset": 8192,
   "chip": "esp32c5",
@@ -13,8 +13,8 @@
   "merged": {
     "file": "quartermaster-node-1.1.0-merged.bin",
     "offset": 0,
-    "sha256": "205d8cb653171828a74971418e36e80369a1119850d693ec7ccc94d293d512bb",
-    "size": 1136896
+    "sha256": "46abb7f852ef61450413975cece37d6604fe49032adad8c28338881d60827c10",
+    "size": 1137376
   },
   "partition_offsets": {
     "nvs": 36864,

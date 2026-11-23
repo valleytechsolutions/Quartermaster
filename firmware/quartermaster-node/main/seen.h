@@ -4,6 +4,7 @@
 
 #define SEEN_REFRESH_MS 30000u
 #define SEEN_KEY 8
+#define SEEN_FLOOR (-92)
 
 typedef struct {
     uint8_t key[SEEN_KEY];

@@ -312,6 +312,20 @@ def test_with_extremes_each_device_hands_out_its_closest_and_furthest_sighting_o
     assert t.kept == 0 and t.log_rows(d) == 2
 
 
+def test_with_extremes_handing_out_the_ends_looks_only_at_devices_whose_ends_changed():
+    t = Tracker(relog_seconds=30, relog_meters=25, rssi_step=4, accuracy=wigle.accuracy_m, extremes=True)
+    for i in range(50):
+        t.observe(WIFI, "%02X" % i, -60, NOW, dict(FIX))
+    t.take_extremes()
+    t.observe(WIFI, "07", -58, NOW + 1, dict(FIX))
+
+    class Unwalked(dict):
+        def values(self):
+            raise AssertionError("every device was looked at")
+    t.devices = Unwalked(t.devices)
+    assert [(d.mac, p[0]) for d, p in t.take_extremes()] == [("07", -58)] and t.take_extremes() == []
+
+
 def test_with_extremes_moving_or_a_sighting_too_weak_to_trust_does_not_hold_back_the_next_row():
     t = Tracker(relog_seconds=30, relog_meters=25, rssi_step=4, accuracy=wigle.accuracy_m, extremes=True)
     why = [t.observe(WIFI, "AA", rssi, NOW + 40 * i, dict(FIX, latitude=25 + i / 100))[2]

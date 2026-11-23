@@ -9,6 +9,7 @@ import time
 from PIL import Image
 
 from .. import accounts, adsb, config, faults, flasher, hardware, power, updates_check, uploads, wigle
+from .. import engine
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
 from ..recon_engine import Recon
@@ -28,6 +29,7 @@ REC_FILL = (70, 12, 14)
 NODES_SECONDS = 1.0
 PORT_WAIT, PORT_STEP = 20.0, 0.1
 FLASH_WAIT = 60.0
+FINISH_WAIT = 30.0
 UPDATE_SECONDS = 15.0
 GONE = "The node is not plugged in any more. Plug it in again and retry."
 FLASH_LAST = "Battery almost empty. Closing once the board is flashed."
@@ -237,6 +239,7 @@ class App:
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
         self._pressed = None
         self._deaf = False
+        self._finisher = None
 
     @property
     def screen(self):
@@ -380,6 +383,8 @@ class App:
 
     def change(self, key, value):
         self.cfg[key] = value
+        if key == "country":
+            self.cfg["country_set"] = True
         self.save()
         if key == "gps_source":
             self.gps.mode = value
@@ -491,14 +496,15 @@ class App:
         self.flash_job.start()
         self.push(screens.Flashing(self.flash_job))
 
-    def retry_flash(self, job):
+    def retry_flash(self, job, mode=None):
         """Try again on the same board: as a node if it came back as one, else on the port it was on."""
         target = dict(job.target)
         node = self.nodes.node(target["node"]) if target["node"] else None
         if node is None or not node["connected"]:
             target.update(node=None, path=job.path)
-        self.pop()
-        self.flash(target, job.mode)
+        while isinstance(self.screen, (screens.Flashing, screens.Confirm)):
+            self.pop()
+        self.flash(target, mode or job.mode)
 
     def check_updates(self):
         """Ask in the background whether a newer Quartermaster is out. Nothing is downloaded."""
@@ -548,6 +554,8 @@ class App:
                          "wardrive starts.", "Start wardrive", self._swap_to_wardrive, default=1)
             return False
         drive = self.wardrive_factory(self.cfg, self.gps)
+        if drive.leftovers():
+            self.busy("Finishing the last wardrive…")
         try:
             drive.start()
         except RuntimeError as exc:
@@ -858,10 +866,22 @@ class App:
             self._deaf = False
             getattr(self.keyboard, "flush", lambda: None)()
 
+    def finish_last(self):
+        """Finish the log of a wardrive that a crash or a power cut ended, then let the uploader look at the logs."""
+        try:
+            if engine.leftovers(self.logs_dir) and \
+                    engine.recover(self.logs_dir, engine.ignored_names(self.cfg.get("ignore", ()))):
+                self.call_soon(lambda: self.toast("Finished the log of your last wardrive.", GREEN, 5))
+        except Exception:
+            faults.note("Finishing the last wardrive")
+        if self.running:
+            self.uploader.start()
+
     def run(self):
         self.hw.start()
         self.nodes.start()
-        self.uploader.start()
+        self._finisher = threading.Thread(target=self.finish_last, daemon=True, name="finish-last")
+        self._finisher.start()
         drawn = 0.0
         try:
             while self.running:
@@ -898,6 +918,8 @@ class App:
             self.stack.pop().closed(self)
         if self.flashing():
             self.flash_job.wait(FLASH_WAIT)
+        if self._finisher is not None:
+            self._finisher.join(FINISH_WAIT)
         self.uploader.stop()
         self.nodes.stop()
         self.hw.stop()

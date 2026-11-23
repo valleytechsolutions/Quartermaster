@@ -122,8 +122,9 @@ def cluster_key(value):
 def node_entries(items):
     """The nodes of a settings file that make sense: {"id", "name", "ble"} and an optional "led", each id once.
 
-    A node on USB may be the hub ("hub": True), only one; a node heard through the hub has "wireless": True."""
-    nodes, seen, hub = [], set(), False
+    A node on USB may be the hub ("hub": True), only one; a node heard through the hub has "wireless": True. The node
+    that was the hub last, and keeps the list of the wireless nodes, has "last_hub": True."""
+    nodes, seen, hub, last = [], set(), False, False
     for item in items if isinstance(items, list) else ():
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             continue
@@ -141,15 +142,23 @@ def node_entries(items):
             continue
         if wireless:
             entry["wireless"] = True
-        elif item.get("hub") is True and not hub:
-            entry["hub"] = hub = True
+        else:
+            if item.get("hub") is True and not hub:
+                entry["hub"] = hub = True
+            if item.get("last_hub") is True and not last:
+                entry["last_hub"] = last = True
         nodes.append(entry)
         seen.add(node_id)
+    if hub:
+        for entry in nodes:
+            entry.pop("last_hub", None)
+            if entry.get("hub"):
+                entry["last_hub"] = True
     return nodes
 
 
 def load(path=PATH):
-    cfg = dict(DEFAULTS)
+    cfg = dict(DEFAULTS, country_set=False)
     cfg.update(default_lists())
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -166,6 +175,7 @@ def load(path=PATH):
     categories = data.get("recon_categories")
     if isinstance(categories, list):
         cfg["recon_categories"] = [c for c in default_lists()["recon_categories"] if c in categories]
+    cfg["country_set"] = data.get("country_set") is True and "country" in data
     cfg["nodes"] = node_entries(data.get("nodes"))
     if cluster_key(data.get("cluster_key")):
         cfg["cluster_key"] = cluster_key(data["cluster_key"])
@@ -176,7 +186,7 @@ def save(cfg, path=PATH):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name("." + path.name)
-    keys = list(DEFAULTS) + list(LISTS) + ["cluster_key"]
+    keys = list(DEFAULTS) + list(LISTS) + ["cluster_key", "country_set"]
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as out:

@@ -11,6 +11,7 @@
 
 #define SCAN_ITVL 0x50
 #define INFO_NAMED 1
+#define INFO_MFR 2
 #define MIN_HEAP (56 * 1024)
 
 static seen_t seen;
@@ -50,7 +51,7 @@ static void heard(const struct ble_gap_disc_desc *d)
     memcpy(key, d->addr.val, 6);
     key[6] = type;
     uint32_t now = node_ms();
-    uint8_t info = a.name_len ? INFO_NAMED : 0;
+    uint8_t info = (a.name_len ? INFO_NAMED : 0) | (a.has_mfr ? INFO_MFR : 0);
     if (seen_check(&seen, key, d->rssi, now, info) == SEEN_SKIP) {
         return;
     }

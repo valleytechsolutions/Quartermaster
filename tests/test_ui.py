@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from quartermaster import accounts, config, flasher, hardware, radios, recon, updates_check, uploads
+from quartermaster import accounts, config, flasher, hardware, nodes, radios, recon, updates_check, uploads
 from quartermaster.engine import Wardrive
 from quartermaster.nodes import NOT_PLUGGED, UNPLUGGED
 from quartermaster.recon_engine import Recon
@@ -799,6 +799,7 @@ def node_app(tmp_path, ports=None, configured=(), **settings):
     cfg = node_cfg(*configured)
     rig = Rig(tmp_path / "bus", ports, cfg)
     settings.setdefault("country", "US")
+    settings.setdefault("country_set", True)
     app = make_app(tmp_path, manager=rig.manager, hw=Boards(serial_ports(rig.sys_tty, rig.dev, rig.by_id)),
                    nodes=cfg["nodes"], **settings)
     rig.manager.scan()
@@ -887,6 +888,17 @@ def test_a_node_is_renamed_given_bluetooth_identified_and_removed_from_its_scree
     press(app, "ENTER")
     rig.settle()
     assert one.plan["ble"] and config.load(tmp_path / "config.json")["nodes"][0]["ble"] is True
+    press(app, "DOWN")
+    assert "Not set" in screen_text(app, drawn) and "Which light the board has. Identify needs it." in drawn
+    press(app, "DOWN", "ENTER")
+    rig.settle()
+    assert one.idents == [] and app.toast_text == "Set its light first"
+    press(app, "UP", "ENTER")
+    assert isinstance(app.screen, screens.Picker) and app.screen.index == 0
+    press(app, "DOWN", "ENTER")
+    rig.settle()
+    assert one.led == ["ws2812", "27"] and config.load(tmp_path / "config.json")["nodes"][0]["led"] == "ws2812,27"
+    assert "DevKitC" in screen_text(app, drawn)
     press(app, "DOWN", "ENTER")
     rig.settle()
     assert one.idents == [5] and app.toast_text == "Its light blinks for 5 seconds"
@@ -913,7 +925,7 @@ def test_a_node_with_old_firmware_is_let_go_for_its_update_and_taken_back(tmp_pa
     press(app, "DOWN", "ENTER")
     text = screen_text(app, drawn)
     assert "Old firmware" in text and "Update firmware" in text and "1.0.0 to %s" % screens.bundled_firmware() in text
-    press(app, "DOWN", "DOWN", "DOWN", "ENTER")
+    press(app, "DOWN", "DOWN", "DOWN", "DOWN", "ENTER")
     assert isinstance(app.screen, screens.Picker) and app.screen.options[app.screen.index][0] == "update"
     press(app, "ENTER")
     finish(app)
@@ -987,7 +999,7 @@ def test_flashing_waits_until_no_wardrive_or_recon_runs_and_says_why(tmp_path, d
     press(app, "ENTER")
     assert isinstance(app.screen, screens.FlashTargets)
     open_setting(app, "nodes")
-    press(app, "DOWN", "ENTER", "DOWN", "DOWN", "DOWN", "ENTER")
+    press(app, "DOWN", "ENTER", "DOWN", "DOWN", "DOWN", "DOWN", "ENTER")
     assert app.toast_text == "Stop the wardrive first. Flashing restarts the board."
     assert isinstance(app.screen, screens.NodeDetail)
     app.flash({"node": TWO, "path": "/dev/ttyUSB1", "native": False, "title": "N0", "mode": "update",
@@ -1252,7 +1264,7 @@ def test_an_update_check_that_hangs_or_breaks_says_it_could_not_check(tmp_path, 
 
     def hangs():
         gate.wait(5)
-        return updates_check.LATEST, "1.0.5", "You have the latest version (1.0.5)."
+        return updates_check.LATEST, "1.1.0", "You have the latest version (1.1.0)."
     app = make_app(tmp_path, updates=hangs)
     open_setting(app, "check_updates")
     assert "Checking…" in screen_text(app, drawn)
@@ -1329,7 +1341,8 @@ def test_a_node_is_made_the_hub_and_wireless_nodes_are_added_by_pairing(tmp_path
     key = config.load(tmp_path / "config.json")["cluster_key"]
     assert len(key) == 32 and hub.role == "hub" and hub.saved_key == key and app.cfg["cluster_key"] == key
     assert app.toast_text == "It is the hub now. It does not scan."
-    assert config.load(tmp_path / "config.json")["nodes"][1] == {"id": HUB, "name": "N1", "ble": False, "hub": True}
+    saved = {"id": HUB, "name": "N1", "ble": False, "hub": True, "last_hub": True}
+    assert config.load(tmp_path / "config.json")["nodes"][1] == saved
     text = screen_text(app, drawn)
     assert "Hub for 0 wireless nodes" in text and key not in text and "Bluetooth" not in text
     press(app, "ESC")
@@ -1372,7 +1385,7 @@ def test_wireless_nodes_show_on_the_hardware_screen_and_say_when_the_hub_is_unpl
     rig.settle(3)
     press(app, "H", "DOWN", "DOWN")
     text = screen_text(app, drawn)
-    assert "Bow  wireless" in text and "-52 dBm" in text and "heard" in text and "AIR" in text
+    assert "Bow  wireless" in text and "-52 dBm" in text and "heard" in text and "AIR" not in text.split("\n")
     assert "Hub for 1 wireless node. It does not scan." in text and "HUB" in text
     assert [t["node"] for t in screens.flash_targets(app)] == [ONE, HUB]
     press(app, "ESC")
@@ -1398,8 +1411,8 @@ def test_a_wireless_node_is_removed_and_the_hub_forgets_it(tmp_path, drawn, port
     rig.settle(3)
     open_node(app, AIR1)
     actions = [action for action, _, _ in app.screen.actions(rig.manager.node(AIR1))]
-    assert actions == ["name", "ble", "identify", "forget"]
-    app.screen.index = 3
+    assert actions == ["name", "ble", "light", "identify", "forget"]
+    app.screen.index = 4
     press(app, "ENTER")
     assert "Hold BOOT on it for 2 seconds" in screen_text(app, drawn)
     press(app, "Y")
@@ -1434,8 +1447,24 @@ def test_moving_the_hub_asks_first_when_its_wireless_nodes_must_be_added_again(t
     assert app.toast_text == "It is the hub now. It does not scan."
     app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(TWO))].index("hub")
     press(app, "ENTER")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "Stop the hub?" in text and "Your 1 wireless node stops until this node is the hub again." in text
+    press(app, "Y")
     rig.settle()
     assert rig.manager.hub() is None and app.toast_text == "It scans again"
+    open_node(app, HUB)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(HUB))].index("hub")
+    press(app, "ENTER")
+    assert "Move the hub here?" in screen_text(app, drawn)
+    press(app, "ESC")
+    open_node(app, TWO)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(TWO))].index("hub")
+    press(app, "ENTER")
+    rig.settle()
+    assert rig.manager.hub()["id"] == TWO and app.toast_text == "It is the hub now. It does not scan."
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(TWO))].index("remove")
+    press(app, "ENTER")
+    assert "Your 1 wireless node stops until this node is the hub again." in screen_text(app, drawn).replace("\n", " ")
 
 
 def test_the_pairing_screen_says_when_the_hub_is_plugged_in_but_not_answering_yet(tmp_path, drawn, ports_let_go):
@@ -1627,3 +1656,137 @@ def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn)
     press(app, "ENTER", "ENTER")
     text = screen_text(app, drawn)
     assert "WARDRIVE SAVED" in text and "Uploading to WDGWars, Wardrift." in text and "GPS fix" not in text
+
+
+def test_the_log_of_a_wardrive_ended_by_a_power_cut_is_finished_when_quartermaster_opens(tmp_path, monkeypatch):
+    from quartermaster import engine, wigle
+    from tests.fakes import networks
+    from tests.test_engine import closest_and_furthest, power_cut, rows_of
+    drive, _ = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(5), ADAPTERS[0])
+    log = drive.log_path
+    power_cut(drive)
+    engine._writing.clear()
+    app = make_app(tmp_path)
+    started = []
+    monkeypatch.setattr(app.uploader, "start", lambda: started.append(list(app.uploader.logs())))
+    app._booted = True
+    app.finish_last()
+    app.step(0)
+    assert len(rows_of(log)) == 5 and not wigle.journal_path(log).exists() and started == [[log]]
+    assert app.toast_text == "Finished the log of your last wardrive."
+
+
+def test_the_log_of_a_running_wardrive_is_never_finished_from_under_it(tmp_path, monkeypatch):
+    from quartermaster import wigle
+    from tests.fakes import networks
+    app = make_app(tmp_path)
+    assert app.start_wardrive()
+    app.drive._wifi_sink(networks(5), ADAPTERS[0])
+    journal = wigle.journal_path(app.drive.log_path)
+    monkeypatch.setattr(app.uploader, "start", lambda: None)
+    app.finish_last()
+    assert journal.exists() and app.toast_text != "Finished the log of your last wardrive."
+    app.stop_wardrive()
+
+
+def test_starting_a_wardrive_says_so_while_it_finishes_the_last_one(tmp_path, drawn):
+    from tests.fakes import networks
+    from tests.test_engine import closest_and_furthest, power_cut, rows_of
+    drive, _ = closest_and_furthest(tmp_path)
+    drive._wifi_sink(networks(5), ADAPTERS[0])
+    log = drive.log_path
+    power_cut(drive)
+    app = make_app(tmp_path)
+    shown = []
+    app.display.show = lambda image: shown.append(list(drawn))
+    assert app.start_wardrive()
+    assert any("Finishing the last wardrive…" in texts for texts in shown) and len(rows_of(log)) == 5
+    app.stop_wardrive()
+
+
+def test_the_country_is_asked_the_first_time_the_nodes_are_opened(tmp_path, ports_let_go):
+    app, rig = node_app(tmp_path, country_set=False)
+    assert not config.load(tmp_path / "config.json")["country_set"]
+    open_setting(app, "nodes")
+    assert isinstance(app.screen, screens.Picker) and app.screen.title == "Where are you?"
+    press(app, *["DOWN"] * 3 + ["ENTER"])
+    assert isinstance(app.screen, screens.Nodes) and app.cfg["country"] == "DE" == rig.manager.country
+    assert config.load(tmp_path / "config.json")["country_set"]
+    press(app, "ESC")
+    open_setting(app, "nodes")
+    assert isinstance(app.screen, screens.Nodes)
+    again, _ = node_app(tmp_path / "upgraded", country_set=False)
+    open_setting(again, "nodes")
+    press(again, "ESC")
+    assert isinstance(again.screen, screens.Nodes) and again.cfg["country"] == "US"
+    open_setting(again, "nodes")
+    assert isinstance(again.screen, screens.Picker)
+
+
+def test_a_node_is_told_its_light_and_a_stamp_is_warned_about_its_boot_button(tmp_path, drawn, ports_let_go):
+    app, rig, hub = hub_app(tmp_path)
+    rig.manager.set_hub(HUB, True)
+    rig.settle()
+    rig.manager.pair()
+    rig.settle(2)
+    rig.manager.admit(AIR1, "Bow")
+    rig.settle(3)
+    open_node(app, AIR1)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(AIR1))].index("light")
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Picker) and app.screen.options[app.screen.index][1] == "Stamp-C5"
+    press(app, "ENTER")
+    assert "Use G28 as its light?" in screen_text(app, drawn) and rig.manager.node(AIR1)["led"] == ""
+    press(app, "Y")
+    rig.settle(3)
+    air = hub.airs[AIR1]
+    assert air.led == ["gpio", "28"] and rig.manager.node(AIR1)["led"] == "gpio,28"
+    assert "Stamp-C5" in screen_text(app, drawn)
+    air.reach = False
+    rig.clock.advance(nodes.AIR_SILENT_SECONDS + 1)
+    rig.settle(1)
+    app.screen.index = [action for action, _, _ in app.screen.actions(rig.manager.node(AIR1))].index("identify")
+    press(app, "ENTER")
+    assert app.toast_text == "It is not heard right now"
+
+
+def test_every_word_about_a_node_fits_where_it_is_shown():
+    canvas = gfx.Canvas()
+    said = [value for name, value in vars(nodes).items() if name.isupper() and isinstance(value, str) and " " in value]
+    said += list(nodes.ADMIT_ERRORS.values())
+    for words in said:
+        assert canvas.text_width(words, gfx.font("mono", 8)) <= gfx.W - 26, words
+        assert canvas.text_width(words, gfx.font("ui", 8)) <= gfx.W - 57, words
+    for words in list(screens.NodeDetail.HELP.values()) + [screens.NodeDetail.STRANDED]:
+        assert canvas.text_width(words, gfx.font("ui", 9)) <= gfx.W - 20, words
+
+
+def test_a_flash_that_cannot_work_again_offers_no_retry_and_another_layout_offers_a_first_install(
+        tmp_path, drawn, ports_let_go):
+    log = []
+    app, rig = node_app(tmp_path, configured=(TWO,))
+    target = next(target for target in screens.flash_targets(app) if target["node"] == TWO)
+    app.flasher_class = FakeFlasher(log, error=flasher.EARLY % (0, 1))
+    app.flash(target, "update")
+    finish(app)
+    assert app.screen.hints(app) == [("Esc", "Back")]
+    del log[:]
+    press(app, "ENTER")
+    assert not isinstance(app.screen, screens.Flashing) and log == []
+    rig.manager.scan()
+    rig.settle()
+    app.flasher_class = FakeFlasher(log, error=flasher.LAYOUT, at="install")
+    app.flash(target, "update")
+    finish(app)
+    assert app.flash_job.error == flasher.LAYOUT, app.flash_job.error
+    assert app.screen.hints(app)[0] == ("OK", "First install") and ("install", "update") in log
+    press(app, "ENTER")
+    assert "Install from scratch?" in screen_text(app, drawn)
+    app.flasher_class.error = ""
+    del log[:]
+    rig.manager.scan()
+    rig.settle()
+    press(app, "Y")
+    finish(app)
+    assert ("install", "first") in log and app.flash_job.mode == "first" and app.flash_job.state == "done"

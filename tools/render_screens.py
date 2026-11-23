@@ -65,7 +65,7 @@ class Aircraft:
 
 def build(root):
     cfg = config.load(root / "config.json")
-    cfg.update(ble_interval=0.5, ignore=["Black Pearl Guest", "My iPhone", "a4:91:b1:20:7c:5e"])
+    cfg.update(ble_interval=0.5, country_set=True, ignore=["Black Pearl Guest", "My iPhone", "a4:91:b1:20:7c:5e"])
     accounts.save(KEYS, root / "accounts.json")
     gps = Gps(FIX)
     ticks = iter(range(NOW, NOW + 10 ** 7, 3))
@@ -102,7 +102,7 @@ def plug_in_nodes(app, root):
     bus.add(dev / "ttyACM0", FakeNode(MAST, bus.clock, firmware="1.1.0"))
     bus.add(dev / "ttyACM1", FakeNode(SPARE, bus.clock, caps="wifi24+wifi5", board="stamp-c5", flash_mb=4,
                                       psram_mb=0))
-    app.change("nodes", [{"id": MAST, "name": "Crow's nest", "ble": False}])
+    app.change("nodes", [{"id": MAST, "name": "Crow's nest", "ble": False, "led": "gpio,27,1"}])
     nodes.configure(app.cfg)
     nodes.scan()
     nodes.attach(app, lambda found, adapter: None)
@@ -165,6 +165,8 @@ def press(app, *names):
 def fly(app, root, shot):
     """A wardrive with aircraft on and an RTL-SDR stick plugged in."""
     ticks = iter(range(NOW + 7200, NOW + 10 ** 7, 3))
+    app.change("nodes", [])
+    app.nodes.configure(app.cfg)
     app.cfg["adsb"] = True
     app.hw.sdr, app.hw.readsb = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}], "/usr/bin/readsb"
     app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
@@ -173,7 +175,6 @@ def fly(app, root, shot):
     press(app, "W")
     app.drive.tracker.counts["BLE"] = 187
     app.drive.rows = 1263
-    app.drive._started = time.monotonic() - 1574
     shot("wardrive-aircraft")
     app.open("Hardware")
     cards = app.screen.cards(app)
@@ -209,10 +210,15 @@ def main():
     old_logs(root)
     app = build(root)
 
+    def lit(at):
+        return not (int(at * 2) % 2 or int(at * 3) % 2)
+
     def shot(name):
         app.toast_until = 0
-        while int(time.monotonic() * 2) % 2 or int(time.monotonic() * 3) % 2:    # every blinking mark is lit
+        while not (lit(time.monotonic()) and lit(time.monotonic() + 0.1)):    # every blinking mark is lit
             time.sleep(0.005)
+        if app.wardriving:
+            app.drive._started = time.monotonic() - 1574
         save(app.compose(), name)
 
     shot("home")
@@ -222,7 +228,6 @@ def main():
         time.sleep(0.02)
     app.drive.tracker.counts["BLE"] = 187
     app.drive.rows = 1263
-    app.drive._started = time.monotonic() - 1574
     shot("wardrive")
     press(app, "ENTER")
     shot("confirm")

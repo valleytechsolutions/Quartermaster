@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import socket
 import urllib.error
 
@@ -116,3 +117,9 @@ def test_the_request_names_quartermaster_and_nothing_else(monkeypatch):
     assert updates_check.fetch(RELEASES, "1.1.0") == b"{}"
     assert seen == [(RELEASES, {"User-agent": "Quartermaster/1.1.0", "Accept": "application/json"}, 6.0, None),
                     updates_check.LARGEST + 1]
+
+
+def test_the_store_is_called_by_one_name_everywhere():
+    root = Path(__file__).resolve().parent.parent
+    files = [root / "README.md", root / "CHANGELOG.md"] + sorted((root / "quartermaster").rglob("*.py"))
+    assert [path.name for path in files if "App Store" in path.read_text(encoding="utf-8")] == []

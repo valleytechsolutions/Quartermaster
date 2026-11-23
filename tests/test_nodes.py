@@ -648,7 +648,8 @@ def test_the_gps_layer_marks_what_it_heard_on_a_port_and_skips_a_node_port(tmp_p
     assert hardware.port_mark(str(tmp_path / "ttyACM3")) == "gps"
 
     class Gpsd:
-        said = [b'{"class":"DEVICES","devices":[{"path":"%s"}]}\n' % str(tmp_path / "ttyUSB7").encode(), b""]
+        said = [b'{"class":"DEVICES","devices":[{"path":"%s","driver":"u-blox"}]}\n' % str(tmp_path / "ttyUSB7")
+                .encode(), b""]
 
         def __enter__(self):
             return self
@@ -1408,3 +1409,65 @@ def test_a_node_the_settings_do_not_have_is_forgotten_once_a_minute_at_most(tmp_
     assert rig.hub.hub_commands.count(("FORGET", AIR1)) == 1
     rig.settle(12)
     assert rig.hub.hub_commands.count(("FORGET", AIR1)) == 2
+
+
+def test_a_board_flashed_after_it_failed_to_answer_as_a_node_is_found_at_once(tmp_path):
+    rig = Rig(tmp_path, {"ttyUSB0": ("1a86:7523", BRIDGE, Talker(b"rst:0x1 boot\r\n")),
+                         "ttyACM0": ("303a:1001", NATIVE, Talker(b"ESP-ROM\r\n"))})
+    for _ in range(30):
+        rig.clock.advance(nodes.SCAN_SECONDS)
+        rig.manager.scan()
+    assert all(count == len(nodes.RETRIES) for count, _ in rig.manager.tries.values())
+    rig.bus.add(rig.dev / "ttyUSB0", FakeNode(ONE, clock=rig.clock))
+    rig.bus.add(rig.dev / "ttyACM0", FakeNode(TWO, clock=rig.clock))
+    rig.manager.take_back(str(rig.by_id / BRIDGE))
+    rig.manager.take_back(str(rig.by_id / NATIVE))
+    rig.manager.scan()
+    rig.settle()
+    assert rig.manager.node(ONE)["connected"] and rig.manager.node(TWO)["connected"]
+
+
+def test_each_node_line_says_how_long_ago_it_was_heard_and_whether_it_came_by_radio(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.manager.scan()
+    heard = []
+    rig.manager.attach(rig, lambda networks, adapter: heard.extend(networks))
+    rig.settle(4)
+    air = rig.airs[AIR1]
+    air.wifi("aa:bb:cc:00:00:05", b"Late", channel=planner.share_of(rig.manager.plans[AIR1])[0][1], age=9000)
+    rig.settle()
+    assert [(net["ssid"], net["air"]) for net in heard] == [("Late", True)] and 9.0 <= heard[0]["lag"] < 11.0
+    usb = Rig(tmp_path / "usb", {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE))}, node_cfg(ONE))
+    usb.manager.scan()
+    near = []
+    usb.manager.attach(usb, lambda networks, adapter: near.extend(networks))
+    usb.settle(4)
+    node = usb.devices["ttyACM0"]
+    assert node.wifi("aa:bb:cc:00:00:06", b"Near", channel=planner.share_of(usb.manager.plans[ONE])[0][1], age=300)
+    usb.settle()
+    assert [(net["ssid"], net["air"]) for net in near] == [("Near", False)] and 0.3 <= near[0]["lag"] < 2.0
+
+
+def test_the_node_that_was_the_hub_last_still_knows_its_wireless_nodes_while_it_is_off(tmp_path):
+    saved = []
+    rig = hub_rig(tmp_path, on_change=saved.append)
+    rig.manager.scan()
+    rig.settle()
+    rig.manager.set_hub(HUB, False)
+    assert rig.manager.hub() is None and rig.manager.wireless() == 2
+    assert rig.manager.stranded(HUB) == 0 and rig.manager.stranded(ONE) == 2
+    assert [entry.get("last_hub") for entry in saved[-1]][:2] == [None, True]
+    rig.manager.remove(HUB)
+    assert rig.manager.stranded(ONE) == 2
+
+
+def test_only_a_port_where_gpsd_found_a_gps_is_marked_and_a_node_port_stays_a_node(tmp_path):
+    first, second, node = (str(tmp_path / name) for name in ("ttyUSB0", "ttyUSB1", "ttyUSB2"))
+    gnss._mark_gpsd({"class": "DEVICE", "path": first, "activated": 1795000000.0})
+    gnss._mark_gpsd({"class": "DEVICE", "path": second, "driver": "u-blox", "activated": 0})
+    gnss._mark_gpsd({"class": "TPV", "device": second, "mode": 1})
+    assert hardware.port_mark(first) is None and hardware.port_mark(second) is None
+    hardware.mark_port(node, "node")
+    gnss._mark_gpsd({"class": "DEVICES", "devices": [{"path": node, "driver": "NMEA0183"},
+                                                     {"path": first, "driver": "NMEA0183"}]})
+    assert hardware.port_mark(node) == "node" and hardware.port_mark(first) == "gps"

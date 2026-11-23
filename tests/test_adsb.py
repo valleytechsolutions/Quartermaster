@@ -171,6 +171,11 @@ def test_a_stick_held_by_another_program_is_said_and_tried_again_later(tmp_path,
     rx.readsb.processes[1].exit("No supported devices found.\n")
     rx._tick()
     assert rx.state == adsb.NO_DONGLE
+    later(adsb.RETRY_SECONDS + 1)
+    rx._tick()
+    rx.readsb.processes[2].exit("Found 1 device(s):\nusb_open error -3\nPlease fix the device permissions\n")
+    rx._tick()
+    assert rx.state == adsb.DENIED and rx.status()["detail"] == "No permission. Run: sudo adduser $USER plugdev"
 
 
 def test_the_closest_and_furthest_position_of_each_aircraft_are_kept(tmp_path):
@@ -303,6 +308,23 @@ def test_a_journal_whose_file_exists_or_that_is_broken_is_only_removed(tmp_path,
     (logs / ".quartermaster_20261118-130000.aircraft.json.gz.tmp").write_bytes(b"half")
     assert adsb.recover(logs) == []
     assert sorted(p.name for p in logs.iterdir()) == [done.name] and done.read_bytes() == b"kept"
+
+
+def test_a_journal_save_cut_short_by_a_power_cut_leaves_nothing_once_recovered(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    journal = adsb.journal_path(logs / "quartermaster_20261118-110640.aircraft.json.gz")
+
+    def cut(fd):
+        raise SystemExit("power cut")
+    monkeypatch.setattr(adsb.wigle, "fsync", cut)
+    monkeypatch.setattr(adsb.Path, "unlink", lambda self, missing_ok=False: None)
+    with pytest.raises(SystemExit):
+        adsb.save_journal(journal, adsb.Sky(), "quartermaster_20261118-110640.aircraft.json.gz", NOW)
+    monkeypatch.undo()
+    assert [p.name for p in logs.iterdir()] == [journal.name + ".tmp"]
+    adsb.recover(logs)
+    assert list(logs.iterdir()) == []
 
 
 def test_readsb_is_stopped_with_sigterm_then_sigkill(tmp_path):
@@ -472,7 +494,41 @@ def test_a_wardrive_started_before_the_clock_was_set_is_named_after_its_first_ai
     early = rx.journal
     adsb.save_journal(early, rx.sky, early.name[1:].replace(".part", ".gz"), 86400)
     later_path = rx.finish()
-    assert later_path.name == "quartermaster_20261118-110639.aircraft.json.gz" and not early.exists()
+    assert later_path.name == "quartermaster_20261118-110640.aircraft.json.gz" and not early.exists()
+
+
+def test_aircraft_heard_while_the_system_clock_is_days_off_are_moved_to_the_gps_time(tmp_path):
+    from quartermaster.engine import gps_epoch
+    behind = 5 * 86400
+    clock = Clock(NOW - behind)
+    gps = Gps(dict(FIX, valid=False))
+    rx = receiver(tmp_path, clock, gps=gps, epoch=lambda fix: gps_epoch(fix, clock()))
+    rx.prepare(clock())
+    rx._tick()
+    rx.readsb.air(plane("a1b2c3", *NEAR))
+    rx._tick()
+    assert rx.journal.name == ".quartermaster_20261113-110640.aircraft.json.part"
+    rx._journaled -= adsb.JOURNAL_SECONDS
+    rx._tick()
+    stale = rx.journal
+    assert stale.exists()
+    clock.now += 10
+    gps.fix = dict(FIX, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW + 10)))
+    rx._tick()
+    rx.readsb.air(plane("a1b2c3", *FAR))
+    rx._tick()
+    assert not stale.exists() and rx.journal.name == ".quartermaster_20261118-110640.aircraft.json.part"
+    gps.fix = dict(FIX, valid=False)
+    clock.now += 10
+    rx.readsb.air(plane("c0ffee", *MID))
+    rx._tick()
+    path = rx.finish()
+    assert path.name == "quartermaster_20261118-110640.aircraft.json.gz"
+    data = adsb.load(path)
+    assert NOW + 10 <= data["now"] < NOW + 30
+    planes = {p.hex: p for p in rx.sky.planes.values()}
+    assert NOW - 2 <= planes["a1b2c3"].first <= NOW and NOW + 9 <= planes["a1b2c3"].last <= NOW + 10
+    assert NOW + 19 <= planes["c0ffee"].first <= NOW + 20
 
 
 def test_a_system_feed_that_goes_quiet_is_left_for_a_readsb_of_our_own(tmp_path):

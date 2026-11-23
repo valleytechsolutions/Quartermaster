@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_chip_info.h"
 #include "esp_efuse.h"
 #include "esp_efuse_table.h"
@@ -25,7 +26,6 @@
 #define STATUS_MS 2000
 #define HELLO_IDLE_MS 10000
 #define HELLO_RUN_MS 30000
-#define BUTTON_GPIO 28
 
 node_t node = {.lock = portMUX_INITIALIZER_UNLOCKED};
 
@@ -223,16 +223,16 @@ void node_run(bool on)
 static void button_setup(void)
 {
     memset(&button, 0, sizeof(button));
-    button_on = !(led_cfg.kind != LED_NONE && led_cfg.gpio == BUTTON_GPIO);
+    button_on = !(led_cfg.kind != LED_NONE && led_cfg.gpio == NODE_BUTTON_GPIO);
     if (button_on) {
-        gpio_config_t io = {.pin_bit_mask = 1ULL << BUTTON_GPIO, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
+        gpio_config_t io = {.pin_bit_mask = 1ULL << NODE_BUTTON_GPIO, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
         button_on = gpio_config(&io) == ESP_OK;
     }
 }
 
 static void button_poll(uint32_t now)
 {
-    if (button_on && wire_button(&button, gpio_get_level(BUTTON_GPIO), now)) {
+    if (button_on && wire_button(&button, gpio_get_level(NODE_BUTTON_GPIO), now)) {
         air_unpair();
         uplink_log("wireless: pairing cleared");
     }
@@ -459,13 +459,16 @@ void app_main(void)
     scan_init(stored_cc);
     uplink_hello();
 
-    uint32_t last_status = 0, last_hello = node_ms();
+    uint32_t last_status = 0, last_hello = node_ms(), unplugged = node_ms();
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(100));
         uint32_t host = last_host;
         uint32_t now = node_ms();
         button_poll(now);
-        if (!host_seen && node.role == ROLE_USB && now >= NODE_AIR_AFTER_MS) {
+        if (usb_serial_jtag_is_connected()) {
+            unplugged = now;
+        }
+        if (!host_seen && node.role == ROLE_USB && now - unplugged >= NODE_AIR_AFTER_MS) {
             host_seen = true;
             air_begin();
         }

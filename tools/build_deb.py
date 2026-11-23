@@ -50,7 +50,9 @@ def build(out):
         shutil.copy2(HERE / "packaging" / "quartermaster.tmpfiles", tmpfiles)
         doc = stage / "usr/share/doc" / pkg
         doc.mkdir(parents=True)
-        shutil.copy2(HERE / "LICENSE", doc / "copyright")
+        notices = HERE / "quartermaster" / "assets" / "node-firmware-notices.txt"
+        (doc / "copyright").write_text((HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
+                                       notices.read_text(encoding="utf-8"), encoding="utf-8")
         control = stage / "DEBIAN"
         control.mkdir()
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024

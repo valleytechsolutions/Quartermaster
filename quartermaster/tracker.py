@@ -114,6 +114,7 @@ class Tracker:
         self.extremes = extremes
         self.kept = 0                      # rows the open part of the log keeps, with extremes
         self._parted = []                  # devices with a part
+        self._fresh = {}                   # devices whose ends changed since take_extremes last looked
         self.relog_seconds = relog_seconds
         self.relog_meters = relog_meters
         self.rssi_step = rssi_step
@@ -195,6 +196,7 @@ class Tracker:
         if not changed:
             return None
         device.fresh = True
+        self._fresh[(device.kind, device.mac)] = device
         if changed & 1 and (device.logged_best is None or point[0] - device.logged_best >= self.rssi_step):
             return "stronger"
         if changed & 2 and (device.logged_worst is None or device.logged_worst - point[0] >= self.rssi_step):
@@ -235,16 +237,26 @@ class Tracker:
         """Rows the device has in the log, or will have once the open part is finished."""
         return device.rows + (len(device.part.chosen()) if device.part is not None else 0)
 
-    def new_part(self, counts):
-        """The open part of the log is finished, and holds counts[(type, mac)] rows of each device."""
+    def reset_part(self):
+        """The open part of the log has ended. Returns the rows it was to keep."""
         with self.lock:
             for device in self._parted:
                 device.part = None
-            self._parted, self.kept = [], 0
+            kept, self._parted, self.kept = self.kept, [], 0
+            return kept
+
+    def add_rows(self, counts):
+        """A part of the log is finished, and holds counts[(type, mac)] rows of each device."""
+        with self.lock:
             for (kind, mac), rows in counts.items():
                 device = self.find(kind, mac)
                 if device is not None:
                     device.rows += rows
+
+    def new_part(self, counts):
+        """The open part of the log is finished, and holds counts[(type, mac)] rows of each device."""
+        self.reset_part()
+        self.add_rows(counts)
 
     def take_extremes(self, idle_before=None):
         """Strongest and weakest sightings that no log row carries yet.
@@ -253,18 +265,20 @@ class Tracker:
         With idle_before, only devices not heard since that time are considered."""
         out = []
         with self.lock:
-            for device in self.devices.values():
+            for device in list(self._fresh.values()) if self.extremes else self.devices.values():
+                if device.ignored and self.extremes:
+                    del self._fresh[(device.kind, device.mac)]
                 if device.best is None or device.ignored:
                     continue
                 if idle_before is not None and device.last_seen > idle_before:
                     continue
                 if self.extremes:
-                    if device.fresh:
-                        for point in device.ends.chosen():
-                            if point not in device.sent:
-                                out.append((device, point))
-                                self._logged(device, point)
-                        device.fresh = False
+                    for point in device.ends.chosen():
+                        if point not in device.sent:
+                            out.append((device, point))
+                            self._logged(device, point)
+                    device.fresh = False
+                    del self._fresh[(device.kind, device.mac)]
                     continue
                 if device.best[0] > device.logged_best:
                     out.append((device, device.best))
@@ -311,6 +325,8 @@ class Tracker:
                 if device.best is None or device.ignored or self._done(device):
                     gone.append(key)
             gone = [self.devices.pop(key) for key in gone]
+            for key in [key for key in self._fresh if key not in self.devices]:
+                del self._fresh[key]
         return gone
 
     def summary(self):

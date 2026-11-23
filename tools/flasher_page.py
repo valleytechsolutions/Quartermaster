@@ -23,7 +23,9 @@ LOGO = ROOT / "assets" / "brand" / "quartermaster-logo.svg"
 ESP_WEB_TOOLS = "https://unpkg.com/esp-web-tools@10.5.2/dist/web/install-button.js?module"
 OTADATA = "otadata-blank.bin"
 FIRST, UPDATE = "manifest-first.json", "manifest-update.json"
-OURS = ("index.html", "manifest-*.json", OTADATA, "quartermaster-node-*.bin")
+NOTICES = "notices.txt"
+NOTICES_SOURCE = ROOT / "quartermaster" / "assets" / "node-firmware-notices.txt"
+OURS = ("index.html", "manifest-*.json", OTADATA, "quartermaster-node-*.bin", NOTICES)
 
 PAGE = Template("""<!doctype html>
 <html lang="en">
@@ -102,8 +104,8 @@ or in Chrome on Android.</p>
 </esp-web-install-button>
 <p class="wait warn">No button? Check the internet connection and load this page again.</p>
 <noscript><p class="warn">Flashing needs JavaScript. Turn it on and load this page again.</p></noscript>
-<p>For a new board, or one that runs something else. First install always clears the node's name, light and
-hub. When it asks to erase the board, say yes, so nothing old is left behind.</p>
+<p>For a new board, or one that runs something else. First install always clears the node's light, country and
+hub. Its name stays in Quartermaster. When it asks to erase the board, say yes, so nothing old is left behind.</p>
 </div>
 
 <div class="card">
@@ -113,7 +115,7 @@ hub. When it asks to erase the board, say yes, so nothing old is left behind.</p
 <p slot="not-allowed" class="warn">Flashing only works when this page is opened with https.</p>
 </esp-web-install-button>
 <p class="wait warn">No button? Check the internet connection and load this page again.</p>
-<p>Only for a board that already runs Quartermaster Node. It keeps the node's name, light and hub. The browser
+<p>Only for a board that already runs Quartermaster Node. It keeps the node's light, country and hub. The browser
 cannot check how the board was set up, so if the board does not start after an update, use First install.</p>
 </div>
 
@@ -160,7 +162,8 @@ cannot flash, open the page in Chrome or Edge.</p>
 <footer>
 <p>Quartermaster Node firmware $version for ESP32-C5. Flashing by
 <a href="https://github.com/esphome/esp-web-tools">ESP Web Tools</a>.
-<a href="https://github.com/valleytechsolutions/Quartermaster">Quartermaster on GitHub</a>.</p>
+<a href="https://github.com/valleytechsolutions/Quartermaster">Quartermaster on GitHub</a>.
+The firmware includes ESP-IDF and other open source parts: <a href="$notices">their licenses</a>.</p>
 </footer>
 </main>
 </body>
@@ -203,9 +206,10 @@ def files(source=flasher.MANIFEST):
         OTADATA: b"\xff" * flasher.OTADATA_SIZE,
         FIRST: manifest(version, [(merged_name, base)], True),
         UPDATE: manifest(version, [(app_name, ota_0), (OTADATA, otadata)], False),
+        NOTICES: NOTICES_SOURCE.read_bytes(),
     }
     out["index.html"] = PAGE.substitute(version=html.escape(version), script=ESP_WEB_TOOLS, logo=logo(),
-                                        first=FIRST, update=UPDATE).encode("utf-8")
+                                        first=FIRST, update=UPDATE, notices=NOTICES).encode("utf-8")
     return out
 
 

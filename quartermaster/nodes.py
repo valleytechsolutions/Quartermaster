@@ -52,14 +52,14 @@ UPDATING = "Being updated"
 NEWER = "Update Quartermaster to use this node"
 OLDER = "Needs a firmware update"
 REFUSED = "Did not take its channels"
-NO_BLE = "Bluetooth is off on this node: not enough memory"
+NO_BLE = "No Bluetooth: the node is short of memory"
 FULL = "Quartermaster takes up to %d nodes" % MAX_NODES
 NOT_A_NODE = "That is not a node"
 FULL_WIRELESS = "The hub takes up to %d wireless nodes" % MAX_WIRELESS
 NO_HUB = "Waiting for the hub. Plug it in."
 NO_HUB_SET = "No hub. Make a plugged-in node the hub."
 AWAY = "Not heard for 30 s. Out of range or off?"
-NOT_ON_HUB = "Not on this hub. Hold BOOT on it for 2 seconds, then add it again."
+NOT_ON_HUB = "Not on this hub. Add it again."
 NO_ESPNOW = "Needs a firmware update to be a hub"
 HUB_FAILED = "Could not start as a hub. Plug it in again."
 ADMIT_ERRORS = {"node": "It stopped asking. Hold BOOT on it for 2 seconds again.", "full": FULL_WIRELESS,
@@ -205,6 +205,7 @@ class NodeLink:
     """One node on one serial port. pump() reads what has come, sends what is waiting and keeps the node awake."""
 
     LATE_MS = None
+    AIR = False
 
     def __init__(self, path, port, listener=None, clock=time.monotonic):
         self.path, self.port, self.listener, self.clock = path, port, listener, clock
@@ -365,6 +366,7 @@ class NodeLink:
             if self.LATE_MS is not None and record["age_ms"] > self.LATE_MS:
                 self.late += 1
                 return
+            record["heard"], record["air"] = now - record["age_ms"] / 1000.0, self.AIR
             (self._wifi if kind == "W" else self._ble).append(record)
             if self._batch_at is None:
                 self._batch_at = now
@@ -384,8 +386,12 @@ class NodeLink:
             self.listener.hub_line(self, kind, fields, now)
 
     def _flush(self):
+        """Hand the waiting lines on. Each says how long ago it was heard, in seconds, as "lag"."""
         wifi, ble = self._wifi, self._ble
         self._wifi, self._ble, self._batch_at = [], [], None
+        now = self.clock()
+        for record in wifi + ble:
+            record["lag"] = max(0.0, now - record.pop("heard"))
         if self.listener is not None and (wifi or ble):
             self.listener.sightings(self, wifi, ble)
 
@@ -408,6 +414,7 @@ class AirLink(NodeLink):
     as #TO. It has no port and no thread of its own: the hub's link reads for it and sends its batches on."""
 
     LATE_MS = AIR_LATE_MS
+    AIR = True
 
     def __init__(self, node_id, hub, listener=None, clock=time.monotonic):
         super().__init__(hub.path, None, listener, clock)
@@ -1136,11 +1143,16 @@ class NodeManager:
 
     def stranded(self, node_id):
         """How many wireless nodes would have to be added again if this node became the hub: the ones of another
-        hub, which this one does not know."""
+        hub, which this one does not know. The node that was the hub last still knows them, even while it is not."""
         with self.lock:
-            hub = self._hub_id()
-            if hub is None or hub == node_id:
+            entry = self._entry(node_id) or {}
+            if entry.get("hub") or entry.get("last_hub"):
                 return 0
+            return self.wireless()
+
+    def wireless(self):
+        """How many wireless nodes are in the settings."""
+        with self.lock:
             return sum(1 for entry in self.configured if entry.get("wireless"))
 
     def _changed(self):
@@ -1214,8 +1226,9 @@ class NodeManager:
                     self.hub_link.send("USB")
                 for other in self.configured:
                     other.pop("hub", None)
+                    other.pop("last_hub", None)
                 entry.pop("wireless", None)
-                entry["hub"] = True
+                entry["hub"] = entry["last_hub"] = True
             else:
                 del entry["hub"]
                 if link is not None:
@@ -1347,4 +1360,8 @@ class NodeManager:
                 del self.away[other]
                 hardware.let_go_port(other, "node")
                 self.tries.pop(other, None)
+            self.tries.pop(real, None)
+            for other, port in self.ports.items():
+                if port["path"] == path:
+                    self.tries.pop(other, None)
         self._wake.set()

@@ -23,7 +23,7 @@ The node does not know which LED a board has, so it uses none until Quartermaste
 
 A node does not have to be plugged in. One node stays on the CardputerZero as the **hub**; up to 8 more run on batteries or USB chargers as **air nodes**, scan where they are, and send what they hear to the hub by radio (ESP-NOW). The same firmware does all three jobs:
 
-- A node that hears nothing from Quartermaster in its first 10 s becomes an air node. Plugging it into Quartermaster makes it a USB node again.
+- A node that hears nothing from Quartermaster in its first 10 s away from a computer becomes an air node. While it is plugged into a computer it waits for Quartermaster instead; send `#AIR` to make it an air node there. Plugging it into Quartermaster makes it a USB node again.
 - Quartermaster makes the plugged-in node a hub, opens pairing, and adds the new air nodes it is shown.
 - A new air node looks for a hub that is pairing, with its LED blinking fast (the LED Quartermaster set while the node was plugged in). Once added it keeps its hub across restarts; while it looks for its hub the LED flashes every 2 s, and while it scans the LED blinks briefly each time it hands its findings to the hub.
 - Air nodes start and stop when the hub does, and stop by themselves when they have not heard the hub for 60 s.
