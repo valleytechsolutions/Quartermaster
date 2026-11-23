@@ -16,11 +16,17 @@ import tempfile
 HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
+COPYRIGHT = ("Quartermaster\nCopyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal)\n"
+             "License: GPL-3.0-only from 1.2.2. Earlier releases are MIT.\n\n")
 # The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
 # rtl-sdr brings rtl_adsb for aircraft, the stick's udev rules and the TV driver blacklist, and starts no service.
+# usb-modeswitch turns adapters that first show a driver disc into Wi-Fi adapters. The firmware packages are the ones
+# the CardputerZero image already has. firmware-misc-nonfree is left out: the image lacks it, and the AppStore
+# never runs apt-get update, so asking for it could stop the whole install. The Hardware screen names it instead.
 DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
            "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr, python3-spidev, "
-           "python3-smbus | python3-smbus2, python3-libgpiod, python3-cryptography")
+           "python3-smbus | python3-smbus2, python3-libgpiod, python3-cryptography, usb-modeswitch, "
+           "firmware-realtek, firmware-mediatek, firmware-atheros")
 
 
 def build(out):
@@ -39,7 +45,7 @@ def build(out):
         launcher.chmod(0o755)
         images = stage / PREFIX / "share" / "images"
         images.mkdir(parents=True)
-        shutil.copy2(HERE / "packaging" / "icon.png", images / (pkg + ".png"))
+        shutil.copy2(HERE / "packaging" / "icon-launcher.png", images / (pkg + ".png"))
         applications = stage / PREFIX / "applications"
         applications.mkdir(parents=True)
         (applications / (pkg + ".desktop")).write_text(
@@ -51,7 +57,7 @@ def build(out):
         doc = stage / "usr/share/doc" / pkg
         doc.mkdir(parents=True)
         notices = HERE / "quartermaster" / "assets" / "node-firmware-notices.txt"
-        (doc / "copyright").write_text((HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
+        (doc / "copyright").write_text(COPYRIGHT + (HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
                                        notices.read_text(encoding="utf-8"), encoding="utf-8")
         control = stage / "DEBIAN"
         control.mkdir()

@@ -24,6 +24,8 @@ SECURITY_COLOR = {"OPEN": RED, "WEP": RED, "WPA": AMBER, "OWE": CYAN}
 STAMP = re.compile(r"quartermaster_(\d{8})-(\d{6})")
 SITE_SHORT = {"wigle": "WiGLE", "wdgwars": "WDG", "wardrift": "DRIFT"}
 REPO = "github.com/valleytechsolutions/Quartermaster"
+THANKS = ("Thanks to justcallmekoko, Code_Hedge, Ekoms_Savior, Jesse Hale, Vileer from Hacker\u00a0Gadgets, LocoSp, Awok "
+          "and Talking Sasquach")
 BOARD_NAMES = {"stamp-c5": "Stamp-C5"}
 # The status light of each board, as #LED takes it, with the name in the list and the short name on the row.
 LIGHTS = (("gpio,27,1", "XIAO ESP32-C5", "XIAO"), ("ws2812,27", "ESP32-C5-DevKitC-1", "DevKitC"),
@@ -339,12 +341,18 @@ class Wardrive(Screen):
     NEXT = {"all": "wifi", "wifi": "ble", "ble": "all"}
     LABEL = {"all": "All", "wifi": "Wi-Fi", "ble": "Bluetooth"}
     KINDS = {"all": None, "wifi": (WIFI,), "ble": (BLE, BT)}
+    BANNER_Y = TOP + 59
 
     def __init__(self, app):
         self.filter = app.cfg.get("live_list", "all")
 
     def hints(self, app):
-        return [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
+        hints = [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
+        if app.drive is not None and app.drive.watch is not None:
+            hints.insert(2, ("A", "Alerts"))
+            if app.drive.watch.quiet_left() > 0:
+                hints.insert(3, ("Q", "End quiet"))
+        return hints
 
     @staticmethod
     def warning(app, s):
@@ -390,6 +398,17 @@ class Wardrive(Screen):
         for band in ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
+        watch = s.get("watch")
+        from .recon_screens import BANNER_H, BANNER_TOP, banner_y, drive_alert, quiet_text
+        quiet = quiet_text(drive.watch)
+        if quiet:
+            x += c.pill(x, y, "Q " + quiet, font("monob", 8), BG, MUTED, height=11) + 4
+        elif watch and watch["alerts"]:
+            x += c.pill(x, y, "!%d" % watch["alerts"], font("monob", 8), BG, RED if watch["urgent"] else AMBER,
+                        height=11) + 4
+        if watch and watch["speaker"] is False and not drive.watch.speaker_said:
+            drive.watch.speaker_said = True
+            app.toast("No speaker found: alerts show on screen only", AMBER, 5)
         small = font("ui", 8)
         extra = []
         if s.get("aircraft") is not None:
@@ -412,11 +431,17 @@ class Wardrive(Screen):
             c.text_right(right, y + 1, text, small, MUTED if fine else AMBER)
             right -= int(c.text_width(text, small)) + 8
         y += 14
+        bottom = CONTENT_BOTTOM
+        if app.screen is self and drive_alert(app) is not None:
+            if banner_y(app, self) == BANNER_TOP:
+                bottom = BANNER_TOP - 2
+            else:
+                y = self.BANNER_Y + BANNER_H + 3
         warning = self.warning(app, s)
         if warning:
             c.text((5, y - 1), warning[0], font("ui", 9), warning[1], width=W - 10)
             y += 12
-        devices = drive.tracker.recent((CONTENT_BOTTOM - y) // 13, self.KINDS[self.filter])
+        devices = drive.tracker.recent(max(0, (bottom - y) // 13), self.KINDS[self.filter])
         for device in devices:
             wifi = device.kind == WIFI
             c.tag(4, y + 1, (device.band or "?") if wifi else "BT", BAND_COLOR.get(device.band, GOLD) if wifi else CYAN,
@@ -439,6 +464,12 @@ class Wardrive(Screen):
     def handle(self, key, app):
         if key in ("ENTER", "S"):
             app.ask_stop_wardrive()
+        elif key == "A" and app.drive is not None and app.drive.watch is not None:
+            from .recon_screens import DriveAlerts
+            app.push(DriveAlerts())
+        elif key == "Q" and not key.repeat and app.drive is not None and app.drive.watch is not None:
+            from .recon_screens import toggle_quiet
+            toggle_quiet(app)
         elif key.name in ("TAB", "LEFT", "RIGHT"):
             if not key.repeat:
                 self.filter = self.NEXT[self.filter]
@@ -526,8 +557,9 @@ class Hardware(Screen):
             scanning = {a["interface"]: a for a in status["adapters"]}
         cards = []
         for item in app.hw.stalled:
-            cards.append({"tag": "!", "color": AMBER, "title": item["label"], "edge": AMBER,
-                          "detail": "On USB but not starting. Replug it or use a powered hub.", "detail_color": AMBER})
+            title, detail = hardware.stall_words(item)
+            cards.append({"tag": "!", "color": AMBER, "title": title, "edge": AMBER, "detail": detail,
+                          "detail_color": AMBER})
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
             card = {"tag": "USB" if adapter["external"] else "INT", "color": GOLD if adapter["external"] else MUTED,
@@ -1122,6 +1154,14 @@ class Settings(Screen, ListMixin):
             return plural(len(app.cfg.get("ignore", ())), "name")
         if key == "recon_categories":
             return "%d of %d" % (len(app.cfg.get(key, ())), len(recon.CATEGORIES))
+        if key == "drive_alert_types":
+            from ..drive_watch import TYPES
+            return "%d of %d" % (len(app.cfg.get(key, ())), len(TYPES))
+        if key == "drive_alert_skip":
+            return plural(len(app.cfg.get(key, ())), "device")
+        if key == "drive_watch":
+            count = len(app.cfg.get(key, ()))
+            return "%d %s" % (count, "entry" if count == 1 else "entries")
         if key == "nodes":
             found = len(app.nodes.found())
             return plural(len(app.cfg.get("nodes", ())), "node") + (", %d new" % found if found else "")
@@ -1179,6 +1219,15 @@ class Settings(Screen, ListMixin):
         elif name == "recon_categories":
             from .recon_screens import Categories
             app.push(Categories())
+        elif name == "drive_alert_types":
+            from .recon_screens import AlertTypes
+            app.push(AlertTypes())
+        elif name == "drive_watch":
+            from .recon_screens import MyAlerts
+            app.push(MyAlerts())
+        elif name == "drive_alert_skip":
+            from .recon_screens import SkipList
+            app.push(SkipList())
         elif name == "nodes":
             app.push(Nodes())
             if not app.cfg.get("country_set") and not self.locked(app, "country"):
@@ -1801,17 +1850,19 @@ class About(Screen):
 
     def render(self, c, app):
         c.paste(image("quartermaster-logo-dark.png", (120, 84)), (8, TOP + 3))
-        c.text((126, TOP + 4), "Quartermaster", font("display", 17), GOLD)
-        c.text((126, TOP + 26), "Version %s" % __version__, font("ui", 10), TEXT)
-        c.text((126, TOP + 41), "Wardriver for every radio", font("ui", 9), MUTED)
-        c.text((126, TOP + 53), "for the CardputerZero", font("ui", 9), MUTED)
-        c.text((126, TOP + 68), REPO, font("ui", 7), FAINT)
+        c.text((126, TOP + 2), "Quartermaster", font("display", 17), GOLD)
+        c.text((126, TOP + 23), "Version %s" % __version__, font("ui", 10), TEXT)
+        c.text((126, TOP + 36), "Wardriver for every radio", font("ui", 9), MUTED)
+        c.text((126, TOP + 47), "for the CardputerZero", font("ui", 9), MUTED)
+        c.text((126, TOP + 60), REPO, font("ui", 7), FAINT)
+        for i, line in enumerate(c.wrap(THANKS, W - 134, font("ui", 7))[:3]):
+            c.text((126, TOP + 69 + i * 8), line, font("ui", 7), MUTED)
         y = CONTENT_BOTTOM - 37
         c.rect((8, y, W - 8, y + 34), fill=WHITE, radius=6)
         c.paste(image("bwm-logo.png", (28, 28)), (16, y + 3))
         c.paste(image("vts-logo.png", (28, 28)), (W - 42, y + 3))
         c.text_center(W // 2, y + 5, "Valleytech Solutions", font("bold", 11), (0, 0, 0))
-        c.text_center(W // 2, y + 19, "MIT open source", font("ui", 9), (90, 90, 90))
+        c.text_center(W // 2, y + 19, "GPL-3.0 open source", font("ui", 9), (90, 90, 90))
 
     def handle(self, key, app):
         if key == "T":

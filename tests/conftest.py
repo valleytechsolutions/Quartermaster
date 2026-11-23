@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from quartermaster import engine, faults, hardware, lora, radios
+from quartermaster import engine, faults, hardware, lora, radios, tones
 from quartermaster.names import one_line
 from quartermaster.ui import gfx, keys
 
@@ -77,3 +77,9 @@ def later(monkeypatch):
     def move(seconds):
         ahead[0] += seconds
     return move
+
+
+@pytest.fixture(autouse=True)
+def no_speaker(monkeypatch):
+    """No test plays a tone on the machine it runs on."""
+    monkeypatch.setattr(tones, "find_player", lambda: None)

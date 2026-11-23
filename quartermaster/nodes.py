@@ -15,7 +15,7 @@ import secrets
 import threading
 import time
 
-from . import faults, hardware, planner
+from . import dragon_link, faults, hardware, planner
 from .config import MAX_NODES, MAX_WIRELESS, NODE_NAME_MAX, cluster_key, node_entries
 from .wifi import band_of, security_label
 
@@ -215,6 +215,7 @@ class NodeLink:
         self.seq = None
         self.lost = self.bad = self.late = 0
         self.notes = deque(maxlen=4)
+        self.text = deque(maxlen=8)
         self.acks = {}
         self.error = ""
         self.closed = False
@@ -315,6 +316,8 @@ class NodeLink:
     def _line(self, line, now):
         fields = parse(line)
         if fields is None:
+            if self.hello is None:
+                self.text.append(line[:dragon_link.MAX_LINE])
             return
         self.heard = now
         if fields is False:
@@ -496,6 +499,7 @@ class NodeManager:
         self.pair_until = 0.0
         self.air, self.joins, self.admitting, self.forgotten, self.tried = {}, {}, {}, {}, {}
         self.cycle, self.listed = None, []
+        self.dragons, self.dragon_sink = {}, None
         self._key = None
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -516,9 +520,12 @@ class NodeManager:
             self._thread = None
         with self.lock:
             links = list(self.links.values())
+            dragons = list(self.dragons.values())
         for link in links:
             link.send("STOP")
             link.stop("")
+        for dragon in dragons:
+            dragon.stop()
 
     def _loop(self):
         while not self._stop.is_set():
@@ -559,6 +566,10 @@ class NodeManager:
         present = self._present()
         now = self.clock()
         gone = [real for real in self.ports if real not in present]
+        for real in gone:
+            dragon = self.dragons.get(real)
+            if dragon is not None:
+                dragon.stop()
         hardware.forget_ports(gone)
         for real in gone:
             self.ports.pop(real, None)
@@ -573,7 +584,7 @@ class NodeManager:
                 if port["path"] in self.lent and real not in self.away:
                     self.away[real] = self.lent[port["path"]]
                     hardware.hold_port(real, "node")
-            busy = {link.real for link in self.links.values()} | set(self.away) | set(self.twins)
+            busy = {link.real for link in self.links.values()} | set(self.away) | set(self.twins) | set(self.dragons)
         for real, port in sorted(self.ports.items(), key=lambda item: item[1]["usb_id"] != hardware.NODE_NATIVE):
             native = port["usb_id"] == hardware.NODE_NATIVE
             if self._stop.is_set():
@@ -612,6 +623,8 @@ class NodeManager:
         link = NodeLink(path, port, None, self.clock)
         link.send("HELLO")
         if not link.wait_hello(PROBE_SECONDS):
+            if dragon_link.recognised(link.text):
+                return self._dragon(real, path, link)
             link.stop("")
             hardware.let_go_port(real, "node")
             return False
@@ -637,12 +650,36 @@ class NodeManager:
             link.start()
         return True
 
+    def _dragon(self, real, path, link):
+        """A Dragon Detector answered instead of a node: keep its port open and read its alerts."""
+        def gone():
+            with self.lock:
+                self.dragons.pop(real, None)
+            hardware.let_go_port(real, "node")
+        dragon = dragon_link.DragonLink(path, link.port, self._dragon_alert, gone, link.text)
+        hardware.mark_port(real, "dragon")
+        self.tries.pop(real, None)
+        with self.lock:
+            self.dragons[real] = dragon
+        if self.threads:
+            dragon.start()
+        return True
+
+    def _dragon_alert(self, alert):
+        sink = self.dragon_sink
+        if sink is not None:
+            sink(alert)
+
     def pump(self):
         """Read every port once. For tests and for a caller without threads."""
         with self.lock:
             links = list(self.links.values())
+            dragons = list(self.dragons.values())
         for link in links:
             link.pump()
+        for dragon in dragons:
+            if not dragon.pump():
+                dragon.stop()
 
     def _entry(self, node_id):
         return next((entry for entry in self.configured if entry["id"] == node_id), None)

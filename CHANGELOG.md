@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.2.2
+
+- A new home screen icon, drawn at the size the home screen shows it, with a bolder outline and no black square.
+- More USB Wi-Fi adapters work as soon as they are plugged in. Adapters that first show up as a driver disc switch by themselves.
+- When an adapter is plugged in but not scanning, the Hardware screen says why: setup mode, no driver on this system yet, a model too new for the driver, missing firmware, or not enough power.
+- The README lists which Wi-Fi chips work, which do not yet, and which adapters to buy.
+- Drive Alerts: during a wardrive, Quartermaster can warn you about Flock cameras, Axon body cameras, Meta camera glasses and the other kinds Recon knows. A banner shows for about 6 seconds, the Wardrive screen counts the alerts, and A lists them. Alerts are checked off the scan path, so scanning never waits, and the WiGLE log is the same with alerts on or off. Settings, Drive Alerts turns them on and off, picks the kinds, the tone for each kind, the volume, and My alerts, a list of names or MAC addresses of your own. Axon, Flock and Meta glasses alert by default.
+- Alert tones: Siren, Yelp, Chirp, Shutter, Ping, Blip, the Dragon Detector melodies, or Silent. Settings, Drive Alerts plays each tone as you pick it. Tones play one at a time, the most important first, never the same tone twice within 4 seconds, and a tone that waits more than 10 seconds is dropped.
+- A Dragon Detector on USB: its alerts join the wardrive's alerts, graded the same way as Recon's.
+- Recon knows more: fleet routers, dashcams and Wi-Fi cameras by their network names, Sonos and other listening speakers, the Flipper Zero's company ID, and whether an AirTag is away from its owner. Fleet routers, speakers and foxes start off in Settings.
+- Recon no longer calls BC:DD:C2 a Flock device: that prefix belongs to another maker.
+- Recon's alert sound no longer holds up scanning.
+- Quartermaster is now GPL-3.0 from this version. Earlier releases stay MIT. The README credits SquachWatch, Dragon Detector and the other projects it learns from.
+- The install adds Quartermaster to the audio group, so alert tones can play.
+- Alert banners now come up at the bottom, just above the key hints, for Drive Alerts and Recon alike. They never cover the counters, the live list stops above them, and messages move up out of their way.
+- Calmer alerts. More of the same kind add to the banner (×3) instead of replacing it, a more urgent kind takes over at once, and alerts that pile up show as one banner such as "3 new alerts". A flood of new Flock cameras, body cameras or glasses shows one banner. The icon blinks only for the first 3 seconds.
+- Flock and other fixed cameras alert once per drive, however often you pass them. The Alert again setting now applies only to body cameras and other moving devices. The log still notes every pass.
+- One camera heard on Wi-Fi and Bluetooth, a Bluetooth device that keeps changing its address, such as your own glasses, and a Dragon Detector line about a camera the scan just heard are each one alert. A Dragon Detector parked by one Flock camera no longer alerts every minute.
+- The body camera siren is one sweep of 1.2 seconds, plays at most every 5 minutes and 6 times an hour. More body cameras in between are counted and listed without a sound or a new banner. A kind that keeps sounding in a busy town waits longer between tones, up to 4 minutes, until it has been quiet for 10 minutes.
+- N on an alert: no more alerts for that device. It is still logged and uploaded. Settings, No alerts for lists them. When the device goes by its name, anything with that name stops alerting. A device whose Bluetooth address keeps changing and that has no name, such as most Meta glasses, is silenced for this drive only.
+- Recon alerts about a device that stays nearby once, and again only after it has been gone for 15 minutes or when it starts to follow you. Its beep follows Tone volume. Its banner no longer takes the R key.
+- A new tone preview cuts off the one playing, so scrolling through tones keeps up.
+- The Wardrive screen shows A Alerts from the start, and no longer repeats a stalled adapter warning as a message when the screen already says it.
+- Del hides the alert banner at once, so the whole live list shows again. The alert stays in the list, and the next new alert still shows. Recon alerts too.
+- Q on the wardrive screen, the alert list or a banner: no alert tones or banners for 10 minutes. Alerts are still listed and logged, and the wardrive screen shows Q 9m in place of the alert count, with Q End quiet in the key hints. Q again ends it.
+- Settings, Alert position: Bottom or Top, for Drive Alerts and Recon. At the top of the wardrive screen the banner sits under the counters.
+- No alert tones in the first minute of a wardrive. Banners and the list work as usual, and those tones are not played later.
+- Tone volume starts at Medium. A volume you already picked stays.
+- Thanks to justcallmekoko, Code_Hedge, Ekoms_Savior, Jesse Hale, Vileer from Hacker Gadgets, LocoSp, Awok and Talking Sasquach, the creator of SquachWatch, in the README and on the About screen.
+
 ## 1.2.1
 
 The AppStore listing and the About screen now name every radio Quartermaster uses. Nothing else changes.

@@ -175,7 +175,7 @@ class NoBle(Ble):
 
 
 class Silent:
-    def play(self):
+    def play(self, volume="high"):
         return False
 
 

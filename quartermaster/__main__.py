@@ -23,7 +23,8 @@ def main(argv=None):
         for adapter in hardware.wifi_adapters():
             print("wifi  %(interface)s  %(label)s  bands=%(bands)s  usb=%(usb_id)s  driver=%(driver)s" % adapter)
         for adapter in hardware.stalled_usb_adapters():
-            print("wifi  (not starting)  %(label)s  usb=%(usb_id)s  port=%(port)s" % adapter)
+            title, detail = hardware.stall_words(hardware.explain(adapter))
+            print("wifi  (not starting)  %s  usb=%s  port=%s  %s" % (title, adapter["usb_id"], adapter["port"], detail))
         for port in hardware.gps_candidates():
             print("gps   %(path)s  %(label)s" % port)
         cap = lora.Cap()

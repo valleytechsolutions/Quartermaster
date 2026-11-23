@@ -8,17 +8,13 @@ Lines log.
 
 from collections import deque
 import json
-import math
 import os
 from pathlib import Path
 import shutil
-import subprocess
-import tempfile
 import threading
 import time
-import wave
 
-from . import faults, hardware, radios, recon
+from . import faults, hardware, radios, recon, tones
 from .ble import BleScanner
 from .engine import DEFAULT_ROOT, MIN_FREE_BYTES, gps_epoch
 from .tracker import distance_m
@@ -26,45 +22,21 @@ from .wifi import ScanUnavailable, WifiFleet
 
 BLE_INTERVAL = 1.0
 LOG_INTERVAL = 30.0
-ALERT_REPEAT = 300.0
+ALERT_AGAIN = 900.0
 FOLLOW_MIN_SECONDS = 600
 FOLLOW_MIN_METERS = 800
 MAX_DEVICES = 3000
 ACTIVE_SECONDS = 60
 
 
-def _tone(path):
-    rate = 22050
-    with wave.open(str(path), "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(rate)
-        frames = bytearray()
-        for freq, length in ((1760, 0.09), (0, 0.04), (2349, 0.12)):
-            for i in range(int(rate * length)):
-                value = int(9000 * math.sin(2 * math.pi * freq * i / rate)) if freq else 0
-                frames += value.to_bytes(2, "little", signed=True)
-        out.writeframes(bytes(frames))
-
-
 class AlertSound:
-    def __init__(self):
-        self.path = None
-        self.player = shutil.which("aplay")
+    """Recon's beep. Asking only queues it: the tone player's own thread renders and plays it."""
 
-    def play(self):
-        if not self.player:
-            return False
-        try:
-            if self.path is None:
-                directory = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
-                self.path = directory / ("quartermaster-alert-%d.wav" % os.getuid())
-                _tone(self.path)
-            subprocess.Popen([self.player, "-q", str(self.path)], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            return True
-        except OSError:
-            return False
+    def __init__(self, player=None):
+        self.player = player if player is not None else tones.Player()
+
+    def play(self, volume="medium"):
+        return self.player.play("beep", volume, kind="recon")
 
 
 class Recon:
@@ -268,6 +240,7 @@ class Recon:
         rssi = item.get("rssi")
         key = (transport, address)
         record = alert = None
+        followed = False
         with self.lock:
             self.counters["observations"] += 1
             if key not in self._seen and len(self._seen) < 200000:
@@ -279,9 +252,10 @@ class Recon:
                     self._make_room()
                 device = self.devices[key] = {
                     "transport": transport, "address": address, "first_seen": now, "count": 0, "best_rssi": rssi,
-                    "rssi_history": deque(maxlen=60), "places": [], "alerted_at": 0.0, "logged_at": 0.0,
+                    "rssi_history": deque(maxlen=60), "places": [], "alerted_at": None, "logged_at": 0.0,
                     "follow": False, "category": None, "confidence": 0}
             device["count"] += 1
+            away = now - device.get("last_seen", now)
             device["last_seen"] = now
             device["rssi"] = rssi
             device["rssi_history"].append((now, rssi))
@@ -308,12 +282,12 @@ class Recon:
                     places.append((now, gps["latitude"], gps["longitude"]))
                     del places[:-30]
                 if shown and not device["follow"] and self._following(places):
-                    device["follow"] = True
+                    device["follow"] = followed = True
                     changed = True
             if shown and changed:
                 self.counters["classified"] += 1
             if shown and (result["confidence"] >= self.alert_min() or device["follow"]) and \
-                    now - device["alerted_at"] >= ALERT_REPEAT:
+                    (device["alerted_at"] is None or away >= ALERT_AGAIN or followed):
                 device["alerted_at"] = now
                 alert = {"time": now, "transport": transport, "address": address, "category": category,
                          "label": recon.CATEGORY_LABELS[category], "confidence": result["confidence"],
@@ -339,7 +313,7 @@ class Recon:
                         record[field] = result[field]
                 self._write(record)
         if alert and self.cfg.get("recon_sound", True):
-            self.sound.play()
+            self.sound.play(self.cfg.get("drive_alert_volume", "medium"))
         return device
 
     @staticmethod

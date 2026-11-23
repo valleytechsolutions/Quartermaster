@@ -10,13 +10,13 @@
 <p align="center">
   <b>The wardriver for the M5Stack CardputerZero.</b><br>
   Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
-  Clean WiGLE logs. Automatic uploads. Recon.
+  Clean WiGLE logs. Automatic uploads. Drive Alerts. Recon.
 </p>
 
 <p align="center">
   <a href="https://github.com/valleytechsolutions/Quartermaster/releases/latest"><img src="https://img.shields.io/github/v/release/valleytechsolutions/Quartermaster?color=f5b301&label=release" alt="Latest release"></a>
   <a href="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml"><img src="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f5b301" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-f5b301" alt="GPL-3.0 license"></a>
   <a href="#install"><img src="https://img.shields.io/badge/AppStore-share%20code%20WARD-f5b301" alt="On the CardputerZero AppStore: share code WARD"></a>
 </p>
 
@@ -69,7 +69,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **Radios**
 
-- **Every Wi-Fi adapter at once.** Built-in and USB, single, dual or tri-band, across 2.4, 5 and 6 GHz. On either USB port, through a hub or not. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
+- **Every supported Wi-Fi adapter at once.** Built-in and any [supported USB adapter](#wi-fi-adapters), single, dual or tri-band, across 2.4, 5 and 6 GHz. On either USB port, through a hub or not. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
 - **Bluetooth beside it.** The built-in radio logs Bluetooth LE and classic devices in every wardrive.
 - **No adapter needed.** The built-in 2.4 GHz radio, Bluetooth and a GPS make a full wardriver.
 - **Nodes.** Small ESP32-C5 boards scan Wi-Fi beside your adapters. Quartermaster shares the channels out between them.
@@ -87,8 +87,9 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **And more**
 
+- **Drive Alerts.** While you wardrive, a banner and a tone warn you about Flock cameras, body cameras, camera glasses and any other kind you pick, from what the wardrive already hears. Each kind can have its own tone, such as a siren for body cameras. See [Drive Alerts](#drive-alerts).
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
-- **One job at a time.** Recon and a wardrive never run together, so every radio does one job well.
+- **One job at a time.** Recon and a wardrive never run together, so every radio does one job well. Drive Alerts use no radio of their own.
 - **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
 
 <table>
@@ -108,7 +109,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 Quartermaster looks for your hardware by itself. There is nothing to set up for these:
 
-- **Wi-Fi adapters.** Every USB adapter and the built-in radio scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
+- **Wi-Fi adapters.** The built-in radio and every [supported USB adapter](#wi-fi-adapters) scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
 - **Bluetooth.** The Cardputer's own radio scans in every wardrive. If Bluetooth is not ready yet, Quartermaster tries again every few seconds.
 - **GPS.** A USB GPS, the GPS on the Cap LoRa-1262, a Grove GPS unit or gpsd. Quartermaster tries each one and powers the cap and the Grove port only when it needs them. Plug a GPS in at any time, also during a wardrive.
 - **Aircraft.** Plug in an RTL-SDR stick, before or during a wardrive, and Quartermaster listens for aircraft.
@@ -195,7 +196,7 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 
 ## Hardware
 
-- **Wi-Fi adapters:** any USB adapter with a driver in the CardputerZero's Linux kernel. That covers the common MediaTek, Realtek, Ralink and Atheros chips, including MT7921AU tri-band adapters such as the ALFA AWUS036AXM.
+- **Wi-Fi adapters:** USB adapters with a driver in the CardputerZero's Linux kernel. See [Wi-Fi adapters](#wi-fi-adapters) for which ones.
 - **GPS:** any USB receiver that sends NMEA (u-blox, Quectel LC29H and others), the Cap LoRa-1262, a Grove GPS unit, or gpsd.
 - **Bluetooth:** the built-in radio.
 - **Nodes:** ESP32-C5 boards running the Quartermaster Node firmware. See [Nodes](#nodes).
@@ -205,11 +206,48 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 Recommended:
 
 - **Wi-Fi:** the [AC1200 USB-C WiFi Card](https://hackergadgets.com/products/ac1200-usb-c-wifi-card) from HackerGadgets, a tri-band MT7921AU adapter for 2.4, 5 and 6 GHz with a USB-C connector.
+- **Other Wi-Fi adapters that need nothing set up:** any MT7921AU adapter, the TP-Link Archer T2U or T3U, the TP-Link Archer TX10UB Nano, and RTL8811CU nano adapters.
 - **GPS:** the Dual Band GNSS USB Dongle from [AWOK Dynamics](https://awokdynamics.com).
 
 Tested on a CardputerZero with an ALFA AWUS036AXM and the HackerGadgets AC1200 scanning together, and an LC29H USB GPS.
 
-Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is on USB but not starting, replug it, try the other port, or use a powered hub. One ALFA AWUS036AXML did not start on the test device.
+### Wi-Fi adapters
+
+Not every USB Wi-Fi adapter works. An adapter works when the CardputerZero's Linux (6.18) has a driver for its chip. Quartermaster only scans, so it needs no monitor mode, and every adapter marked Yes scans with nothing to set up. The chip matters, not the brand: look up the chip of your model before you buy.
+
+| Chip | Example adapters | Works? |
+|---|---|---|
+| MediaTek MT7921AU | ALFA AWUS036AXM / AXML, Netgear A8000, Panda PAU0F, COMFAST CF-952AX | Yes, 2.4, 5 and 6 GHz |
+| MediaTek MT7925U | Netgear A9000 | Yes |
+| MediaTek MT7612U, MT7610U, MT7601U | ALFA AWUS036ACM, Netgear A6210, TP-Link Archer T2UH, ALFA AWUS036ACHM | Yes, with firmware-misc-nonfree |
+| Realtek RTL8812AU, RTL8811AU / 8821AU | ALFA AWUS036ACH, TP-Link Archer T2U / T2U Nano / T4U, Netgear A6100 | Yes |
+| Realtek RTL8814AU | ALFA AWUS1900, Netgear A7000, ASUS USB-AC68 | Yes, with enough power |
+| Realtek RTL8812BU / 8822BU, RTL8822CU | TP-Link Archer T3U / T3U Plus, Netgear A6150 | Yes |
+| Realtek RTL8811CU / 8821CU, RTL8723DU | Most "AC600" and "AC650" nano adapters | Yes |
+| Realtek RTL8851BU, RTL8852BU | TP-Link Archer TX10UB Nano, TX20U | Yes, but some newer models are not known to Linux 6.18 yet |
+| Realtek RTL8192EU, RTL8188EU, RTL8192CU and other N150 / N300 | TP-Link TL-WN722N v2/v3, TL-WN822N, Edimax EW-7811Un | Yes, 2.4 GHz |
+| Atheros AR9271 | ALFA AWUS036NHA | Yes, 2.4 GHz |
+| Ralink RT3070 / RT5370 / RT5572 | ALFA AWUS036NH, Panda PAU09 | Yes, with firmware-misc-nonfree |
+| Realtek RTL8832AU / 8852AU | ASUS USB-AX56, D-Link DWA-X1850 A1, ALFA AWUS036AXER | Not yet. Needs Linux 6.19 |
+| Realtek RTL8832CU / 8852CU | TP-Link Archer TX50U | Not yet. Needs Linux 6.19, and the TX50U Linux 7.0 |
+| Realtek RTL8912AU / 8922AU (Wi-Fi 7) | ASUS and Edimax Wi-Fi 7 adapters | Not yet. Needs Linux 7.2 |
+
+The "Not yet" chips need a newer Linux on the CardputerZero, which an app cannot install. They start working when the CardputerZero image moves to a newer kernel.
+
+Small and nano adapters are the safest choice. Large adapters with several antennas, such as the ALFA AWUS036AXML, AWUS036ACH and AWUS1900, can draw more than the Cardputer's USB port gives. One ALFA AWUS036AXML did not start on the test device.
+
+MT7601U, MT7610U, MT7612U and Ralink adapters need firmware that the CardputerZero image leaves out. Install it once with `sudo apt install firmware-misc-nonfree`. Quartermaster does not install it for you, so that its own install never depends on a package the Cardputer may not be able to fetch.
+
+Many cheap Realtek adapters first show up as a small disc with a Windows driver on it. Quartermaster installs usb-modeswitch, and most of them switch to Wi-Fi by themselves after a few seconds. Some do not yet. If one stays in setup mode, the stock usb-modeswitch data does not know it yet. For the RTL8192FU disc (`0bda:a192`), run `sudo usb_modeswitch -v 0bda -p a192 -K`.
+
+When an adapter is plugged in but does not scan, the Hardware screen says why:
+
+- **No driver for it here.** The chip has no driver in this Linux. See the table.
+- **This model is too new for the driver here.** The chip is supported, but this model came out after Linux 6.18.
+- **Firmware missing.** Install the package it names, for example `sudo apt install firmware-misc-nonfree`. When it says the system needs newer firmware, the package is there but too old for this adapter.
+- **Needs more power.** Use a powered USB hub or a smaller adapter.
+- **In setup mode.** The adapter still shows as a driver disc. Replug it.
+- **On USB but not starting.** Replug it, try the other port, or use a powered hub.
 
 ## Nodes
 
@@ -373,6 +411,10 @@ Logs shows mesh files with a **MESH** tag, and what each site took.
 | **Space** | Start or stop a wardrive from the menu |
 | **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
 | **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
+| **A** | On the wardrive screen: the alerts of this wardrive |
+| **N** | On an alert from that list: no more alerts for that device |
+| **Del** | While an alert banner shows: hide it |
+| **Q** | On the wardrive screen, the alert list or an alert banner: no alert tones or banners for 10 minutes. Again to end it |
 | **Sym**, then a key | In a text box: the symbol printed on that key |
 
 Every screen shows its own keys along the bottom.
@@ -403,6 +445,16 @@ Every screen shows its own keys along the bottom.
 | | GPS accuracy needed | Any fix, Fair, Good, Best | Any fix |
 | | Cap and Grove power | When needed, Leave off | When needed |
 | Uploads | Send logs | Automatic, Only when asked | Automatic |
+| Drive alerts | Alerts while wardriving | On, Off | On |
+| | Alert me about | Each kind of device: alert on or off, tone on or off, and its tone | Flock, body cameras, camera glasses, My alerts |
+| | Alert tones | On, Off | On |
+| | Tone volume | Medium, Loud, Quiet. Also the Recon beep | Medium |
+| | Alert position | Bottom, Top. Also Recon alerts | Bottom |
+| | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
+| | Alert again (moving devices) | After 15 min, After 1 h, Once per drive. Fixed cameras alert once per drive | After 15 min |
+| | Only when signal is above | Any, -85 dBm, -75 dBm | Any |
+| | My alerts | Up to 8 names, patterns or addresses that always alert | |
+| | No alerts for | Up to 32 devices silenced from an alert with **N**. Still logged | |
 | Recon | Show devices from | Weak hints, Medium evidence, Strong only | Weak hints |
 | | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
 | | Alert sound | On, Off | On |
@@ -425,11 +477,12 @@ Everything is kept in the `quartermaster` folder in your home directory.
 | `logs/quartermaster_<date>-<time>.mesh.json.gz` | The Meshtastic and MeshCore nodes of the wardrive, each with its closest and furthest sighting, for WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.mesh.csv` | One line per mesh node: name, role, first and last seen, signal, hops, the closest and furthest sighting with position and time, and the position the node gives out. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
+| `recon/drive_<date>-<time>.jsonl` | What Drive Alerts found during a wardrive, alerted or not. Never uploaded. |
 
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.1,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.2,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.
@@ -444,7 +497,32 @@ To copy logs off the Cardputer, open the phone setup page and tap a log, or use 
 
 Recon listens on every radio for devices that look like surveillance or tracking equipment. Each match is graded as a weak hint, medium evidence or a strong signature, and the details screen shows exactly what was matched. Press **OK** on a device and **OK** again to open the signal finder, then walk toward the stronger signal.
 
+On other screens, a Recon alert shows as a card at the bottom, where Drive Alerts show theirs, or at the top with **Alert position**. **Del** hides it. A device that stays nearby alerts once, and again only after it has been gone for 15 minutes, or when it starts to follow you.
+
 A match is broadcast evidence. It is not proof that a device is recording, who owns it, or what it is for. Many products share radio parts, so weak hints are common.
+
+Recon also knows dashcams and fleet cameras, in-car fleet routers (a kind of their own, never counted as body cameras, and off until you turn them on), smart speakers with microphones (off until you turn them on), AirTags with or without their owner and AirTags not set up yet, and the Dragon Detector fox test beacon (off until you turn it on).
+
+## Drive Alerts
+
+While you wardrive, Quartermaster can warn you about the devices you pick, from what the wardrive already hears. It never scans more, never slows a sweep, and never changes a WiGLE log: the logs are the same with alerts on or off. Each sighting gets a quick look-up, and only the few that may matter go to a low-priority thread that grades them with Recon's classifier.
+
+<p align="center">
+  <img src="docs/screens/wardrive-alert.png" width="320" alt="A Flock alert banner over the wardrive screen">
+  <img src="docs/screens/alert-types.png" width="320" alt="Alert me about: each kind with its tone and switch">
+</p>
+
+- **What alerts.** Out of the box: Flock cameras, body cameras such as Axon, and camera glasses such as Ray-Ban Meta. **Settings > Alert me about** turns every other kind on or off, from ALPR and doorbell cameras to trackers, an open twin of a protected network, and bursts of fake Bluetooth adverts.
+- **Tones.** Siren for body cameras, Chirp for Flock and Ping for camera glasses. Every kind can have its own: Siren, Yelp, Chirp, Shutter, Ping, Blip, any of the Dragon Detector melodies, or Silent. In **Alert me about**, **Z** and **C** pick a tone and play it, **P** plays it again, **T** turns the tone of one kind off and **D** restores the defaults. **Alert tones** turns every tone off.
+- **The banner.** A card at the bottom, just above the key hints, for 6 seconds, 10 for a body camera. **Alert position** can put it at the top instead; on the wardrive screen it then sits just under the counters. It never covers the counters, and **OK** still stops the wardrive. **Del** hides it at once; the alert stays in the list and the next new alert still shows. The icon pulses once a second for the first 3 seconds, then stays still. More of the same kind add to the card (×3) instead of replacing it. A more urgent kind takes its place at once; others wait their turn, and several waiting together show as one card, such as "3 new alerts". The wardrive screen counts the alerts, and **A** lists them.
+- **Not too many.** A device alerts once while it is around. Flock and other fixed cameras alert once per drive, however often you pass them; body cameras and other moving devices alert again after they have been gone for 15 minutes (**Alert again (moving devices)**). The log still notes every pass. One camera heard on Wi-Fi and Bluetooth, a Bluetooth device that changes its address, and a Dragon Detector line about a camera the scan just heard are each one alert. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, camera glasses, drones, radio tools and My alerts alert at once.
+- **Quiet for 10 minutes.** **Q** on the wardrive screen, on the alert list or while a banner shows: no tones and no banners for 10 minutes. Alerts are still listed and logged, and the wardrive screen shows how long is left, such as Q 9m, in place of the alert count. **Q** again ends it.
+- **Calm tones.** No tones in the first minute of a wardrive; those alerts still show and are not sounded later. A Flock camera tone plays at most once a minute, a My alert every 30 seconds, camera glasses every 2 minutes, and body cameras and other kinds every 5 minutes. More body cameras in between add to the banner without a sound. In a busy town a kind sounds less often: after 5 tones in 10 minutes its gap doubles, up to 4 minutes. Tones are spaced 8 seconds apart, at most 30 an hour. A body camera or My alert sounds even then, up to 6 times an hour each. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, camera glasses and My alerts are never muted, and a flood of them shows one card such as "30 flock cameras in 1 min". **Tone volume** sets the volume of Drive Alerts and of the Recon beep.
+- **No alerts for this.** Open an alert from the list and press **N**: that device does not alert again, but it is still logged and uploaded, unlike an ignored network. Its address is kept, or its name when its Bluetooth address keeps changing; then anything with that name stops alerting. A device whose Bluetooth address keeps changing and that has no name, such as most Meta glasses, is silenced for this drive only. **Settings > No alerts for** lists the kept ones.
+- **My alerts.** Names or addresses that always alert, whatever kind of device: `veh*` catches every network whose name starts with veh.
+- **Dragon Detector.** Plug a [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) into USB and its alerts join in, graded the same way. Its radar hears what scanning cannot, such as Flock cameras that only send probe requests.
+
+Without a Dragon Detector, a Flock camera alerts when it shows its own Wi-Fi network or Bluetooth signal. Detection is best effort: a device may be quiet as you pass it.
 
 ## Good to know
 
@@ -468,9 +546,29 @@ The package lands in `build/`. That last step needs `dpkg-deb`, so run it on Deb
 
 On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see, and whether the Cap LoRa-1262 answers.
 
-## Thanks
+## Credits
 
-Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://hackergadgets.com).
+Recon and Drive Alerts build on this work and research:
+
+- SquachWatch, created by Talking Sasquach, through [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts.
+- [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its melodies and tone queue, and the alerts it sends over USB.
+- Flock Noir (Your Pal Kal, MIT): Flock facts.
+- [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg.
+- OUI Spy, Unified Blue and AXEOFF by colonelpanichacks, MIT: body camera research.
+- [nyanBOX](https://github.com/jbohack/nyanBOX) by jbohack, MIT: AirTag and Find My adverts.
+- ESP32 Marauder by justcallmekoko: Pwnagotchi and DULT details.
+- The IEEE registration authority (address prefixes), the Bluetooth SIG assigned numbers, the Google Find Hub specification and OpenDroneID (ASTM F3411).
+
+### Thanks
+
+- [justcallmekoko](https://github.com/justcallmekoko)
+- [Code_Hedge](https://github.com/CodeHedge)
+- Ekoms_Savior
+- Jesse Hale
+- Vileer from [Hacker Gadgets](https://hackergadgets.com)
+- LocoSp
+- Awok ([AWOK Dynamics](https://awokdynamics.com))
+- Talking Sasquach, creator of SquachWatch
 
 ## Made by Valleytech Solutions
 
@@ -491,7 +589,9 @@ Thanks to [AWOK Dynamics](https://awokdynamics.com) and [HackerGadgets](https://
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Quartermaster is licensed under the GNU General Public License version 3 (GPL-3.0) from version 1.2.2. See [LICENSE](LICENSE). Releases before 1.2.2 remain under the MIT License.
+
+Copyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal).
 
 The Inter and JetBrains Mono fonts are included under the SIL Open Font License. Their license files are next to the fonts.
 
