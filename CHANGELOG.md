@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2
+
+- A new home screen icon, drawn at the size the home screen shows it, with a bolder outline and no black square.
+- More USB Wi-Fi adapters work as soon as they are plugged in. Adapters that first show up as a driver disc switch by themselves.
+- When an adapter is plugged in but not scanning, the Hardware screen says why: setup mode, no driver on this system yet, a model too new for the driver, missing firmware, or not enough power.
+- The README lists which Wi-Fi chips work, which do not yet, and which adapters to buy.
+
 ## 1.2.1
 
 The AppStore listing and the About screen now name every radio Quartermaster uses. Nothing else changes.

@@ -69,7 +69,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **Radios**
 
-- **Every Wi-Fi adapter at once.** Built-in and USB, single, dual or tri-band, across 2.4, 5 and 6 GHz. On either USB port, through a hub or not. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
+- **Every supported Wi-Fi adapter at once.** Built-in and any [supported USB adapter](#wi-fi-adapters), single, dual or tri-band, across 2.4, 5 and 6 GHz. On either USB port, through a hub or not. Plug one in or pull one out in the middle of a wardrive and it joins or leaves.
 - **Bluetooth beside it.** The built-in radio logs Bluetooth LE and classic devices in every wardrive.
 - **No adapter needed.** The built-in 2.4 GHz radio, Bluetooth and a GPS make a full wardriver.
 - **Nodes.** Small ESP32-C5 boards scan Wi-Fi beside your adapters. Quartermaster shares the channels out between them.
@@ -108,7 +108,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 Quartermaster looks for your hardware by itself. There is nothing to set up for these:
 
-- **Wi-Fi adapters.** Every USB adapter and the built-in radio scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
+- **Wi-Fi adapters.** The built-in radio and every [supported USB adapter](#wi-fi-adapters) scan. Plug one in or pull one out during a wardrive and it joins or leaves within seconds.
 - **Bluetooth.** The Cardputer's own radio scans in every wardrive. If Bluetooth is not ready yet, Quartermaster tries again every few seconds.
 - **GPS.** A USB GPS, the GPS on the Cap LoRa-1262, a Grove GPS unit or gpsd. Quartermaster tries each one and powers the cap and the Grove port only when it needs them. Plug a GPS in at any time, also during a wardrive.
 - **Aircraft.** Plug in an RTL-SDR stick, before or during a wardrive, and Quartermaster listens for aircraft.
@@ -195,7 +195,7 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 
 ## Hardware
 
-- **Wi-Fi adapters:** any USB adapter with a driver in the CardputerZero's Linux kernel. That covers the common MediaTek, Realtek, Ralink and Atheros chips, including MT7921AU tri-band adapters such as the ALFA AWUS036AXM.
+- **Wi-Fi adapters:** USB adapters with a driver in the CardputerZero's Linux kernel. See [Wi-Fi adapters](#wi-fi-adapters) for which ones.
 - **GPS:** any USB receiver that sends NMEA (u-blox, Quectel LC29H and others), the Cap LoRa-1262, a Grove GPS unit, or gpsd.
 - **Bluetooth:** the built-in radio.
 - **Nodes:** ESP32-C5 boards running the Quartermaster Node firmware. See [Nodes](#nodes).
@@ -205,11 +205,48 @@ Use any one site, or all three. Keys are stored on the device in a file only you
 Recommended:
 
 - **Wi-Fi:** the [AC1200 USB-C WiFi Card](https://hackergadgets.com/products/ac1200-usb-c-wifi-card) from HackerGadgets, a tri-band MT7921AU adapter for 2.4, 5 and 6 GHz with a USB-C connector.
+- **Other Wi-Fi adapters that need nothing set up:** any MT7921AU adapter, the TP-Link Archer T2U or T3U, the TP-Link Archer TX10UB Nano, and RTL8811CU nano adapters.
 - **GPS:** the Dual Band GNSS USB Dongle from [AWOK Dynamics](https://awokdynamics.com).
 
 Tested on a CardputerZero with an ALFA AWUS036AXM and the HackerGadgets AC1200 scanning together, and an LC29H USB GPS.
 
-Tri-band adapters draw a lot of power. If the Hardware screen says an adapter is on USB but not starting, replug it, try the other port, or use a powered hub. One ALFA AWUS036AXML did not start on the test device.
+### Wi-Fi adapters
+
+Not every USB Wi-Fi adapter works. An adapter works when the CardputerZero's Linux (6.18) has a driver for its chip. Quartermaster only scans, so it needs no monitor mode, and every adapter marked Yes scans with nothing to set up. The chip matters, not the brand: look up the chip of your model before you buy.
+
+| Chip | Example adapters | Works? |
+|---|---|---|
+| MediaTek MT7921AU | ALFA AWUS036AXM / AXML, Netgear A8000, Panda PAU0F, COMFAST CF-952AX | Yes, 2.4, 5 and 6 GHz |
+| MediaTek MT7925U | Netgear A9000 | Yes |
+| MediaTek MT7612U, MT7610U, MT7601U | ALFA AWUS036ACM, Netgear A6210, TP-Link Archer T2UH, ALFA AWUS036ACHM | Yes, with firmware-misc-nonfree |
+| Realtek RTL8812AU, RTL8811AU / 8821AU | ALFA AWUS036ACH, TP-Link Archer T2U / T2U Nano / T4U, Netgear A6100 | Yes |
+| Realtek RTL8814AU | ALFA AWUS1900, Netgear A7000, ASUS USB-AC68 | Yes, with enough power |
+| Realtek RTL8812BU / 8822BU, RTL8822CU | TP-Link Archer T3U / T3U Plus, Netgear A6150 | Yes |
+| Realtek RTL8811CU / 8821CU, RTL8723DU | Most "AC600" and "AC650" nano adapters | Yes |
+| Realtek RTL8851BU, RTL8852BU | TP-Link Archer TX10UB Nano, TX20U | Yes, but some newer models are not known to Linux 6.18 yet |
+| Realtek RTL8192EU, RTL8188EU, RTL8192CU and other N150 / N300 | TP-Link TL-WN722N v2/v3, TL-WN822N, Edimax EW-7811Un | Yes, 2.4 GHz |
+| Atheros AR9271 | ALFA AWUS036NHA | Yes, 2.4 GHz |
+| Ralink RT3070 / RT5370 / RT5572 | ALFA AWUS036NH, Panda PAU09 | Yes, with firmware-misc-nonfree |
+| Realtek RTL8832AU / 8852AU | ASUS USB-AX56, D-Link DWA-X1850 A1, ALFA AWUS036AXER | Not yet. Needs Linux 6.19 |
+| Realtek RTL8832CU / 8852CU | TP-Link Archer TX50U | Not yet. Needs Linux 6.19, and the TX50U Linux 7.0 |
+| Realtek RTL8912AU / 8922AU (Wi-Fi 7) | ASUS and Edimax Wi-Fi 7 adapters | Not yet. Needs Linux 7.2 |
+
+The "Not yet" chips need a newer Linux on the CardputerZero, which an app cannot install. They start working when the CardputerZero image moves to a newer kernel.
+
+Small and nano adapters are the safest choice. Large adapters with several antennas, such as the ALFA AWUS036AXML, AWUS036ACH and AWUS1900, can draw more than the Cardputer's USB port gives. One ALFA AWUS036AXML did not start on the test device.
+
+MT7601U, MT7610U, MT7612U and Ralink adapters need firmware that the CardputerZero image leaves out. Install it once with `sudo apt install firmware-misc-nonfree`. Quartermaster does not install it for you, so that its own install never depends on a package the Cardputer may not be able to fetch.
+
+Many cheap Realtek adapters first show up as a small disc with a Windows driver on it. Quartermaster installs usb-modeswitch, and most of them switch to Wi-Fi by themselves after a few seconds. Some do not yet. If one stays in setup mode, the stock usb-modeswitch data does not know it yet. For the RTL8192FU disc (`0bda:a192`), run `sudo usb_modeswitch -v 0bda -p a192 -K`.
+
+When an adapter is plugged in but does not scan, the Hardware screen says why:
+
+- **No driver for it here.** The chip has no driver in this Linux. See the table.
+- **This model is too new for the driver here.** The chip is supported, but this model came out after Linux 6.18.
+- **Firmware missing.** Install the package it names, for example `sudo apt install firmware-misc-nonfree`. When it says the system needs newer firmware, the package is there but too old for this adapter.
+- **Needs more power.** Use a powered USB hub or a smaller adapter.
+- **In setup mode.** The adapter still shows as a driver disc. Replug it.
+- **On USB but not starting.** Replug it, try the other port, or use a powered hub.
 
 ## Nodes
 
@@ -429,7 +466,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.1,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.2,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.

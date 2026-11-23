@@ -526,8 +526,9 @@ class Hardware(Screen):
             scanning = {a["interface"]: a for a in status["adapters"]}
         cards = []
         for item in app.hw.stalled:
-            cards.append({"tag": "!", "color": AMBER, "title": item["label"], "edge": AMBER,
-                          "detail": "On USB but not starting. Replug it or use a powered hub.", "detail_color": AMBER})
+            title, detail = hardware.stall_words(item)
+            cards.append({"tag": "!", "color": AMBER, "title": title, "edge": AMBER, "detail": detail,
+                          "detail_color": AMBER})
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
             card = {"tag": "USB" if adapter["external"] else "INT", "color": GOLD if adapter["external"] else MUTED,

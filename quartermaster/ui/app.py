@@ -59,7 +59,7 @@ class HardwareWatch:
         self.serial_ports = []
         self.sdr, self.decoder, self.sky_use = [], "", ""
         self.battery, self._battery_read = None, 0.0
-        self._since = {}
+        self._since, self._why = {}, {}
         self._stop = threading.Event()
         self._thread = None
 
@@ -81,8 +81,14 @@ class HardwareWatch:
         except OSError:
             return
         # A driver needs a few seconds after plugging in; only a lasting stall is worth a warning.
-        self._since = {item["port"]: self._since.get(item["port"], now) for item in found}
-        self.stalled = [item for item in found if now - self._since[item["port"]] >= STALL_SECONDS]
+        # A driver disc that turns into an adapter is a new device on the same port, so it gets its few seconds too.
+        found = {(item["port"], item["usb_id"], item.get("plugged", "")): item for item in found}
+        self._since = {key: self._since.get(key, now) for key in found}
+        stalled = {key: item for key, item in found.items() if now - self._since[key] >= STALL_SECONDS}
+        # Working out why reads the kernel log, so it is done once each time an adapter is plugged in.
+        keys = list(stalled)
+        self._why = {key: self._why.get(key) or hardware.explain(stalled[key]) for key in keys}
+        self.stalled = [self._why[key] for key in keys]
 
     def addresses(self):
         return hardware.local_addresses()
