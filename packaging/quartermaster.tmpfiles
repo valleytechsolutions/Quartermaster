@@ -1,4 +1,6 @@
-# Let the gpio group switch on 5 V for a GPS on the cap connector or the Grove port.
+# Let the gpio group switch on 5 V for the cap connector or the Grove port, and set the cap-bus pin mux
+# for the Cap LoRa-1262.
 # systemd-tmpfiles applies this at every boot; nothing here runs as root.
 z /sys/class/leds/ext_5v_out/brightness 0664 root gpio -
 z /sys/class/leds/grove_5v_out/brightness 0664 root gpio -
+z /sys/class/leds/ext_usb_gpio_fun/brightness 0664 root gpio -

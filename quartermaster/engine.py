@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import adsb, faults, hardware, radios, wigle
+from . import adsb, faults, hardware, lora, mesh, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .tracker import BLE, BT, WIFI, Tracker
@@ -112,7 +112,8 @@ def ignored_names(items):
 def leftovers(logs):
     """Whether a crash or a power cut left a log to finish."""
     try:
-        return any(Path(logs).glob(wigle.JOURNAL_GLOB)) or any(Path(logs).glob(adsb.JOURNAL_GLOB))
+        patterns = (wigle.JOURNAL_GLOB, adsb.JOURNAL_GLOB, mesh.JOURNAL_GLOB)
+        return any(any(Path(logs).glob(pattern)) for pattern in patterns)
     except OSError:
         return False
 
@@ -145,6 +146,10 @@ def _recover(logs, names):
         done += len(adsb.recover(logs))
     except OSError:
         faults.note("Finishing an earlier aircraft log")
+    try:
+        done += len(mesh.recover(logs))
+    except OSError:
+        faults.note("Finishing an earlier mesh log")
     return done
 
 
@@ -155,8 +160,12 @@ def _record(device):
 
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
-                 nodes=None, receiver=adsb.Receiver):
+                 nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener):
         self.cfg = dict(cfg)
+        self.sdr = sdr
+        self.cap, self.listener = cap, listener
+        self.mesh = None
+        self.mesh_path = None
         self.nodes = nodes
         self.gps = gps
         self.root = Path(root)
@@ -236,7 +245,8 @@ class Wardrive:
         if self.adapters is None:
             self.adapters = hardware.wifi_adapters()
         chosen = self._chosen_adapters()
-        if not chosen and not self.cfg.get("ble", True) and not self.cfg.get("adsb") and \
+        if not chosen and not self.cfg.get("ble", True) and not self._sky_wanted() and \
+                not self._mesh_wanted(checked=False) and \
                 not (self.nodes is not None and self.nodes.in_use()):
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
         radios.claim("wardrive")
@@ -245,11 +255,10 @@ class Wardrive:
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self.fleet.start()
-        if self.cfg.get("adsb"):
-            self.aircraft = self.receiver(self.logs, self.gps, clock=self.clock, log=lambda: self.log_path,
-                                          max_hdop=self.cfg.get("gps_max_hdop") or None,
-                                          epoch=lambda fix: gps_epoch(fix, self.clock()))
-            self.aircraft.start(gps_epoch(self.gps.snapshot(), self.clock()))
+        if self._sky_wanted():
+            self._listen_sky()
+        if self._mesh_wanted():
+            self._listen_mesh()
         if self.nodes is not None:
             self.nodes.attach(self, self._wifi_sink, self._node_ble, ble=self.cfg.get("ble", True),
                               bands=self._bands)
@@ -260,6 +269,50 @@ class Wardrive:
             self._threads.append(threading.Thread(target=self._ble_loop, daemon=True, name="ble"))
         for thread in self._threads:
             thread.start()
+
+    def _sky_wanted(self):
+        """Whether aircraft are listened for now: On always, Auto while an RTL-SDR stick is plugged in."""
+        mode = self.cfg.get("adsb", "auto")
+        if mode == "auto":
+            try:
+                return bool((self.sdr or hardware.rtl_sdr_dongles)())
+            except OSError:
+                return False
+        return mode is True
+
+    def _listen_sky(self):
+        self.aircraft = self.receiver(self.logs, self.gps, clock=self.clock, log=lambda: self.log_path,
+                                      max_hdop=self.cfg.get("gps_max_hdop") or None,
+                                      epoch=lambda fix: gps_epoch(fix, self.clock()))
+        self.aircraft.start(gps_epoch(self.gps.snapshot(), self.clock()))
+
+    def _follow_sky(self):
+        """With Aircraft on Auto, a stick plugged in during the wardrive starts listening."""
+        if self.aircraft is None and self.cfg.get("adsb", "auto") == "auto" and not self._stop.is_set() and \
+                self._sky_wanted():
+            self._listen_sky()
+
+    def _mesh_wanted(self, checked=True):
+        """Whether the Cap LoRa-1262 listens: On always, Auto once the cap was found at start. Never while the
+        look for it still holds the radio: the upkeep starts listening once it is done."""
+        mode = self.cfg.get("lora", "auto")
+        if mode is False or self.cap is None or not lora.plan(self.cfg.get("country", "US")):
+            return False
+        if checked and self.cap.state == lora.CHECKING:
+            return False
+        return mode is True or self.cap.found
+
+    def _listen_mesh(self):
+        self.mesh = self.listener(self.logs, self.gps, self.cap.radio, lora.plan(self.cfg.get("country", "US")),
+                                  clock=self.clock, log=lambda: self.log_path,
+                                  max_hdop=self.cfg.get("gps_max_hdop") or None,
+                                  epoch=lambda fix: gps_epoch(fix, self.clock()))
+        self.mesh.start(gps_epoch(self.gps.snapshot(), self.clock()))
+
+    def _follow_mesh(self):
+        """A cap found after the wardrive started, as the look for it takes a moment, starts listening."""
+        if self.mesh is None and not self._stop.is_set() and self._mesh_wanted():
+            self._listen_mesh()
 
     def leftovers(self):
         return leftovers(self.logs)
@@ -278,6 +331,8 @@ class Wardrive:
             try:
                 self._sync()
                 self._follow_adapters()
+                self._follow_sky()
+                self._follow_mesh()
                 if ticks % 15 == 0:
                     self._tidy()
             except Exception:
@@ -424,10 +479,12 @@ class Wardrive:
             self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
-        if self.aircraft is not None:
-            self.aircraft.stop()
         for thread in self._threads:
             thread.join(timeout=5)
+        if self.aircraft is not None:
+            self.aircraft.stop()
+        if self.mesh is not None:
+            self.mesh.stop()
         if self.ble is not None:
             self.ble.close()
         self._flush_extremes()
@@ -447,6 +504,7 @@ class Wardrive:
         radios.release("wardrive")
         self._write_summary()
         self._write_aircraft()
+        self._write_mesh()
         _writing.discard(os.path.realpath(str(self.logs)))
 
     def _write_aircraft(self):
@@ -456,6 +514,14 @@ class Wardrive:
             self.aircraft_path = self.aircraft.finish()
         except (OSError, ValueError) as exc:
             self.failed = self.failed or "Cannot write the aircraft log: %s" % (getattr(exc, "strerror", None) or exc)
+
+    def _write_mesh(self):
+        if self.mesh is None:
+            return
+        try:
+            self.mesh_path = self.mesh.finish()
+        except (OSError, ValueError) as exc:
+            self.failed = self.failed or "Cannot write the mesh log: %s" % (getattr(exc, "strerror", None) or exc)
 
     def _append(self, row, epoch):
         with self._lock:
@@ -621,6 +687,9 @@ class Wardrive:
                        aircraft=self.aircraft.count if self.aircraft is not None else None,
                        adsb=self.aircraft.status() if self.aircraft is not None else None,
                        aircraft_log=str(self.aircraft_path) if self.aircraft_path else "",
+                       mesh=self.mesh.count if self.mesh is not None else None,
+                       lora=self.mesh.status() if self.mesh is not None else None,
+                       mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))

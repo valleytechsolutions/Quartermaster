@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0
+
+LoRa mesh nodes from the Cap LoRa-1262, and aircraft that start by themselves.
+
+- Mesh nodes: with the Cap LoRa-1262 fitted, the Meshtastic and MeshCore nodes around you are logged during a wardrive. Quartermaster checks once, when it opens, that the radio on the cap answers. Without the cap nothing changes and nothing is slower. Settings, LoRa mesh starts on Auto: every wardrive listens when the cap was found. On always listens, Off never does. Quartermaster only listens and never sends anything on LoRa.
+- Settings, Country picks the LoRa band: Meshtastic LongFast on its default channel, and MeshCore's public settings, for the United States, Canada and Mexico, Europe and the United Kingdom, Australia, and New Zealand, which has its own MeshCore settings. South Korea and Brazil have Meshtastic only. Where there are two, the radio listens to each in turn, 30 seconds at a time. The radio has a thread of its own, so Wi-Fi, Bluetooth and the screen are not slowed, and the cap's GPS keeps working.
+- Each mesh node is kept once, with its closest and its furthest sighting, its signal and how many hops away it was, and the position it gives out about itself. Meshtastic names and positions are read from the public default channels only. Packets from the internet (MQTT) are skipped. A MeshCore advert only counts when its signature is right. The nodes are saved every 30 seconds, and a mesh.json.gz file is written beside the log when the wardrive stops.
+- Mesh files go to WDGWars and Wardrift, never to WiGLE. WDGWars gets the nodes that give out their own position, at that position. Wardrift gets every node. Logs lists each mesh file with a MESH tag and what each site took. A site with nothing to take, such as WDGWars when no node gave its own position, gets a dash and not a red mark. When Wardrift stops part way, the nodes it already took are not sent again. A Wardrift key that cannot send mesh nodes does not stop the Wi-Fi and Bluetooth logs. The Hardware screen shows the cap, and the Wardrive screen and the summary count the mesh nodes. The Wardrive screen says when the cap stops listening. Restart once after the first install, so Quartermaster can reach the cap.
+- Settings, Country also matters for the cap: Quartermaster asks for it the first time you start a wardrive with the cap fitted, if you never set it.
+- Aircraft: Settings, Aircraft (ADS-B) now starts on Auto. Quartermaster listens whenever the RTL-SDR stick is plugged in, also when it is plugged in during a wardrive. On always listens, Off never does. A setting you changed yourself is kept.
+- The README has a Plug in and go list: what Quartermaster finds by itself, and what still needs a press.
+
 ## 1.1.0
 
 Nodes, wireless nodes and aircraft, and logs that keep two rows per device.

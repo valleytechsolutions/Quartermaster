@@ -1193,3 +1193,115 @@ class FakeRtlAdsb:
         for process in self.processes:
             process._close()
             process.stdout.close()
+
+
+class FakeRadio:
+    """The Cap LoRa-1262's radio, with the packets it is about to hear: (bytes, rssi, snr, crc ok)."""
+
+    def __init__(self, error=None):
+        self.packets, self.opened, self.tuned, self.closed, self.error = [], [], [], 0, error
+        self.profile = None
+
+    def open(self, profile=None):
+        from quartermaster import lora
+        if self.error:
+            raise lora.RadioError(self.error)
+        self.opened.append(profile)
+        self.profile = profile
+        return self
+
+    def tune(self, profile):
+        self.tuned.append(profile)
+        self.profile = profile
+
+    def receive(self, timeout=0.25, wait=None):
+        if self.error:
+            from quartermaster import lora
+            raise lora.RadioError(self.error)
+        if self.packets:
+            return self.packets.pop(0)
+        (wait or (lambda seconds: None))(min(timeout, 0.002))
+        return None
+
+    def close(self):
+        self.closed += 1
+
+    def hear(self, raw, rssi=-97.5, snr=6.25, crc=True):
+        self.packets.append((raw, rssi, snr, crc))
+
+
+class FakeCap:
+    """Whether the cap was found, and its radio."""
+
+    def __init__(self, state="found", radio=None):
+        self.state = state
+        self.the_radio = radio or FakeRadio()
+        self.started = []
+
+    @property
+    def found(self):
+        return self.state == "found"
+
+    def start(self, wanted=True):
+        self.started.append(wanted)
+
+    def radio(self):
+        return self.the_radio
+
+
+def _varint(number):
+    out = bytearray()
+    while number > 127:
+        out.append((number & 127) | 128)
+        number >>= 7
+    out.append(number)
+    return bytes(out)
+
+
+def pb_bytes(field, data):
+    return _varint(field << 3 | 2) + _varint(len(data)) + data
+
+
+def pb_uint(field, value):
+    return _varint(field << 3) + _varint(value)
+
+
+def pb_sfixed32(field, value):
+    return _varint(field << 3 | 5) + struct.pack("<i", value)
+
+
+def nodeinfo(source, name, short, role=0):
+    return pb_bytes(1, b"!%08x" % source) + pb_bytes(2, name.encode()) + pb_bytes(3, short.encode()) + \
+        pb_uint(5, 43) + (pb_uint(7, role) if role else b"")
+
+
+def position(lat, lon):
+    return pb_sfixed32(1, int(round(lat * 1e7))) + pb_sfixed32(2, int(round(lon * 1e7))) + pb_uint(23, 32)
+
+
+def meshtastic_packet(source, port, body, hop_start=3, hop_limit=3, mqtt=False, channel_hash=8,
+                      packet_id=0x01020304):
+    """A Meshtastic packet on the LongFast default channel (its hash is 8), encrypted with the public default key.
+    Needs the cryptography package."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    key = bytes.fromhex("d4f1bb3a20290759f0bcffabcf4e6901")
+    data = pb_uint(1, port) + pb_bytes(2, body)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(struct.pack("<QII", packet_id, source, 0))).encryptor()
+    flags = hop_limit | (0x10 if mqtt else 0) | hop_start << 5
+    return struct.pack("<IIIBBBB", 0xFFFFFFFF, source, packet_id, flags, channel_hash, 0, source & 0xFF) + \
+        encryptor.update(data) + encryptor.finalize()
+
+
+def meshcore_advert(seed=0, name="Hilltop", role=2, lat=None, lon=None, hops=2, stamp=1795000000):
+    """A MeshCore advert signed with the Ed25519 key made from seed, sent as a flood. Needs cryptography.
+    Returns (packet, public key hex)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    private = Ed25519PrivateKey.from_private_bytes(bytes((seed + i) & 255 for i in range(32)))
+    key = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    flags = role | (0x10 if lat is not None else 0) | (0x80 if name else 0)
+    app = bytes([flags]) + (struct.pack("<ii", int(round(lat * 1e6)), int(round(lon * 1e6))) if lat is not None
+                            else b"") + name.encode()
+    when = struct.pack("<I", stamp)
+    return bytes([0x11, hops]) + bytes(range(0xa0, 0xa0 + hops)) + key + when + private.sign(key + when + app) + \
+        app, key.hex()

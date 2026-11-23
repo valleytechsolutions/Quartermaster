@@ -15,7 +15,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
 
-    from . import __version__, config, hardware
+    from . import __version__, config, hardware, lora
     if args.version:
         print(__version__)
         return 0
@@ -26,6 +26,10 @@ def main(argv=None):
             print("wifi  (not starting)  %(label)s  usb=%(usb_id)s  port=%(port)s" % adapter)
         for port in hardware.gps_candidates():
             print("gps   %(path)s  %(label)s" % port)
+        cap = lora.Cap()
+        cap.start()
+        cap.wait(10)
+        print("lora  Cap LoRa-1262: %s" % ("found" if cap.found else lora.WORDS.get(cap.state, cap.state)))
         return 0
 
     from . import faults, wigle
@@ -48,7 +52,7 @@ def main(argv=None):
     gps = GPS(cfg.get("gps_source", "auto"), rails=rails, power=cfg.get("gps_power", True))
     stopped = threading.Event()
     threading.Thread(target=gps.run, args=(stopped,), daemon=True, name="gps").start()
-    app = App(display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=not args.no_splash)
+    app = App(display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=not args.no_splash, cap=lora.Cap(rails))
     wigle.prune_empty(app.logs_dir)
 
     def stop(*_):
@@ -59,7 +63,7 @@ def main(argv=None):
         app.run()
     finally:
         stopped.set()
-        rails.restore()
+        rails.restore_all()
         keyboard.close()
         display.close()
     return 0

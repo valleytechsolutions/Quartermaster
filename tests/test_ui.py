@@ -1,4 +1,5 @@
 import http.client
+import json
 import os
 from pathlib import Path
 import shutil
@@ -35,7 +36,7 @@ def make_app(tmp_path, fix=FIX, hw=None, splash=False, keys=None, manager=None, 
     gps = Gps(fix)
     sent = []
 
-    def sender(service, path, saved, endpoints):
+    def sender(service, path, saved, endpoints, **extra):
         sent.append((service, path.name))
         return uploads.Outcome(uploads.DONE, "%s has it" % accounts.SERVICE_NAMES[service])
     uploader = uploads.Uploader(tmp_path, cfg, accounts_path=tmp_path / "accounts.json", sender=sender,
@@ -1502,14 +1503,16 @@ def sky_app(tmp_path, hw=None, sdr=True, **settings):
     from tests.fakes import FakeRtlAdsb, SkyHardware
     app = make_app(tmp_path, hw=hw or SkyHardware(), **settings)
     fake = FakeRtlAdsb()
+    stick = [] if not sdr else [{"usb_id": "0bda:2838"}]
+    dongles = (lambda: stick) if sdr in (True, False) else sdr
     receiver = functools.partial(adsb.Receiver, launcher=fake,
                                  which=lambda name: "/usr/bin/rtl_adsb" if name == "rtl_adsb" else None,
-                                 dongles=lambda: [{"usb_id": "0bda:2838"}] if sdr else [], feeds=(),
+                                 dongles=dongles, feeds=(),
                                  out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
                                  runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""),
                                  tools=lambda name: None)
     app.wardrive_factory = lambda c, g: Wardrive(c, g, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=Fleet,
-                                                 clock=lambda: NOW, receiver=receiver)
+                                                 clock=lambda: NOW, receiver=receiver, sdr=dongles)
     app.rtl = fake
     return app
 
@@ -1521,22 +1524,54 @@ def hear(app, *planes):
     wait_for(lambda: app.drive.status()["aircraft"] == len(planes))
 
 
-def test_the_aircraft_setting_starts_off_and_waits_for_the_wardrive_to_stop(tmp_path, drawn):
-    assert config.load(tmp_path / "none.json")["adsb"] is False
+def test_the_aircraft_setting_starts_on_auto_and_waits_for_the_wardrive_to_stop(tmp_path, drawn):
+    assert config.load(tmp_path / "none.json")["adsb"] == "auto"
     app = sky_app(tmp_path)
     press(app, "S")
     settings = app.screen
     settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "adsb")
     press(app)
     text = screen_text(app, drawn)
-    assert "Aircraft (ADS-B)\nOff" in text and "Sent to WDGWars" in text
-    press(app, "ENTER")
+    assert "Aircraft (ADS-B)\nAuto" in text and "Auto listens when one is plugged in." in text.replace("\n", " ")
+    press(app, "RIGHT")
     assert app.cfg["adsb"] is True and config.load(tmp_path / "config.json")["adsb"] is True
+    press(app, "RIGHT")
+    assert app.cfg["adsb"] is False and config.load(tmp_path / "config.json")["adsb"] is False
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Picker) and [text for _, text, _ in app.screen.options] == \
+        ["Auto", "On", "Off"]
+    press(app, "UP", "UP", "ENTER")
+    assert app.cfg["adsb"] == "auto" and config.load(tmp_path / "config.json")["adsb"] == "auto"
     press(app, "ESC", "W", "ESC", "S")
     settings = app.screen
     settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "adsb")
     press(app, "ENTER")
-    assert app.cfg["adsb"] is True and "Stop the wardrive" in app.toast_text
+    assert app.cfg["adsb"] == "auto" and "Stop the wardrive" in app.toast_text
+
+
+@pytest.mark.parametrize("saved, kept", [
+    ({}, "auto"), ({"adsb": False}, "auto"), ({"adsb": False, "adsb_set": True}, False), ({"adsb": True}, True),
+    ({"adsb": True, "adsb_set": True}, True), ({"adsb": "auto", "adsb_set": True}, "auto"), ({"adsb": "yes"}, "auto"),
+    ({"adsb": 1}, "auto"), ({"adsb": 0, "adsb_set": True}, "auto"), ({"adsb": False, "adsb_set": "yes"}, "auto")])
+def test_an_older_config_that_never_changed_the_aircraft_setting_gets_auto_and_one_that_did_keeps_it(
+        tmp_path, saved, kept):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(dict({"ble": True, "country": "DE", "country_set": True}, **saved)))
+    cfg = config.load(path)
+    assert cfg["adsb"] == kept and type(cfg["adsb"]) is type(kept) and cfg["country"] == "DE"
+    config.save(cfg, path)
+    assert config.load(path)["adsb"] == kept
+
+
+def test_aircraft_turned_off_by_hand_stays_off_after_a_restart(tmp_path):
+    app = make_app(tmp_path)
+    assert app.cfg["adsb"] == "auto" and not app.cfg["adsb_set"]
+    app.change("ble", False)
+    assert config.load(tmp_path / "config.json")["adsb"] == "auto"
+    app.change("adsb", False)
+    saved = json.loads((tmp_path / "config.json").read_text())
+    assert saved["adsb"] is False and saved["adsb_set"] is True
+    assert config.load(tmp_path / "config.json")["adsb"] is False
 
 
 def hardware_text(app, drawn):
@@ -1548,7 +1583,9 @@ def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
     from tests.fakes import SkyHardware
     title = "Radio for aircraft (RTL-SDR)"
     assert title not in hardware_text(sky_app(tmp_path / "a", hw=SkyHardware(sdr=False)), drawn)
-    assert "Off in Settings" in hardware_text(sky_app(tmp_path / "b"), drawn)
+    assert "Off in Settings" in hardware_text(sky_app(tmp_path / "b", adsb=False), drawn)
+    assert title not in hardware_text(sky_app(tmp_path / "auto", hw=SkyHardware(sdr=False)), drawn)
+    assert "Ready. It listens in the next wardrive." in hardware_text(sky_app(tmp_path / "auto+"), drawn)
     for hw, words in ((SkyHardware(sdr=False), "Not plugged in"),
                       (SkyHardware(decoder=False), "rtl-sdr is missing. Reinstall Quartermaster"),
                       (SkyHardware(), "Ready. It listens in the next wardrive.")):
@@ -1565,7 +1602,7 @@ def test_the_hardware_screen_says_how_the_aircraft_radio_is(tmp_path, drawn):
 
 
 def test_the_wardrive_and_its_summary_count_aircraft_only_when_they_are_on(tmp_path, drawn, monkeypatch):
-    off = sky_app(tmp_path / "off")
+    off = sky_app(tmp_path / "off", adsb=False)
     press(off, "W")
     assert "aircraft" not in screen_text(off, drawn)
     press(off, "ENTER", "ENTER")
@@ -1580,6 +1617,76 @@ def test_the_wardrive_and_its_summary_count_aircraft_only_when_they_are_on(tmp_p
     text = screen_text(app, drawn)
     assert "WARDRIVE SAVED" in text and "Aircraft\n2" in text
     assert app.rtl.processes[0].signals == [signal.SIGTERM]
+
+
+def test_auto_listens_for_aircraft_only_while_a_stick_is_plugged_in_also_when_it_comes_during_the_wardrive(
+        tmp_path, drawn, monkeypatch):
+    from quartermaster import adsb, engine
+    from tests.fakes import SkyHardware
+    monkeypatch.setattr(engine, "UPKEEP_SECONDS", 0.01)
+    stick = []
+    app = sky_app(tmp_path, hw=SkyHardware(sdr=False), sdr=lambda: stick)
+    assert app.cfg["adsb"] == "auto"
+    press(app, "W")
+    time.sleep(0.1)
+    assert app.drive.aircraft is None and app.rtl.started == []
+    assert "aircraft" not in screen_text(app, drawn) and app.drive.status()["aircraft"] is None
+    assert "Radio for aircraft (RTL-SDR)" not in hardware_text(app, drawn)
+    stick.append({"usb_id": "0bda:2838"})
+    app.hw.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}]
+    hear(app, plane("a1b2c3", 25.2, -77.7))
+    assert "Running" in hardware_text(app, drawn) and "1 aircraft" in screen_text(app, drawn)
+    stick.clear()
+    app.rtl.processes[0].exit("usb_claim_interface error -6\n")
+    wait_for(lambda: app.drive.status()["adsb"]["state"] == adsb.NO_DONGLE)
+    app.hw.sdr = []
+    assert "Not plugged in" in hardware_text(app, drawn)
+    app.open("Wardrive")
+    press(app, "ENTER", "ENTER")
+    assert "Aircraft\n1" in screen_text(app, drawn) and app.drive.aircraft_path is not None
+
+
+class StandInReceiver:
+    count = 0
+
+    def __init__(self, *args, **kwargs):
+        self.started = False
+
+    def start(self, epoch):
+        self.started = True
+
+    def stop(self):
+        pass
+
+    def finish(self):
+        return None
+
+    def status(self):
+        return {"state": "running", "aircraft": 0, "detail": "Running"}
+
+
+def test_auto_counts_a_stick_as_a_radio_to_wardrive_with(tmp_path, monkeypatch):
+    from quartermaster import engine
+    cfg = dict(config.DEFAULTS, ble=False)
+    stick = []
+
+    def drive(**settings):
+        return Wardrive(dict(cfg, **settings), Gps(FIX), root=tmp_path, adapters=[], ble=NoBle(), fleet=Fleet,
+                        clock=lambda: NOW, receiver=StandInReceiver, sdr=lambda: stick)
+    with pytest.raises(RuntimeError):
+        drive().start()
+    stick.append({"usb_id": "0bda:2838"})
+    with pytest.raises(RuntimeError):
+        drive(adsb=False).start()
+    listening = drive()
+    listening.start()
+    assert listening.state == "running" and listening.aircraft.started
+    listening.stop()
+    assert drive(adsb=True)._sky_wanted() and not drive(adsb=False)._sky_wanted()
+    stick.clear()
+    assert drive(adsb=True)._sky_wanted() and not drive()._sky_wanted()
+    monkeypatch.setattr(engine.hardware, "rtl_sdr_dongles", lambda: [{"usb_id": "0bda:2838"}])
+    assert Wardrive(cfg, Gps(FIX), root=tmp_path)._sky_wanted()
 
 
 def test_aircraft_files_are_listed_with_their_own_marks_and_are_never_for_wigle(tmp_path, drawn):
@@ -1801,3 +1908,181 @@ def test_a_flash_that_cannot_work_again_offers_no_retry_and_another_layout_offer
     press(app, "Y")
     finish(app)
     assert ("install", "first") in log and app.flash_job.mode == "first" and app.flash_job.state == "done"
+
+
+def mesh_app(tmp_path, cap=None, **settings):
+    """An app with a Cap LoRa-1262 stand-in that its wardrives listen with."""
+    from tests.fakes import FakeCap
+    app = make_app(tmp_path, **dict(dict(country_set=True), **settings))
+    app.cap = cap or FakeCap()
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=tmp_path, adapters=ADAPTERS, ble=NoBle(), fleet=Fleet,
+                                                 clock=lambda: NOW, cap=app.cap)
+    return app
+
+
+def heard_meshtastic(app, *sources):
+    """Meshtastic packets on a private channel: the sender is in the clear, so no key is needed."""
+    import struct
+    for source in sources:
+        app.cap.the_radio.hear(struct.pack("<IIIBBBB", 0xFFFFFFFF, source, 7, 0x63, 0x55, 0, 0) + bytes(24))
+    wait_for(lambda: app.drive.status()["mesh"] == len(sources))
+
+
+def test_the_lora_setting_starts_on_auto_and_looks_for_the_cap_again_when_turned_back_on(tmp_path, drawn):
+    from quartermaster import lora
+    from tests.fakes import FakeCap
+    assert config.load(tmp_path / "none.json")["lora"] == "auto"
+    app = mesh_app(tmp_path, cap=FakeCap(lora.OFF), lora=False)
+    open_setting(app, "lora")
+    press(app, "ESC")
+    text = screen_text(app, drawn)
+    assert "LoRa mesh\nOff" in text and "Auto listens when one is plugged in." in text.replace("\n", " ")
+    press(app, "LEFT")
+    assert app.cfg["lora"] is True and config.load(tmp_path / "config.json")["lora"] is True
+    assert app.cap.started == [True] and app.cap.state == lora.CHECKING
+
+
+def test_every_setting_help_fits_in_its_two_lines():
+    canvas = gfx.Canvas()
+    for key, label, _, help_text in config.SETTINGS:
+        assert len(canvas.wrap(help_text, gfx.W - 20, gfx.font("ui", 9))) <= 2, key
+
+
+def test_the_hardware_screen_says_how_the_lora_cap_is(tmp_path, drawn):
+    from quartermaster import lora
+    from tests.fakes import FakeCap
+    title = "Cap LoRa-1262 for mesh nodes"
+    assert title not in hardware_text(mesh_app(tmp_path / "a", cap=FakeCap(lora.ABSENT)), drawn)
+    text = hardware_text(mesh_app(tmp_path / "b", cap=FakeCap(lora.ABSENT), lora=True), drawn)
+    assert title in text and "Not found. Plug it in, then switch on." in text
+    text = hardware_text(mesh_app(tmp_path / "c"), drawn)
+    assert title in text and "Ready. It listens in the next wardrive." in text and "US 915" in text
+    assert "Off in Settings" in hardware_text(mesh_app(tmp_path / "d", lora=False), drawn)
+    assert "No LoRa band for this country" in hardware_text(mesh_app(tmp_path / "e", country="JP"), drawn)
+    app = mesh_app(tmp_path / "f")
+    press(app, "W")
+    heard_meshtastic(app, 0x1A2B3C4D)
+    text = hardware_text(app, drawn)
+    assert "Meshtastic LongFast 906.875 MHz" in text and "1 packet" in text
+    app.cap.the_radio.error = lora.BUSY_ELSEWHERE
+    wait_for(lambda: app.drive.status()["lora"]["reason"] == lora.BUSY_ELSEWHERE)
+    card = screens.Hardware.lora_card(app, app.drive.status())
+    assert card["detail"] == "In use by another app" and card["color"] == card["detail_color"] == gfx.AMBER
+    app.shutdown()
+
+
+def test_with_the_cap_found_and_no_country_chosen_the_first_wardrive_asks_where_you_are(tmp_path, drawn):
+    from quartermaster import lora
+    app = mesh_app(tmp_path / "a", country_set=False)
+    text = hardware_text(app, drawn)
+    assert "Set your country in Settings." in text and "Ready. It listens" not in text
+    app.home()
+    press(app, "W")
+    assert isinstance(app.screen, screens.Picker) and app.screen.title == "Where are you?" and app.drive is None
+    nz = next(i for i, (value, _) in enumerate(config.COUNTRIES) if value == "NZ")
+    app.screen.index = nz
+    press(app, "ENTER")
+    assert app.cfg["country"] == "NZ" and app.cfg["country_set"] and isinstance(app.screen, screens.Wardrive)
+    assert app.drive.mesh.plan == lora.plan("NZ")
+    press(app, "ENTER", "ENTER")
+    later = mesh_app(tmp_path / "b", country_set=False)
+    press(later, "W")
+    press(later, "ESC")
+    assert later.drive is None and not later.cfg["country_set"]
+    press(later, "W")
+    assert later.drive is not None and isinstance(later.screen, screens.Wardrive)
+    assert "LoRa uses the US 915 band. Set your country in Settings." in screen_text(later, drawn)
+    press(later, "ENTER", "ENTER")
+    hands_off = mesh_app(tmp_path / "c", country_set=False, auto_start=True)
+    hands_off.booted()
+    assert hands_off.drive is not None and isinstance(hands_off.screen, screens.Wardrive)
+    press(hands_off, "ENTER", "ENTER")
+    for country in ("US", "NZ", "BR", "DE"):
+        words = "LoRa uses the %s band. Set your country in Settings." % lora.region_name(country)
+        assert gfx.Canvas().text_width(words, gfx.font("ui", 9)) <= gfx.W - 10, country
+
+
+def test_the_wardrive_and_its_summary_count_mesh_nodes(tmp_path, drawn, monkeypatch):
+    from tests.fakes import FakeCap
+    absent = mesh_app(tmp_path / "absent", cap=FakeCap("absent"))
+    press(absent, "W")
+    assert " mesh" not in screen_text(absent, drawn)
+    press(absent, "ENTER", "ENTER")
+    assert "Mesh" not in screen_text(absent, drawn)
+    app = mesh_app(tmp_path / "on")
+    press(app, "W")
+    heard_meshtastic(app, 0x1A2B3C4D, 0x0BADCAFE)
+    texts = placed(app, monkeypatch)
+    assert texts["2 mesh"][0] == texts["3 radios"][0] and texts["2 mesh"][1] == gfx.MUTED
+    press(app, "ENTER", "ENTER")
+    text = screen_text(app, drawn)
+    assert "WARDRIVE SAVED" in text and "Mesh nodes\n2" in text
+
+
+def test_the_mesh_count_is_amber_when_the_cap_stops_listening(tmp_path, monkeypatch):
+    from quartermaster import lora
+    app = mesh_app(tmp_path)
+    app.cap.the_radio.error = lora.ABSENT
+    press(app, "W")
+    wait_for(lambda: app.drive.status()["lora"]["state"] != "starting")
+    assert placed(app, monkeypatch)["0 mesh"][1] == gfx.AMBER
+    press(app, "ENTER", "ENTER")
+
+
+def test_a_full_counter_row_still_shows_the_mesh_count_and_a_stopped_cap_is_said(tmp_path, monkeypatch, drawn):
+    from quartermaster import adsb, mesh
+    app = mesh_app(tmp_path)
+    press(app, "W")
+    real = app.drive.status
+    full = dict(bands={"2.4": 163, "5": 175, "6": 74}, aircraft=23, mesh=9, adsb={"state": adsb.RUNNING},
+                lora={"state": mesh.LISTENING},
+                adapters=[{"interface": "wlan%d" % i} for i in range(3)] +
+                [{"interface": "node%d" % i, "method": "node"} for i in range(2)])
+    monkeypatch.setattr(app.drive, "status", lambda: dict(real(), **full))
+    texts = placed(app, monkeypatch)
+    assert texts["9 mesh"][0] == texts["23 aircraft"][0] == texts["5 radios"][0]
+    assert texts["9 mesh"][1] == gfx.MUTED and "3 radios + 2 nodes" not in texts
+    monkeypatch.setattr(app.drive, "status", lambda: dict(real(), **dict(full, lora={"state": mesh.FAILED})))
+    assert "The LoRa cap stopped listening. See Hardware." in screen_text(app, drawn)
+    full.update(aircraft=None, mesh=None)
+    assert "3 radios + 2 nodes" in placed(app, monkeypatch)
+    monkeypatch.setattr(app.drive, "status", real)
+    press(app, "ENTER", "ENTER")
+
+
+def test_mesh_files_are_listed_with_their_own_tag_and_are_never_for_wigle(tmp_path, drawn):
+    app = mesh_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    heard_meshtastic(app, 0x1A2B3C4D)
+    press(app, "ENTER", "ENTER")
+    app.uploader.run_pass()
+    assert ("wigle", "quartermaster_20261118-110640.mesh.json.gz") not in app.sent
+    assert ("wdgwars", "quartermaster_20261118-110640.mesh.json.gz") in app.sent
+    assert ("wardrift", "quartermaster_20261118-110640.mesh.json.gz") in app.sent
+    app.stale()
+    press(app, "ESC", "L")
+    text = screen_text(app, drawn)
+    assert "2 logs" in text and "MESH" in text
+    assert [f["mesh"] for f in app.log_files()] == [False, True]
+    press(app, "DOWN", "ENTER")
+    text = screen_text(app, drawn)
+    assert "Mesh nodes\n1" in text and "Not for WiGLE" in text and "Mesh nodes go to WDGWars and Wardrift only." in text
+    press(app, "D", "RIGHT", "ENTER")
+    assert sorted(p.name for p in (tmp_path / "logs").iterdir()) == [
+        "quartermaster_20261118-110640.summary.csv", "quartermaster_20261118-110640.wigle.csv"]
+
+
+def test_every_word_about_the_lora_cap_fits_on_its_card():
+    from quartermaster import lora, mesh
+    canvas = gfx.Canvas()
+    small = gfx.font("ui", 8)
+    room = gfx.W - 57
+    for words in list(mesh.WORDS.values()) + ["Ready. It listens in the next wardrive."]:
+        assert canvas.text_width(words, small) <= room, words
+    beside = room - int(canvas.text_width("9999 packets", small)) - 6
+    for country in lora.COUNTRY_REGION:
+        for profile in lora.plan(country):
+            assert canvas.text_width(profile.short, small) <= beside, profile.short
+    title = canvas.text_width("Cap LoRa-1262 for mesh nodes", gfx.font("ui", 10))
+    for country in lora.COUNTRY_REGION:
+        assert title + canvas.text_width(lora.region_name(country), small) + 8 <= gfx.W - 40, country
