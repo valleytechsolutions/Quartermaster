@@ -24,8 +24,8 @@ SECURITY_COLOR = {"OPEN": RED, "WEP": RED, "WPA": AMBER, "OWE": CYAN}
 STAMP = re.compile(r"quartermaster_(\d{8})-(\d{6})")
 SITE_SHORT = {"wigle": "WiGLE", "wdgwars": "WDG", "wardrift": "DRIFT"}
 REPO = "github.com/valleytechsolutions/Quartermaster"
-THANKS = ("Thanks to justcallmekoko, Code_Hedge, Ekoms_Savior, Jesse Hale, Vileer from Hacker\u00a0Gadgets, LocoSp, Awok "
-          "and Talking Sasquach")
+THANKS = ("Thanks to justcallmekoko, Code_Hedge, Ekoms_Savior, Jesse Hale, ChrisDaCrunk, Vileer from "
+          "Hacker\u00a0Gadgets, LocoSp, Awok and Talking Sasquach")
 BOARD_NAMES = {"stamp-c5": "Stamp-C5"}
 # The status light of each board, as #LED takes it, with the name in the list and the short name on the row.
 LIGHTS = (("gpio,27,1", "XIAO ESP32-C5", "XIAO"), ("ws2812,27", "ESP32-C5-DevKitC-1", "DevKitC"),

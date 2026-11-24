@@ -305,6 +305,9 @@ class Wardrive:
             watch.configure(self.cfg)
         elif self.state == "running":
             self._watch_on()
+        replan = getattr(self.mesh, "replan", None)
+        if replan is not None:
+            replan(self._lora_plan())
 
     def _sky_wanted(self):
         """Whether aircraft are listened for now: On always, Auto while an RTL-SDR stick is plugged in."""
@@ -338,11 +341,22 @@ class Wardrive:
             return False
         return mode is True or self.cap.found
 
+    def _lora_plan(self):
+        """The LoRa settings to listen on in turn. LoRaWAN uplinks join them only while LoRaWAN networks alert."""
+        wanted = self.cfg.get("drive_alerts", True) and "lorawan" in self.cfg.get("drive_alert_types", ())
+        return lora.plan(self.cfg.get("country", "US"), lorawan_too=wanted)
+
+    def _lorawan_heard(self, hit):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_lorawan(hit)
+
     def _listen_mesh(self):
-        self.mesh = self.listener(self.logs, self.gps, self.cap.radio, lora.plan(self.cfg.get("country", "US")),
+        self.mesh = self.listener(self.logs, self.gps, self.cap.radio, self._lora_plan(),
                                   clock=self.clock, log=lambda: self.log_path,
                                   max_hdop=self.cfg.get("gps_max_hdop") or None,
                                   epoch=lambda fix: gps_epoch(fix, self.clock()))
+        self.mesh.lorawan_sink = self._lorawan_heard
         self.mesh.start(gps_epoch(self.gps.snapshot(), self.clock()))
 
     def _follow_mesh(self):

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.4
+
+- Recon and Drive Alerts now use SquachWatch's detection types, with its names and in its order: Flock cameras, Axon body cams, Meta glasses, card skimmers, Raven sensors, AirTags, drones, ALPR cameras, cameras, Samsung tags, Google tags, Tile trackers, Ring cameras, deauth floods, evil twin APs, proximity beacons, hacker hardware, LoRaWAN networks, My alerts and smart speakers. Every detection rule is kept.
+- Trackers are split the way SquachWatch splits them: Samsung SmartTag, Google Find Hub tags (Chipolo, Pebblebee, Moto Tag and unknown-tracker adverts) and Tile.
+- In-car fleet routers are now listed under Axon body cams, as SquachWatch files them, named "fleet router" and graded as weak hints, so they never alert unless Alert from is set to weak hints. Recon does not raise "Following?" for them either, so a work truck with its own router stays quiet.
+- Bursts of fake Bluetooth adverts and the Dragon Detector fox test beacon are now listed under hacker hardware. The fox is a weak hint and does not alert unless Alert from is set to weak hints.
+- New: LoRaWAN networks. With the Cap LoRa-1262 and this kind turned on, a wardrive also listens to one LoRaWAN uplink channel in turn with Meshtastic and MeshCore, and alerts once for each network operator it hears, read from the device address. Off by default.
+- The tone picker has only Quartermaster's own tones again: Siren, Yelp, Chirp, Shutter, Ping, Blip and Silent. The Dragon Detector melodies are gone. A kind that had one of them plays its default tone.
+- Settings from earlier versions carry over: trackers become Samsung tags, Google tags and Tile, fleet routers become Axon body cams, advert bursts and the fox become hacker hardware.
+- Recon's watch list shows all 20 types. Deauth floods, evil twin APs, LoRaWAN networks and My alerts are marked Wardrive only, as Recon does not look for them.
+- Proximity beacons and smart speakers start off in Recon's watch list, as in SquachWatch. A watch list you already set stays.
+- Thanks to ChrisDaCrunk, in the README and on the About screen.
+
 ## 1.2.3
 
 The same app as 1.2.2 under a new number, so a CardputerZero that installed an early 1.2.2 test build also gets the calmer alerts: the banner at the bottom, Del to hide, Q for quiet, Alert position and the credits.

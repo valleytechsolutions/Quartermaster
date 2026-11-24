@@ -9,6 +9,9 @@ position a node gives of itself is kept beside them.
 Nodes heard through the internet (MQTT) and packets without a signal reading are left out. Quartermaster never
 transmits, so it has no node of its own to leave out.
 
+While LoRaWAN networks alert in Drive Alerts, LoRaWAN uplinks take a turn as well. What is heard there names an
+operator for Drive Alerts and never becomes a mesh node.
+
 The nodes are saved every JOURNAL_SECONDS in a hidden journal, and at the stop as a mesh.json.gz beside the WiGLE
 log, with a summary CSV.
 """
@@ -26,7 +29,7 @@ import threading
 import time
 import uuid
 
-from . import __version__, adsb, faults, lora, meshpackets, wigle
+from . import __version__, adsb, faults, lora, lorawan, meshpackets, wigle
 
 JOURNAL_SECONDS = 30.0
 RETRY_SECONDS = 30.0
@@ -460,6 +463,9 @@ class Listener:
         self.epoch = epoch or (lambda fix: self.clock())
         self.dwell, self.retry = dwell, retry
         self.mesh = Mesh()
+        self.lorawan_sink = None
+        self.operators = lorawan.Operators()
+        self._replan = None
         self.state = STARTING if self.plan else NO_BAND
         self.reason = ""
         self.packets = 0
@@ -496,6 +502,10 @@ class Listener:
         self.target, self.journal, self.started = target, journal_path(target), epoch
         self._journaled = time.monotonic()
 
+    def replan(self, plan):
+        """A new list to listen on in turn, such as with LoRaWAN uplinks added. The radio thread takes it up."""
+        self._replan = list(plan)
+
     def start(self, epoch):
         self.prepare(epoch)
         fix = self.gps.snapshot()
@@ -522,7 +532,8 @@ class Listener:
             if self.log() is None and self.started < wigle.MIN_EPOCH and len(self.mesh):
                 self.prepare(min(node.first for node in self.mesh.nodes.values()))
             path = self.name()
-            written = write(path, self.mesh, self._now(), [profile.short for profile in self.plan])
+            written = write(path, self.mesh, self._now(),
+                            [profile.short for profile in self.plan if profile.protocol in NETWORKS])
             for hidden in {journal, self.journal}:
                 try:
                     hidden.unlink(missing_ok=True)
@@ -587,6 +598,14 @@ class Listener:
         heard = self.radio.receive(0.25, self._stop.wait)
         if heard is not None:
             self._heard(*heard)
+        replan, self._replan = self._replan, None
+        if replan and replan != self.plan:
+            current = self.plan[self.index]
+            self.plan = replan
+            self.index = replan.index(current) if current in replan else 0
+            if current not in replan:
+                self.radio.tune(self.plan[self.index])
+                self._deadline = time.monotonic() + self.dwell
         if len(self.plan) > 1 and time.monotonic() >= self._deadline:
             self.index = (self.index + 1) % len(self.plan)
             self.radio.tune(self.plan[self.index])
@@ -595,6 +614,12 @@ class Listener:
 
     def _heard(self, raw, rssi, snr, crc_ok):
         if not crc_ok:
+            return
+        if self.plan[self.index].protocol == "lorawan":
+            hit = self.operators.note(raw, rssi, time.monotonic())
+            sink = self.lorawan_sink
+            if hit is not None and sink is not None:
+                sink(hit)
             return
         self.packets += 1
         packet = meshpackets.decode(raw, self.plan[self.index].protocol)

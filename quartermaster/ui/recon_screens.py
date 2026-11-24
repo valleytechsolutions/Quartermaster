@@ -10,9 +10,10 @@ from .screens import TOP, Details, ListMixin, Screen, TextInput, empty_state, fm
 
 PINK = (255, 120, 200)
 CATEGORY_COLOR = {
-    "flock": RED, "alpr": RED, "axon": RED, "ring": AMBER, "camera": AMBER, "glasses": AMBER, "drone": CYAN,
-    "airtag": PINK, "tracker": PINK, "ibeacon": MUTED, "raven": AMBER, "skimmer": AMBER, "hacker": (180, 140, 255),
-    "fleet": MUTED, "listener": MUTED, "fox": CYAN, "eviltwin": AMBER, "burst": AMBER, "deauth": AMBER, "mine": GOLD,
+    "flock": RED, "axon": RED, "glasses": AMBER, "skimmer": AMBER, "raven": AMBER, "airtag": PINK, "drone": CYAN,
+    "alpr": RED, "camera": AMBER, "samsung_tag": PINK, "google_tag": PINK, "tile": PINK, "ring": AMBER,
+    "deauth": AMBER, "eviltwin": AMBER, "ibeacon": MUTED, "hacker": (180, 140, 255), "lorawan": GREEN, "mine": GOLD,
+    "listener": MUTED,
 }
 BANNER_FILL = {"flock": ((70, 12, 14), RED), "alpr": ((70, 12, 14), RED), "axon": ((70, 12, 14), RED),
                "mine": ((60, 44, 8), GOLD), "glasses": ((40, 28, 70), VIOLET)}
@@ -83,7 +84,9 @@ class Recon(Screen, ListMixin):
         fix = app.gps.snapshot()
         radios = len(app.hw.adapters)
         rows = [("Radios", "%s + Bluetooth" % plural(radios, "Wi-Fi adapter") if radios else "Bluetooth only", TEXT),
-                ("Watching", "%d of %d kinds of device" % (len(watching), len(recon.CATEGORIES)), TEXT),
+                ("Watching", "%d of %d kinds, %d Wardrive only" % (
+                    len(watching), len(recon.CATEGORIES), len(drive_watch.SQUACHWATCH_ORDER) - len(recon.CATEGORIES)),
+                 TEXT),
                 ("Show", "%s and stronger" % recon.CONFIDENCE_NAMES[r.display_min()].lower(), TEXT),
                 ("Alert", "%s and stronger%s" % (recon.CONFIDENCE_NAMES[r.alert_min()].lower(),
                                                  ", with sound" if cfg.get("recon_sound", True) else ""), TEXT),
@@ -348,30 +351,35 @@ class Categories(Screen, ListMixin):
 
     def render(self, c, app):
         enabled = set(app.cfg.get("recon_categories", recon.CATEGORIES))
-        names = list(recon.CATEGORIES)
+        names = list(drive_watch.SQUACHWATCH_ORDER)
         self.clamp(len(names), self.VISIBLE)
         for row, name in enumerate(names[self.top:self.top + self.VISIBLE]):
             y = TOP + row * 16
             if self.top + row == self.index:
                 c.select(y, 15)
-            on = name in enabled
             category_pill(c, 10, y + 2, name, width=56)
-            c.text((72, y + 2), recon.CATEGORY_LABELS[name], font("ui", 10), TEXT if on else FAINT, width=180)
+            if name not in recon.CATEGORIES:
+                c.text((72, y + 2), drive_watch.NAMES[name], font("ui", 10), FAINT, width=150)
+                c.text_right(W - 12, y + 3, "Wardrive only", font("ui", 8), FAINT)
+                continue
+            on = name in enabled
+            c.text((72, y + 2), drive_watch.NAMES[name], font("ui", 10), TEXT if on else FAINT, width=180)
             c.rect((W - 44, y + 3, W - 18, y + 12), fill=GOLD if on else SURFACE_2, radius=5)
             c.draw.ellipse((W - 30 if on else W - 43, y + 4, W - 21 if on else W - 34, y + 11),
                            fill=GOLD_INK if on else MUTED)
         self.scrollbar(c, len(names), self.VISIBLE)
 
     def handle(self, key, app):
-        names = list(recon.CATEGORIES)
+        names = list(drive_watch.SQUACHWATCH_ORDER)
         if self.move(key, len(names), self.VISIBLE):
             return True
         enabled = app.cfg.get("recon_categories", recon.CATEGORIES)
         if key in ("ENTER", "SPACE"):
             chosen = names[self.index]
-            app.change("recon_categories", [k for k in names if (k in enabled) != (k == chosen)])
+            if chosen in recon.CATEGORIES:
+                app.change("recon_categories", [k for k in recon.CATEGORIES if (k in enabled) != (k == chosen)])
         elif key == "A":
-            app.change("recon_categories", names)
+            app.change("recon_categories", list(recon.CATEGORIES))
         else:
             return super().handle(key, app)
         return True
@@ -431,7 +439,8 @@ def alert_banner(c, app, screen=None):
 
 
 def tone_of(app, kind):
-    return app.cfg.get("drive_alert_sounds", {}).get(kind, drive_watch.DEFAULT_TONES.get(kind, "blip"))
+    tone = app.cfg.get("drive_alert_sounds", {}).get(kind)
+    return tone if tone in tones.ORDER else drive_watch.DEFAULT_TONES.get(kind, "blip")
 
 
 class AlertTypes(Screen, ListMixin):
@@ -490,8 +499,9 @@ class AlertTypes(Screen, ListMixin):
         elif key == "P":
             app.preview(tone_of(app, chosen))
         elif key == "D":
-            app.confirm("Restore the defaults?", "Flock, body cameras, camera glasses and My alerts alert, each "
-                        "with its own tone. Everything else is saved without an alert.", "Restore", app.alert_defaults)
+            app.confirm("Restore the defaults?", "Flock cameras, Axon body cams, Meta glasses and My alerts alert, "
+                        "each with its own tone. Everything else is saved without an alert.", "Restore",
+                        app.alert_defaults)
         else:
             return super().handle(key, app)
         return True
@@ -700,7 +710,7 @@ class DriveAlertDetail(Details):
         self.shown = shown
 
     def silenceable(self):
-        return not self.shown.get("flood") and self.shown["category"] not in ("burst", "deauth")
+        return not self.shown.get("flood") and self.shown.get("incident") not in ("burst", "deauth")
 
     def hints(self, app):
         hints = super().hints(app)
@@ -724,7 +734,9 @@ class DriveAlertDetail(Details):
             rows.append(("Vendor", shown["vendor"]))
         if shown.get("name"):
             rows.append(("Name", shown["name"]))
-        if shown.get("address"):
+        if shown.get("category") == "lorawan" and str(shown.get("address", "")).startswith("02:4C:57:"):
+            rows.append(("NetID", shown["address"][9:].replace(":", "")))
+        elif shown.get("address"):
             rows.append(("Address", shown["address"]))
         if shown.get("owner"):
             rows.append(("Owner", shown["owner"], PINK))

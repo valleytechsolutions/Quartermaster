@@ -9,7 +9,8 @@ import time
 
 import pytest
 
-from quartermaster import accounts, config, flasher, hardware, nodes, radios, recon, updates_check, uploads
+from quartermaster import (accounts, config, drive_watch, flasher, hardware, nodes, radios, recon, updates_check,
+                           uploads)
 from quartermaster.engine import Wardrive
 from quartermaster.nodes import NOT_PLUGGED, UNPLUGGED
 from quartermaster.recon_engine import Recon
@@ -572,7 +573,7 @@ def test_every_list_stops_at_its_ends_for_a_page_and_goes_round_for_a_row(tmp_pa
     press(app, "ESC", "ESC", "S")
     settings = app.screen
     for name, kind, count in (("recon_alert_min", screens.Picker, len(recon.CONFIDENCE_BY_KEY)),
-                              ("recon_categories", recon_screens.Categories, len(recon.CATEGORIES))):
+                              ("recon_categories", recon_screens.Categories, len(drive_watch.SQUACHWATCH_ORDER))):
         settings.index = next(i for i, item in enumerate(settings.items) if item[0] == name)
         press(app, "ENTER")
         assert isinstance(app.screen, kind) and ends(app, count), name
@@ -591,7 +592,7 @@ def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn, monk
     press(app, "T")
     assert isinstance(app.screen, recon_screens.Categories)
     press(app, "ENTER")
-    assert app.cfg["recon_categories"] == [c for c in config.default_lists()["recon_categories"] if c != "alpr"]
+    assert app.cfg["recon_categories"] == [c for c in config.default_lists()["recon_categories"] if c != "flock"]
     press(app, "A", "ESC", "SPACE")
     assert app.recon_running and radios.owner() == "recon"
     assert "Nothing flagged nearby" in screen_text(app, drawn)
@@ -600,18 +601,18 @@ def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn, monk
     app.recon.observe("wifi", {"bssid": "AA:BB:CC:00:00:01", "ssid": "Coffee Shop", "rssi": -70, "channel": 1,
                                "frequency": 2412, "security": "OPEN", "band": "2.4"})
     text = screen_text(app, drawn)
-    assert "BODYCAM" in text and "Coffee Shop" not in text
+    assert "AXON" in text and "Coffee Shop" not in text
     press(app, "A")
     assert "Coffee Shop" in screen_text(app, drawn)
     press(app, "A", "S", "ENTER")
-    assert isinstance(app.screen, recon_screens.ReconDetail) and "Body-camera candidate" in screen_text(app, drawn)
+    assert isinstance(app.screen, recon_screens.ReconDetail) and "Axon body camera" in screen_text(app, drawn)
     press(app, "ENTER")
     assert isinstance(app.screen, recon_screens.Finder) and "-48" in screen_text(app, drawn)
     press(app, "R", "ESC", "ESC", "ESC")
     assert isinstance(app.screen, screens.Home) and "1 flagged" in screen_text(app, drawn)
     app.recon.unseen_alerts = 2
     text = screen_text(app, drawn)
-    assert "Body-camera candidate  +1" in text and "Del hide" in text
+    assert "Axon body camera  +1" in text and "Del hide" in text
     press(app, "BACKSPACE")
     text = screen_text(app, drawn)
     assert isinstance(app.screen, screens.Home) and "Del hide" not in text and "Body-camera" not in text
@@ -2093,7 +2094,7 @@ def test_every_word_about_the_lora_cap_fits_on_its_card():
         assert canvas.text_width(words, small) <= room, words
     beside = room - int(canvas.text_width("9999 packets", small)) - 6
     for country in lora.COUNTRY_REGION:
-        for profile in lora.plan(country):
+        for profile in lora.plan(country, lorawan_too=True):
             assert canvas.text_width(profile.short, small) <= beside, profile.short
     title = canvas.text_width("Cap LoRa-1262 for mesh nodes", gfx.font("ui", 10))
     for country in lora.COUNTRY_REGION:
@@ -2106,8 +2107,8 @@ def test_the_about_screen_thanks_the_people_who_helped(tmp_path, monkeypatch):
     found = placed(app, monkeypatch)
     lines = [text for text in found if text.startswith("Thanks to") or "Ekoms_Savior" in text or "Awok" in text]
     assert len(lines) == 3 and " ".join(lines) == screens.THANKS
-    for name in ("justcallmekoko", "Code_Hedge", "Ekoms_Savior", "Jesse Hale", "Vileer from Hacker Gadgets", "LocoSp",
-                 "Awok", "Talking Sasquach"):
+    for name in ("justcallmekoko", "Code_Hedge", "Ekoms_Savior", "Jesse Hale", "ChrisDaCrunk",
+                 "Vileer from Hacker Gadgets", "LocoSp", "Awok", "Talking Sasquach"):
         assert name in screens.THANKS.replace("\u00a0", " ")
     assert any("Hacker\u00a0Gadgets" in line for line in lines)
     assert all(found[line][0] + 9 < screens.CONTENT_BOTTOM - 37 for line in lines)

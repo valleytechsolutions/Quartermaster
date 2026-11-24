@@ -286,13 +286,14 @@ class Recon:
                     changed = True
             if shown and changed:
                 self.counters["classified"] += 1
-            if shown and (result["confidence"] >= self.alert_min() or device["follow"]) and \
+            follow = device["follow"] and not result.get("hint_only")
+            if shown and (result["confidence"] >= self.alert_min() or follow) and \
                     (device["alerted_at"] is None or away >= ALERT_AGAIN or followed):
                 device["alerted_at"] = now
                 alert = {"time": now, "transport": transport, "address": address, "category": category,
                          "label": recon.CATEGORY_LABELS[category], "confidence": result["confidence"],
                          "evidence": result.get("evidence", ""), "rssi": rssi, "name": device.get("name", ""),
-                         "follow": device["follow"]}
+                         "follow": follow}
                 self.alerts.appendleft(alert)
                 self.unseen_alerts += 1
                 self.counters["alerts"] += 1

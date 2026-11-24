@@ -87,8 +87,8 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **And more**
 
-- **Drive Alerts.** While you wardrive, a banner and a tone warn you about Flock cameras, body cameras, camera glasses and any other kind you pick, from what the wardrive already hears. Each kind can have its own tone, such as a siren for body cameras. See [Drive Alerts](#drive-alerts).
-- **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
+- **Drive Alerts.** While you wardrive, a banner and a tone warn you about Flock cameras, Axon body cams, Meta glasses and any other kind you pick, from what the wardrive already hears. Each kind can have its own tone, such as a siren for body cameras. See [Drive Alerts](#drive-alerts).
+- **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, Meta glasses, trackers such as AirTag, Samsung SmartTag, Google Find Hub tags and Tile, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **One job at a time.** Recon and a wardrive never run together, so every radio does one job well. Drive Alerts use no radio of their own.
 - **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
 
@@ -401,6 +401,14 @@ Logs shows mesh files with a **MESH** tag, and what each site took.
   </tr>
 </table>
 
+### LoRaWAN networks
+
+Turn on **LoRaWAN networks** in **Settings > Alert me about** and, while you wardrive with the cap, Quartermaster also listens for LoRaWAN uplinks, as SquachWatch does: a third turn of 30 seconds after Meshtastic and MeshCore, on one uplink channel at SF7 (903.9 MHz in the US, 868.1 MHz in Europe, 916.8 MHz in Australia, New Zealand and Brazil, 922.1 MHz in South Korea). It is off by default, and with it off the cap listens exactly as before.
+
+Each LoRaWAN frame carries its device address in the clear, and the start of that address names the network operator, such as The Things Network, Helium or a utility. Quartermaster looks it up in the LoRa Alliance NetID list that SquachWatch carries and alerts once per operator, not once per device, under an address made up from the NetID (02:4C:57:...), and its alert screen shows the NetID. The payload stays encrypted and is never read. LoRaWAN devices are not mesh nodes, so they are not written to the mesh file and are not uploaded.
+
+What is not there yet: Quartermaster listens on one uplink channel and one data rate only, so a network that uses other channels or slower rates may not be heard. It does not listen to downlinks (RX2) or Class B beacons, which need inverted IQ, and it does not read join requests.
+
 ## Controls
 
 | Key | What it does |
@@ -446,7 +454,7 @@ Every screen shows its own keys along the bottom.
 | | Cap and Grove power | When needed, Leave off | When needed |
 | Uploads | Send logs | Automatic, Only when asked | Automatic |
 | Drive alerts | Alerts while wardriving | On, Off | On |
-| | Alert me about | Each kind of device: alert on or off, tone on or off, and its tone | Flock, body cameras, camera glasses, My alerts |
+| | Alert me about | Each kind of device: alert on or off, tone on or off, and its tone | Flock cameras, Axon body cams, Meta glasses, My alerts |
 | | Alert tones | On, Off | On |
 | | Tone volume | Medium, Loud, Quiet. Also the Recon beep | Medium |
 | | Alert position | Bottom, Top. Also Recon alerts | Bottom |
@@ -458,7 +466,7 @@ Every screen shows its own keys along the bottom.
 | Recon | Show devices from | Weak hints, Medium evidence, Strong only | Weak hints |
 | | Alert from | Weak hints, Medium evidence, Strong only | Medium evidence |
 | | Alert sound | On, Off | On |
-| | Watch list | The kinds of device Recon looks for | All |
+| | Watch list | The kinds of device Recon looks for. Deauth floods, evil twin APs, LoRaWAN networks and My alerts are Wardrive only | All but proximity beacons and smart speakers |
 | Screen | Live list shows | Wi-Fi + BLE, Wi-Fi, Bluetooth | Wi-Fi + BLE |
 | | Start wardrive on launch | No, Yes | No |
 | | Boot animation | On, Off | On |
@@ -482,7 +490,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.3,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.4,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.
@@ -501,7 +509,34 @@ On other screens, a Recon alert shows as a card at the bottom, where Drive Alert
 
 A match is broadcast evidence. It is not proof that a device is recording, who owns it, or what it is for. Many products share radio parts, so weak hints are common.
 
-Recon also knows dashcams and fleet cameras, in-car fleet routers (a kind of their own, never counted as body cameras, and off until you turn them on), smart speakers with microphones (off until you turn them on), AirTags with or without their owner and AirTags not set up yet, and the Dragon Detector fox test beacon (off until you turn it on).
+Recon also knows dashcams and fleet cameras, in-car fleet routers, smart speakers with microphones, AirTags with or without their owner and AirTags not set up yet, and the Dragon Detector fox test beacon.
+
+The kinds of device are SquachWatch's detection types, with its names and in its order, in Recon and in Drive Alerts alike:
+
+| SquachWatch type | Shown as | What it covers |
+| --- | --- | --- |
+| FLOCK | Flock cameras | Flock cameras, batteries and accessories |
+| AXON | Axon body cams | Axon, WatchGuard and Digital Ally body cameras. Cradlepoint and Sierra Wireless in-car routers go here too, as SquachWatch files them, as weak hints named "fleet router", so they never alert unless **Alert from** is set to weak hints |
+| META | Meta glasses | Ray-Ban Meta, Oakley Meta, Snap Spectacles and other camera glasses |
+| SKIMMER | Card skimmers | Serial Bluetooth modules found in card skimmers |
+| RAVEN | Raven sensors | Raven gunshot sensors |
+| AIRTAG | AirTags | AirTags and other Find My accessories |
+| DRONE | Drones | Remote ID broadcasts and drone makers |
+| ALPR | ALPR cameras | Plate readers other than Flock |
+| CAMERA | Cameras | Security cameras, dashcams and hidden camera hotspots |
+| SAMSUNG_TAG | Samsung tags | Samsung SmartTag |
+| GOOGLE_TAG | Google tags | Find Hub trackers such as Chipolo, Pebblebee and Moto Tag, and unknown-tracker (DULT) adverts |
+| TILE | Tile trackers | Tile |
+| RING | Ring cameras | Ring doorbells and cameras |
+| DEAUTH | Deauth floods | Bursts of Wi-Fi disconnects, from a Dragon Detector |
+| EVILTWIN | Evil twin APs | One network name open on one access point and protected on another |
+| IBEACON | Proximity beacons | iBeacons. Off in Recon until you turn it on |
+| HACKER | Hacker hardware | Flipper Zero, Pwnagotchi, WiFi Pineapple, deauthers and the like, and bursts of fake Bluetooth adverts. The Dragon Detector fox test beacon is listed here as a weak hint and never alerts unless **Alert from** is set to weak hints |
+| LORAWAN | LoRaWAN networks | The operator of a LoRaWAN network in range, with the Cap LoRa-1262. See [LoRaWAN networks](#lorawan-networks) |
+| MINE | My alerts | Your own names and addresses |
+| LISTENER | Smart speakers | Sonos, HomePod, and Echo or Google speakers in setup. Off in Recon until you turn it on |
+
+Recon hears Wi-Fi and Bluetooth only, so its watch list leaves out deauth floods, evil twins, LoRaWAN networks and My alerts.
 
 ## Drive Alerts
 
@@ -512,12 +547,12 @@ While you wardrive, Quartermaster can warn you about the devices you pick, from 
   <img src="docs/screens/alert-types.png" width="320" alt="Alert me about: each kind with its tone and switch">
 </p>
 
-- **What alerts.** Out of the box: Flock cameras, body cameras such as Axon, and camera glasses such as Ray-Ban Meta. **Settings > Alert me about** turns every other kind on or off, from ALPR and doorbell cameras to trackers, an open twin of a protected network, and bursts of fake Bluetooth adverts.
-- **Tones.** Siren for body cameras, Chirp for Flock and Ping for camera glasses. Every kind can have its own: Siren, Yelp, Chirp, Shutter, Ping, Blip, any of the Dragon Detector melodies, or Silent. In **Alert me about**, **Z** and **C** pick a tone and play it, **P** plays it again, **T** turns the tone of one kind off and **D** restores the defaults. **Alert tones** turns every tone off.
+- **What alerts.** Out of the box: Flock cameras, Axon body cams, Meta glasses and My alerts. **Settings > Alert me about** turns every other kind on or off, from ALPR and Ring cameras to AirTags, Samsung, Google and Tile trackers, evil twin APs, hacker hardware and LoRaWAN networks.
+- **Tones.** Siren for Axon body cams, Chirp for Flock and Ping for Meta glasses, Blip for the rest. Every kind can have its own: Siren, Yelp, Chirp, Shutter, Ping, Blip or Silent. In **Alert me about**, **Z** and **C** pick a tone and play it, **P** plays it again, **T** turns the tone of one kind off and **D** restores the defaults. **Alert tones** turns every tone off.
 - **The banner.** A card at the bottom, just above the key hints, for 6 seconds, 10 for a body camera. **Alert position** can put it at the top instead; on the wardrive screen it then sits just under the counters. It never covers the counters, and **OK** still stops the wardrive. **Del** hides it at once; the alert stays in the list and the next new alert still shows. The icon pulses once a second for the first 3 seconds, then stays still. More of the same kind add to the card (×3) instead of replacing it. A more urgent kind takes its place at once; others wait their turn, and several waiting together show as one card, such as "3 new alerts". The wardrive screen counts the alerts, and **A** lists them.
-- **Not too many.** A device alerts once while it is around. Flock and other fixed cameras alert once per drive, however often you pass them; body cameras and other moving devices alert again after they have been gone for 15 minutes (**Alert again (moving devices)**). The log still notes every pass. One camera heard on Wi-Fi and Bluetooth, a Bluetooth device that changes its address, and a Dragon Detector line about a camera the scan just heard are each one alert. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, camera glasses, drones, radio tools and My alerts alert at once.
+- **Not too many.** A device alerts once while it is around. Flock and other fixed cameras alert once per drive, however often you pass them; body cameras and other moving devices alert again after they have been gone for 15 minutes (**Alert again (moving devices)**). The log still notes every pass. One camera heard on Wi-Fi and Bluetooth, a Bluetooth device that changes its address, and a Dragon Detector line about a camera the scan just heard are each one alert. Weak hints are saved but do not alert. Most kinds need two sightings first; cameras, Meta glasses, drones, hacker hardware, LoRaWAN networks and My alerts alert at once. A LoRaWAN network alerts once per drive.
 - **Quiet for 10 minutes.** **Q** on the wardrive screen, on the alert list or while a banner shows: no tones and no banners for 10 minutes. Alerts are still listed and logged, and the wardrive screen shows how long is left, such as Q 9m, in place of the alert count. **Q** again ends it.
-- **Calm tones.** No tones in the first minute of a wardrive; those alerts still show and are not sounded later. A Flock camera tone plays at most once a minute, a My alert every 30 seconds, camera glasses every 2 minutes, and body cameras and other kinds every 5 minutes. More body cameras in between add to the banner without a sound. In a busy town a kind sounds less often: after 5 tones in 10 minutes its gap doubles, up to 4 minutes. Tones are spaced 8 seconds apart, at most 30 an hour. A body camera or My alert sounds even then, up to 6 times an hour each. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, camera glasses and My alerts are never muted, and a flood of them shows one card such as "30 flock cameras in 1 min". **Tone volume** sets the volume of Drive Alerts and of the Recon beep.
+- **Calm tones.** No tones in the first minute of a wardrive; those alerts still show and are not sounded later. A Flock camera tone plays at most once a minute, a My alert every 30 seconds, Meta glasses every 2 minutes, and body cameras and other kinds every 5 minutes. More body cameras in between add to the banner without a sound. In a busy town a kind sounds less often: after 5 tones in 10 minutes its gap doubles, up to 4 minutes. Tones are spaced 8 seconds apart, at most 30 an hour. A body camera or My alert sounds even then, up to 6 times an hour each. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, Meta glasses and My alerts are never muted, and a flood of them shows one card such as "30 flock cameras in 1 min". **Tone volume** sets the volume of Drive Alerts and of the Recon beep.
 - **No alerts for this.** Open an alert from the list and press **N**: that device does not alert again, but it is still logged and uploaded, unlike an ignored network. Its address is kept, or its name when its Bluetooth address keeps changing; then anything with that name stops alerting. A device whose Bluetooth address keeps changing and that has no name, such as most Meta glasses, is silenced for this drive only. **Settings > No alerts for** lists the kept ones.
 - **My alerts.** Names or addresses that always alert, whatever kind of device: `veh*` catches every network whose name starts with veh.
 - **Dragon Detector.** Plug a [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) into USB and its alerts join in, graded the same way. Its radar hears what scanning cannot, such as Flock cameras that only send probe requests.
@@ -550,8 +585,8 @@ On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the ada
 
 Recon and Drive Alerts build on this work and research:
 
-- SquachWatch, created by Talking Sasquach, through [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts.
-- [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its melodies and tone queue, and the alerts it sends over USB.
+- SquachWatch, created by Talking Sasquach, through [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: the detection types with their names and order, how trackers split into Samsung, Google and Tile, fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts, and the LoRaWAN frame layout, NetID registry and one-alert-per-operator rule.
+- [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its tone queue, and the alerts it sends over USB.
 - Flock Noir (Your Pal Kal, MIT): Flock facts.
 - [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg.
 - OUI Spy, Unified Blue and AXEOFF by colonelpanichacks, MIT: body camera research.
@@ -565,6 +600,7 @@ Recon and Drive Alerts build on this work and research:
 - [Code_Hedge](https://github.com/CodeHedge)
 - Ekoms_Savior
 - Jesse Hale
+- ChrisDaCrunk
 - Vileer from [Hacker Gadgets](https://hackergadgets.com)
 - LocoSp
 - Awok ([AWOK Dynamics](https://awokdynamics.com))

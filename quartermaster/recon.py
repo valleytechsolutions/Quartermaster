@@ -20,37 +20,37 @@ CONFIDENCE_BY_KEY = {"low": LOW, "medium": MEDIUM, "high": STRONG}
 MAX_BLE_BYTES = 512
 MAX_WIFI_BYTES = 1024
 
-# Category keys used in settings and logs.
+# Category keys used in settings and logs, in SquachWatch's order.
 CATEGORY_LABELS = {
-    "alpr": "ALPR vendor candidate",
-    "flock": "Flock / accessory candidate",
-    "axon": "Body-camera candidate",
-    "ibeacon": "iBeacon",
-    "ring": "Ring vendor candidate",
-    "camera": "Camera vendor candidate",
-    "drone": "Drone / Remote ID",
-    "airtag": "Find My / AirTag candidate",
-    "tracker": "Tracker protocol candidate",
-    "glasses": "Camera-glasses candidate",
-    "raven": "Acoustic-sensor candidate",
-    "skimmer": "Serial-module candidate",
-    "hacker": "Radio-tool candidate",
-    "fleet": "Fleet / in-car router",
-    "listener": "Smart speaker (microphones)",
-    "fox": "Dragon fox test beacon",
+    "flock": "Flock camera",
+    "axon": "Axon body camera",
+    "glasses": "Meta glasses",
+    "skimmer": "Card skimmer",
+    "raven": "Raven sensor",
+    "airtag": "AirTag",
+    "drone": "Drone",
+    "alpr": "ALPR",
+    "camera": "Camera",
+    "samsung_tag": "Samsung tag",
+    "google_tag": "Google tag",
+    "tile": "Tile",
+    "ring": "Ring camera",
+    "ibeacon": "Proximity beacon",
+    "hacker": "Hacker hardware",
+    "listener": "Smart speaker",
 }
 CATEGORY_SHORT = {
-    "alpr": "ALPR", "flock": "FLOCK", "axon": "BODYCAM", "ibeacon": "BEACON", "ring": "RING",
-    "camera": "CAMERA", "drone": "DRONE", "airtag": "FIND MY", "tracker": "TRACKER",
-    "glasses": "GLASSES", "raven": "RAVEN", "skimmer": "SERIAL", "hacker": "RADIO TOOL", "fleet": "FLEET",
-    "listener": "SPEAKER", "fox": "FOX",
+    "flock": "FLOCK", "axon": "AXON", "glasses": "GLASSES", "skimmer": "SKIMMER", "raven": "RAVEN",
+    "airtag": "AIRTAG", "drone": "DRONE", "alpr": "ALPR", "camera": "CAMERA", "samsung_tag": "SMARTTAG",
+    "google_tag": "FIND HUB", "tile": "TILE", "ring": "RING", "ibeacon": "IBEACON", "hacker": "HACKER",
+    "listener": "SPEAKER",
 }
 CATEGORIES = tuple(CATEGORY_LABELS)
-OFF_BY_DEFAULT = ("fleet", "listener", "fox")
+OFF_BY_DEFAULT = ("ibeacon", "listener")
 # Higher sorts first on the Recon list.
 PRIORITY = {"flock": 100, "alpr": 100, "axon": 95, "ring": 90, "camera": 90, "glasses": 90, "drone": 85,
-            "hacker": 50, "raven": 50, "skimmer": 50, "fleet": 50, "tracker": 10, "airtag": 10, "ibeacon": 10,
-            "listener": 10, "fox": 10}
+            "hacker": 50, "raven": 50, "skimmer": 50, "airtag": 10, "samsung_tag": 10, "google_tag": 10, "tile": 10,
+            "ibeacon": 10, "listener": 10}
 
 _FAMILY_PRIORITY = {"Flock": 100, "Alpr": 100, "Axon": 95, "Ring": 90, "Camera": 90, "Meta": 90, "Drone": 85,
                     "Flipper": 75, "Fleet": 50, "Listener": 10, "Fox": 10, "Wifi": 20, "Ble": 20}
@@ -761,21 +761,27 @@ def _with_axon(current, signals):
 
 
 _FAMILY_CATEGORY = {"Flock": "flock", "Alpr": "alpr", "Axon": "axon", "IBeacon": "ibeacon", "Ring": "ring",
-                    "Camera": "camera", "Drone": "drone", "SmartTag": "tracker", "GoogleTag": "tracker",
-                    "Tile": "tracker", "Meta": "glasses", "Raven": "raven", "Skimmer": "skimmer",
+                    "Camera": "camera", "Drone": "drone", "SmartTag": "samsung_tag", "GoogleTag": "google_tag",
+                    "Tile": "tile", "Meta": "glasses", "Raven": "raven", "Skimmer": "skimmer",
                     "Pineapple": "hacker", "Pwnagotchi": "hacker", "Nyanbox": "hacker", "Halehound": "hacker",
-                    "Flipper": "hacker", "Biscuit": "hacker", "Fleet": "fleet", "Listener": "listener", "Fox": "fox"}
+                    "Flipper": "hacker", "Biscuit": "hacker", "Fleet": "axon", "Listener": "listener", "Fox": "hacker"}
 
 
 def _result(match, drone=None, beacon=None):
     family, confidence, evidence = match
     category = _FAMILY_CATEGORY.get(family)
     if family == "Tracker":
-        category = "airtag" if any(w in evidence for w in ("Find My", "Apple", "AirTag")) else "tracker"
+        category = "airtag" if any(w in evidence for w in ("Find My", "Apple", "AirTag")) else "google_tag"
     if category is None or confidence == NONE:
         return {"category": None, "confidence": NONE, "payload_valid": True}
+    if family == "Fox":
+        confidence = LOW
     if category in ("airtag", "ibeacon"):
         vendor = "Apple format"
+    elif family == "Fleet":
+        vendor = evidence[:evidence.find(" OUI")] + " fleet router"
+    elif family == "Fox":
+        vendor = "Dragon fox test beacon"
     elif "Xuntong" in evidence:
         vendor = "Xuntong"
     elif category == "flock" and confidence >= MEDIUM:
@@ -803,6 +809,8 @@ def _result(match, drone=None, beacon=None):
     out = {"category": category, "label": CATEGORY_LABELS[category], "confidence": confidence,
            "confidence_name": CONFIDENCE_NAMES[confidence], "evidence": evidence, "vendor": vendor[:31],
            "payload_valid": True}
+    if family in ("Fleet", "Fox"):
+        out["hint_only"] = True
     if drone:
         out["remote_id"] = drone
     if beacon:

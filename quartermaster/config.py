@@ -148,6 +148,22 @@ def default_lists():
             "drive_alert_types": list(DEFAULT_TYPES), "drive_alert_mute": [], "drive_watch": [], "drive_alert_skip": []}
 
 
+def renamed(kinds, fold=True):
+    """A saved list of kinds of device, with the kinds of earlier versions under their SquachWatch names. A kind that
+    became part of another turns that one on, unless fold is False."""
+    from .drive_watch import FOLDED, RENAMED
+    out = set()
+    for kind in kinds:
+        if not isinstance(kind, str):
+            continue
+        if kind in FOLDED:
+            if fold:
+                out.add(FOLDED[kind])
+        else:
+            out.update(RENAMED.get(kind, (kind,)))
+    return out
+
+
 def default_sounds():
     from .drive_watch import DEFAULT_TONES
     return dict(DEFAULT_TONES)
@@ -219,10 +235,12 @@ def load(path=PATH):
     from .tones import ORDER
     categories = data.get("recon_categories")
     if isinstance(categories, list):
+        categories = renamed(categories)
         cfg["recon_categories"] = [c for c in CATEGORIES if c in categories]
     for key in ("drive_alert_types", "drive_alert_mute"):
         if isinstance(data.get(key), list):
-            cfg[key] = [t for t in TYPES if t in data[key]]
+            chosen = renamed(data[key], fold=key == "drive_alert_types")
+            cfg[key] = [t for t in TYPES if t in chosen]
     watch = data.get("drive_watch")
     if isinstance(watch, list):
         cfg["drive_watch"] = list(dict.fromkeys(item.strip()[:WATCH_LENGTH] for item in watch
@@ -233,6 +251,11 @@ def load(path=PATH):
                                                      if isinstance(item, str) and item.strip()))[-MAX_SKIP:]
     sounds = data.get("drive_alert_sounds")
     if isinstance(sounds, dict):
+        from .drive_watch import RENAMED
+        for old, new in RENAMED.items():
+            if sounds.get(old) in ORDER:
+                for key in new:
+                    sounds.setdefault(key, sounds[old])
         cfg["drive_alert_sounds"].update((k, v) for k, v in sounds.items() if k in TYPES and v in ORDER)
     cfg["country_set"] = data.get("country_set") is True and "country" in data
     cfg["adsb_set"] = data.get("adsb_set") is True
