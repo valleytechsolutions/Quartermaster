@@ -130,9 +130,9 @@ class Recon:
             deep = self.deep = self.deep_class(self.cfg)
             if not deep.open():
                 return usable
-            managed = deep.plan_roles(usable, self._node_bands())
-            if len(managed) < len(usable) and not deep.start(self._wifi_sink, self._deep_frame):
-                managed = usable
+            deep.plan_roles(usable, self._node_bands())
+            deep.start(self._wifi_sink, self._deep_frame)
+            managed = deep.managed(usable)
             deep.tune(managed)
             return deep.scanners(managed)
         except Exception:

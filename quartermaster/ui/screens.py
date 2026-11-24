@@ -459,7 +459,9 @@ class Wardrive(Screen):
         deep = s.get("deep")
         if deep and deep.get("monitor"):
             flock = (deep.get("counts") or {}).get("flock", 0)
-            x += c.pill(x, y, "DEEP" + (" F%d" % flock if flock else ""), font("monob", 8), BG, GOLD, height=11) + 4
+            many = len(deep.get("listeners") or ())
+            x += c.pill(x, y, "DEEP" + ("x%d" % many if many > 1 else "") + (" F%d" % flock if flock else ""),
+                        font("monob", 8), BG, GOLD, height=11) + 4
         guard, notice = drive.guard, (s.get("power") or {}).get("notice")
         if notice and guard is not None and guard.said != notice["id"]:
             guard.said = notice["id"]
@@ -629,19 +631,29 @@ class Hardware(Screen):
         deep = status.get("deep") if status is not None else None
         monitor = (deep or {}).get("monitor")
         guard = (status or {}).get("power") or {}
-        parked = set(guard.get("parked") or ())
+        parked = set(guard.get("parked") or ()) | set((deep or {}).get("paused") or ())
+        listeners = {item["interface"]: item for item in (deep or {}).get("listeners") or ()}
+        originals = {item["original"] for item in listeners.values()}
+        if monitor is not None:
+            originals.add(monitor.get("original"))
+        joining = set((deep or {}).get("joining") or ())
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
             if monitor is not None and adapter["interface"] == monitor.get("interface"):
                 cards.append(self.monitor_card(monitor, deep, live))
                 continue
-            if monitor is not None and adapter["interface"] == monitor.get("original"):
+            if adapter["interface"] in listeners:
+                cards.append(self.listen_card(listeners[adapter["interface"]]))
+                continue
+            if adapter["interface"] in originals:
                 continue
             card = {"tag": "USB" if adapter["external"] else "INT", "color": GOLD if adapter["external"] else MUTED,
                     "title": "%s  %s" % (adapter["interface"], adapter["label"]), "bands": adapter["bands"],
                     "right": adapter["band_label"]}
             if adapter["interface"] in parked:
                 card.update(detail="Paused to save USB power", detail_color=AMBER, right="")
+            elif adapter["interface"] in joining:
+                card.update(detail="Starts listening in a moment", right="")
             elif live and live.get("error"):
                 card.update(bands=(), detail=live["error"], detail_color=AMBER, right="")
             elif live:
@@ -651,9 +663,12 @@ class Hardware(Screen):
             if deep is not None and not card.get("detail"):
                 card.update(self.deep_words(adapter, deep, monitor))
             cards.append(card)
-        if deep is not None and monitor is not None and monitor.get("interface") not in \
-                {a["interface"] for a in app.hw.adapters}:
+        shown = {a["interface"] for a in app.hw.adapters}
+        if deep is not None and monitor is not None and monitor.get("interface") not in shown:
             cards.append(self.monitor_card(monitor, deep, scanning.get(monitor.get("interface"))))
+        for name, item in listeners.items():
+            if name not in shown and (monitor is None or name != monitor.get("interface")):
+                cards.append(self.listen_card(item))
         card = self.deep_card(app, deep)
         if card is not None:
             cards.append(card)
@@ -697,6 +712,9 @@ class Hardware(Screen):
     def power_cards(app, guard):
         """The USB power estimate, and what Power guard eased in this wardrive."""
         cards = []
+        if guard.get("line"):
+            cards.append({"tag": "USB", "color": MUTED, "title": guard["line"],
+                          "detail": "Estimate. Listening adapters draw less."})
         for title, detail, problem in powerguard.load_cards(guard.get("load") or getattr(app.hw, "power", None)):
             card = {"tag": "PWR", "color": AMBER if problem else MUTED, "title": title, "detail": detail}
             if problem:
@@ -714,12 +732,36 @@ class Hardware(Screen):
                                                         "Use a powered USB hub.")
             cards.append({"tag": "PWR", "color": AMBER, "edge": AMBER, "title": title, "detail": detail,
                           "detail_color": AMBER})
+        if guard.get("usb_limit"):
+            cards.append({"tag": "USB", "color": AMBER, "edge": AMBER, "title": "USB port at its limit",
+                          "detail": "%s. Extra adapters eased." % (guard.get("limit_reason") or "USB errors"),
+                          "detail_color": AMBER})
+        for state in (guard.get("revive") or {}).values():
+            if state.get("needs_power"):
+                cards.append({"tag": "!", "color": AMBER, "edge": AMBER, "title": "%s needs power" % state["label"],
+                              "detail": "Reset %d times, still off. Use a powered USB hub." % state["tries"],
+                              "detail_color": AMBER})
+            elif state.get("tries"):
+                cards.append({"tag": "!", "color": AMBER, "title": state["label"],
+                              "detail": "Dropped out. USB reset %d of %d." % (state["tries"], powerguard.RESET_TRIES),
+                              "detail_color": AMBER})
         return cards
+
+    @staticmethod
+    def listen_card(item):
+        """A second or further adapter listening with All adapters listen."""
+        return {"tag": "MON", "color": GOLD, "title": "%s  %s" % (item["interface"], item.get("label", "")),
+                "detail": "Listens on its own %s" % plural(item.get("channels") or 0, "channel"),
+                "right": item.get("original", "")}
 
     @staticmethod
     def monitor_card(monitor, deep, live):
         stats = deep.get("stats") or {}
         heard = "ch 11·6·1 + 2.4 GHz" if deep.get("plan") == "flock" else "ch 11·6·1 + 2.4 + 5 GHz busy"
+        listeners = deep.get("listeners") or ()
+        mine = next((item for item in listeners if item["interface"] == monitor.get("interface")), None)
+        if len(listeners) > 1 and mine is not None:
+            heard = "ch 11·6·1 + %d more, %d listen" % (max(0, mine["channels"] - 3), len(listeners))
         parts = ["Deep scan: " + heard]
         if stats.get("frames_per_s") is not None:
             parts.append("{:,} fr/s".format(int(stats["frames_per_s"])))

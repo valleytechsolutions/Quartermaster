@@ -56,15 +56,23 @@ PROBATION = 120.0
 SPACE = 8.0
 DIP_UV = 300000
 KMSG_RECORDS = 200
+USB_LIMIT_LOG = re.compile(r"dwc2.*no free (?:host )?channels?\b", re.I)
+EPROTO_LOG = re.compile(r"(?:error|err|status|ret|failed)[ =:,]*-71\b|-EPROTO\b|\bEPROTO\b")
 GUARD_LOG = re.compile(hardware.POWER_LOG.pattern + r"|Cannot enable\. Maybe the USB cable is bad|"
-                       r"hub_ext_port_status failed|Under-?voltage detected|over-current change")
+                       r"hub_ext_port_status failed|Under-?voltage detected|over-current change|" +
+                       "(?i:" + USB_LIMIT_LOG.pattern + ")|" + EPROTO_LOG.pattern)
 ALARM_LOG = re.compile(r"Under-?voltage|over-current")
 LOG_PORT = re.compile(r"\b(\d+-\d+(?:\.\d+)*)(?:-port(\d+))?\b")
 START_LOG = re.compile(r"descriptor read|Cannot enable|not accepting address")
+LISTEN_SHARE = 0.6
+RESET_WAIT = (10.0, 30.0, 90.0)
+RESET_TRIES = 3
 WORDS = {
     "over": "Too many adapters for USB power. Use a powered hub.",
     "eased": "USB power ran short: extra adapters eased",
     "parked": "%s paused: not enough USB power",
+    "limit": "The USB port is at its limit: extra adapters eased",
+    "needs_power": "%s needs power",
 }
 
 
@@ -277,6 +285,12 @@ class PowerGuard:
         self.parked, self.permanent, self.retried = [], set(), set()
         self.spaced, self.untuned = set(), set()
         self.troubles, self.eased, self.reason = 0, 0, ""
+        self.usb_limit, self.limit_reason = 0, ""
+        self.stuck = False
+        self.revive = {}
+        self._worked = set()
+        self.listening = []
+        self.moving = set()
         self.notice = None
         self.said = None
         self._shown = set()
@@ -390,6 +404,11 @@ class PowerGuard:
     def _watch_ifaces(self, adapters, now):
         here = {a["interface"]: (self._port_of(a["interface"]), a.get("usb_id", "")) for a in adapters
                 if a.get("external")}
+        for adapter, vif in self.listening:
+            here[adapter["interface"]] = (self._port_of(vif), adapter.get("usb_id", ""))
+        for name in self.moving:
+            if name not in here and name in self._ifaces and name in self._iface_port:
+                here[name] = self._iface_port[name]
         names = set(here)
         signs = []
         for name in names - self._ifaces:
@@ -411,6 +430,8 @@ class PowerGuard:
                 self._drop(name)
         for name in names:
             self._iface_port[name] = here[name]
+            if here[name][0]:
+                self._worked.add(here[name][0])
         self._ifaces = names
         return signs
 
@@ -454,6 +475,13 @@ class PowerGuard:
         print when it is unplugged, so they are left out."""
         if ALARM_LOG.search(line):
             return ("strong", "USB over-current" if "over-current" in line else "The Pi reports under-voltage")
+        if USB_LIMIT_LOG.search(line):
+            if self._gone:
+                return None
+            self.usb_limit += 1
+            self.limit_reason = "The USB port ran out of channels"
+            self._tell("limit", WORDS["limit"])
+            return ("weak", self.limit_reason)
         found = LOG_PORT.search(line)
         if found is None:
             return None if self._gone else ("weak", "USB errors in the kernel log")
@@ -463,6 +491,12 @@ class PowerGuard:
             chain.append(_parent(chain[-1]))
         if any(item in self._gone for item in chain):
             return None
+        if EPROTO_LOG.search(line):
+            self.usb_limit += 1
+            self.limit_reason = "%s: USB errors (-71)" % self._label(port)
+            self._tell("limit", WORDS["limit"])
+            if not hardware.POWER_LOG.search(line):
+                return ("weak", self.limit_reason)
         if "hub_ext_port_status" in line:
             return ("weak", "The USB hub lost a device")
         if START_LOG.search(line):
@@ -577,6 +611,7 @@ class PowerGuard:
             if actions:
                 break
         if not actions:
+            self.stuck = True
             return []
         self.level = max(self.level, stage)
         self.eased += 1
@@ -607,7 +642,68 @@ class PowerGuard:
                                                  -active.index(a)))[0]
         return best["interface"]
 
+    def revive_stalled(self, reset, stalled=None):
+        """Adapters that worked in this drive and are now on the bus without a network interface, as a brownout
+        leaves them: reset on their USB port, at most RESET_TRIES times, further apart each time. After that they
+        need power. reset(port) returns True when the reset was done, and None when no reset is possible here, which
+        is then left alone. Returns the ports reset now."""
+        now = self.clock()
+        if stalled is None:
+            stalled = hardware.stalled_usb_adapters(self.sys_usb)
+        here = {}
+        for item in stalled:
+            if item.get("disc") or item.get("port") not in self._worked:
+                continue
+            here[item["port"]] = item
+        for port, state in self.revive.items():
+            if port in here and not state["stalled"]:
+                state["next"] = max(state["next"], now + RESET_WAIT[0])
+            state["stalled"] = port in here
+        done = []
+        for port, item in here.items():
+            state = self.revive.setdefault(port, {"label": item.get("label") or "Wi-Fi adapter", "tries": 0,
+                                                  "next": now + RESET_WAIT[0], "needs_power": False,
+                                                  "possible": True, "stalled": True})
+            if state["needs_power"] or not state["possible"] or now < state["next"]:
+                continue
+            if state["tries"] >= RESET_TRIES:
+                state["needs_power"] = True
+                self._tell("needs_power", WORDS["needs_power"] % state["label"][:22])
+                continue
+            result = reset(port)
+            if result is None:
+                state["possible"] = False
+                continue
+            state["tries"] += 1
+            state["next"] = now + RESET_WAIT[min(state["tries"], len(RESET_WAIT) - 1)]
+            if result:
+                self._marked[port] = now
+                done.append(port)
+        return done
+
+    def _device_of(self, iface):
+        port = self._port_of(iface)
+        if port is None:
+            return None
+        return next((d for d in (self.load or {}).get("devices", ()) if d["port"] == port), None)
+
+    def adapters_line(self, scanning, listening):
+        """"Adapters: N active, est. X.X A, hub: powered/unpowered" for the Hardware screen. scanning: the USB
+        adapters that sweep now; listening: the monitor interfaces, which only listen and so draw less."""
+        load = self.load or {}
+        ma = load.get("ma", 0)
+        for iface in listening:
+            device = self._device_of(iface)
+            if device is not None and not device["powered"]:
+                ma -= int(device["ma"] * (1 - LISTEN_SHARE))
+        hubs = load.get("hubs") or {}
+        hub = "none" if not hubs else "powered" if all(h["powered"] for h in hubs.values()) else "unpowered"
+        active = len([a for a in scanning if a.get("external") and a["interface"] not in self.parked])
+        return "Adapters: %d active, est. %.1f A, hub: %s" % (active + len(listening), max(0, ma) / 1000.0, hub)
+
     def status(self):
         return {"level": self.level, "parked": list(self.parked), "permanent": sorted(self.permanent),
                 "retrying": self._retrying, "troubles": self.troubles, "eased": self.eased, "reason": self.reason,
-                "notice": dict(self.notice) if self.notice else None, "load": self.load}
+                "notice": dict(self.notice) if self.notice else None, "load": self.load,
+                "usb_limit": self.usb_limit, "limit_reason": self.limit_reason,
+                "revive": {port: dict(state) for port, state in self.revive.items() if state["stalled"]}}

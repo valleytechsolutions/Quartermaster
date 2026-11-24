@@ -273,16 +273,16 @@ class Worker:
         self.rate_frames, self.rate_at = 0, None
         self.channel_frames = {}
         self.gaps = deque(maxlen=64)
-        self._switched = None
+        self._switched = deque(maxlen=8)
         self.cpu_at, self.cpu_used = None, 0.0
 
     def feed_batch(self, received, dropped, freq, switched, frames, now=None):
         now = self.clock() if now is None else now
         self.received, self.dropped = received, dropped
-        if switched and switched != self._switched:
-            if self._switched is not None and frames:
+        if switched and switched not in self._switched:
+            if self._switched and frames:
                 self.gaps.append(max(0.0, now - switched))
-            self._switched = switched
+            self._switched.append(switched)
         out = []
         for raw in frames:
             out.extend(self.feed(raw, now, freq))
@@ -423,6 +423,8 @@ class Worker:
                  "received": self.received, "dropped": self.dropped,
                  "dropped_share": round(100.0 * self.dropped / self.received, 2) if self.received else 0.0,
                  "cpu": round(100.0 * (cpu - self.cpu_used) / span, 1),
+                 "parse_us": round(1e6 * (cpu - self.cpu_used) / (self.frames - self.rate_frames), 1)
+                 if self.frames > self.rate_frames else None,
                  "switch_gap_ms": round(1000 * gaps[len(gaps) // 2]) if gaps else None,
                  "channels": {f: round(n / span, 2) for f, n in self.channel_frames.items()}}
         self.rate_at, self.rate_frames, self.cpu_used = now, self.frames, cpu

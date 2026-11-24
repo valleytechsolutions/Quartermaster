@@ -55,6 +55,9 @@ SECTIONS = [
          "6 GHz stays covered."),
         ("deep_scan_plan", "Listen pattern", [("balanced", "Balanced"), ("flock", "Flock first")],
          "Balanced also covers busy 5 GHz channels. Flock first stays on 1, 6 and 11."),
+        ("deep_scan_all", "All adapters listen", [("auto", "Auto"), (False, "Off")],
+         "With 2 or more USB adapters that can listen, every spare one listens on its own channels. One adapter "
+         "per band keeps normal scans."),
         ("deep_scan_adapter", "Monitor adapter", [("auto", "Auto")],
          "Auto picks a spare adapter and never the only 6 GHz one."),
         ("direct_scan", "Direct scans", [(False, "Off"), (True, "On")],

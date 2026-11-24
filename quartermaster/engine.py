@@ -338,6 +338,10 @@ class Wardrive:
         if guard is None:
             return
         deep = self.deep
+        if hasattr(deep, "watched"):
+            guard.listening = deep.watched()
+        if hasattr(deep, "moving"):
+            guard.moving = deep.moving()
         actions = guard.check(self._scanning, self._node_bands(), list(getattr(deep, "tuned", ()) or ()),
                               hasattr(self.fleet, "space"))
         refresh = False
@@ -355,6 +359,24 @@ class Wardrive:
                 refresh = True
         if refresh and hasattr(self.fleet, "refresh"):
             self.fleet.refresh(self._unparked(self._scanning))
+        if getattr(guard, "stuck", False):
+            guard.stuck = False
+            if deep is not None and hasattr(deep, "shed"):
+                deep.shed()
+        if hasattr(guard, "revive_stalled"):
+            guard.revive_stalled(self._reset_port)
+
+    def _reset_port(self, port):
+        """A USB port reset through the radio helper: True when done, False when refused, None when the helper is
+        not there to do it."""
+        client = getattr(self.deep, "client", None)
+        if client is None:
+            return None
+        try:
+            client.request("usb_reset", port=port)
+        except deepscan.radio_helper.HelperError as exc:
+            return None if "unknown command" in str(exc) else False
+        return True
 
     def _unparked(self, adapters):
         guard = self.guard
@@ -372,10 +394,9 @@ class Wardrive:
             deep = self.deep = self.deep_class(self.cfg)
             if not deep.open():
                 return chosen
-            managed = deep.plan_roles(chosen, self._node_bands())
-            if len(managed) < len(chosen) and not deep.start(self._wifi_sink, self._deep_frames, self._deep_flood,
-                                                              self._deep_clash):
-                managed = chosen
+            deep.plan_roles(chosen, self._node_bands())
+            deep.start(self._wifi_sink, self._deep_frames, self._deep_flood, self._deep_clash)
+            managed = deep.managed(chosen)
             deep.tune(managed)
             return deep.scanners(managed)
         except Exception:
@@ -634,7 +655,8 @@ class Wardrive:
                 self.adapters = hardware.wifi_adapters()
                 chosen = self._chosen_adapters()
                 if self.deep is not None:
-                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands())
+                    held = list(self.guard.parked) if self.guard is not None else []
+                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands(), held=held)
                 self._scanning = chosen
                 self.fleet.refresh(self._unparked(chosen))
             except OSError:
@@ -931,11 +953,22 @@ class Wardrive:
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        watch=self.watch.status() if self.watch is not None else None,
                        deep=self.deep.status() if self.deep is not None else None,
-                       power=self.guard.status() if self.guard is not None else None,
+                       power=self._power_status(),
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
+
+    def _power_status(self):
+        guard = self.guard
+        if guard is None:
+            return None
+        found = guard.status()
+        if hasattr(guard, "adapters_line"):
+            deep = self.deep.status() if self.deep is not None else None
+            listening = [item["interface"] for item in (deep or {}).get("listeners") or ()]
+            found["line"] = guard.adapters_line(list(self._scanning or ()), listening)
+        return found
 
     def radio_status(self):
         """The radios of the wardrive: the Wi-Fi adapters, then the nodes."""

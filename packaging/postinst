@@ -4,11 +4,15 @@
 # switch (i2c), Bluetooth scanning (bluetooth) and Wi-Fi scan requests through
 # NetworkManager (netdev), the RTL-SDR stick (plugdev), the speaker for alert tones (audio)
 # and the radio helper for Deep scan, direct scans and radio tuning (quartermaster-radio).
+# Only the helper is in quartermaster-usbreset, which may reset a known Wi-Fi adapter after a brownout.
 # The helper's socket waits for the first connection; nothing listens in monitor mode until
 # Deep scan is turned on in Settings and a wardrive or Recon starts.
 set -e
 if ! getent group quartermaster-radio >/dev/null; then
     addgroup --system quartermaster-radio
+fi
+if ! getent group quartermaster-usbreset >/dev/null; then
+    addgroup --system quartermaster-usbreset
 fi
 for user in $(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 {print $1}'); do
     for grp in video input dialout gpio spi i2c bluetooth netdev plugdev audio quartermaster-radio; do

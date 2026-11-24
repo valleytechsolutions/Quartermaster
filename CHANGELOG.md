@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.7
+
+- New: All adapters listen, in Settings > Deep scan. It is on Auto, so it works when Deep scan is on and two or more USB adapters can listen. Turn it Off to keep one listening adapter, as in 1.2.6.
+- With it on, one adapter per band keeps its normal scans, and 6 GHz always keeps a 6 GHz adapter that scans normally. Every other USB adapter listens. Listening adapters never send anything, so they draw less power than scanning ones.
+- The listening adapters share the channels, so each one covers its own part: one keeps channels 1, 6 and 11 for Flock cameras, the busy 5 GHz channels are spread out between them, and 6 GHz adapters also listen on the main 6 GHz channels while another 6 GHz adapter still scans normally.
+- Every network they hear goes into the WiGLE log the same way as before.
+- How many adapters may listen depends on how much CPU reading their frames costs, measured while you drive, so the rest of the wardrive never slows down. Adapters over that limit keep scanning normally. The radio helper now allows up to 6 listening adapters instead of 2.
+- When the CPU runs too high, one listening adapter goes back to normal scans. Another one only starts listening again after the CPU has stayed low for a while, so adapters do not keep switching back and forth.
+- An adapter plugged in during a drive only listens on the channels it supports.
+- An adapter paused by Power guard never counts as scanning a band, so a band it had is always kept by another adapter that scans normally.
+- When a listening adapter drops out, the wardrive keeps going and the other adapters take over its channels at once. When it comes back, it starts listening again 1.5 seconds later.
+- When an adapter that worked earlier in the drive stays on USB but stops working, as after a power dip, the radio helper resets its USB port: up to 3 times, waiting longer each time. After that the Hardware screen says it needs power. This only works for the adapters the install knows, and only the helper may do it.
+- Power guard now also watches for the USB port running out of channels and for USB errors (-71) on adapters. These count as power trouble, so extra adapters are eased, and the Hardware screen shows "USB port at its limit".
+- The Hardware screen has a new line: "Adapters: N active, est. X.X A, hub: powered or unpowered". It shows every listening adapter, and an adapter waiting to listen.
+- With All adapters listen off, or Deep scan off, everything works as in 1.2.6 and the logs are the same.
+- Restart the Cardputer once after installing, so the USB reset permission applies.
+
 ## 1.2.6
 
 - New: Power guard, in Settings > Scanning. It is on by default. It helps when many USB devices share the Cardputer's one USB port.
