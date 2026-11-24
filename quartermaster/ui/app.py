@@ -8,7 +8,8 @@ import time
 
 from PIL import Image
 
-from .. import accounts, adsb, config, drive_watch, faults, flasher, hardware, lora, mesh, power, tones, updates_check
+from .. import accounts, adsb, config, drive_watch, faults, flasher, hardware, lora, mesh, power, powerguard, tones
+from .. import updates_check
 from .. import engine, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
@@ -59,6 +60,8 @@ class HardwareWatch:
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
         self.serial_ports = []
         self.sdr, self.decoder, self.sky_use = [], "", ""
+        self.power = None
+        self.hub_power = lambda: False
         self.battery, self._battery_read = None, 0.0
         self._since, self._why = {}, {}
         self._stop = threading.Event()
@@ -79,6 +82,7 @@ class HardwareWatch:
             self.sdr, self.decoder = hardware.rtl_sdr_dongles(), adsb.find_decoder()
             self.sky_use = adsb.in_use() if self.sdr else ""
             found = hardware.stalled_usb_adapters()
+            self.power = powerguard.usb_load(hubs_powered=self.hub_power())
         except OSError:
             return
         # A driver needs a few seconds after plugging in; only a lasting stall is worth a warning.
@@ -231,6 +235,7 @@ class App:
         self.uploader = uploader or uploads.Uploader(root, cfg, active=self.active_log, accounts_path=accounts_path)
         self.uploader.reporter.on_change = lambda: self.call_soon(self.save)
         self.hw = hw or HardwareWatch()
+        self.hw.hub_power = lambda: bool(self.cfg.get("hub_power"))
         self.tester = tester
         self.setup_class = setup
         self.drive = None

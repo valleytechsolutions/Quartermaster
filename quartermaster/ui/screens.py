@@ -10,8 +10,8 @@ import os
 import re
 import time
 
-from .. import (__version__, accounts, adsb, config, flasher, hardware, lora, mesh, qr, recon, updates_check,
-                uploads, wigle)
+from .. import (__version__, accounts, adsb, config, flasher, hardware, lora, mesh, powerguard, qr, recon,
+                updates_check, uploads, wigle)
 from ..nodes import NEWER, NO_HUB, NOT_ON_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
@@ -413,6 +413,9 @@ class Wardrive(Screen):
             return errors[0], AMBER
         if app.hw.stalled:
             return "%s is not starting. See Hardware." % app.hw.stalled[0]["label"], AMBER
+        parked = (s.get("power") or {}).get("parked")
+        if parked:
+            return "%s paused to save USB power. Use a powered hub." % parked[0], AMBER
         if s["ble_error"]:
             return s["ble_error"], AMBER
         if (s.get("lora") or {}).get("state") == mesh.FAILED:
@@ -457,6 +460,10 @@ class Wardrive(Screen):
         if deep and deep.get("monitor"):
             flock = (deep.get("counts") or {}).get("flock", 0)
             x += c.pill(x, y, "DEEP" + (" F%d" % flock if flock else ""), font("monob", 8), BG, GOLD, height=11) + 4
+        guard, notice = drive.guard, (s.get("power") or {}).get("notice")
+        if notice and guard is not None and guard.said != notice["id"]:
+            guard.said = notice["id"]
+            app.toast(notice["text"], AMBER, 6)
         if watch and watch["speaker"] is False and not drive.watch.speaker_said:
             drive.watch.speaker_said = True
             app.toast("No speaker found: alerts show on screen only", AMBER, 5)
@@ -621,6 +628,8 @@ class Hardware(Screen):
                           "detail_color": AMBER})
         deep = status.get("deep") if status is not None else None
         monitor = (deep or {}).get("monitor")
+        guard = (status or {}).get("power") or {}
+        parked = set(guard.get("parked") or ())
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
             if monitor is not None and adapter["interface"] == monitor.get("interface"):
@@ -631,7 +640,9 @@ class Hardware(Screen):
             card = {"tag": "USB" if adapter["external"] else "INT", "color": GOLD if adapter["external"] else MUTED,
                     "title": "%s  %s" % (adapter["interface"], adapter["label"]), "bands": adapter["bands"],
                     "right": adapter["band_label"]}
-            if live and live.get("error"):
+            if adapter["interface"] in parked:
+                card.update(detail="Paused to save USB power", detail_color=AMBER, right="")
+            elif live and live.get("error"):
                 card.update(bands=(), detail=live["error"], detail_color=AMBER, right="")
             elif live:
                 card["right"] = plural(live.get("sweeps") or 0, "sweep")
@@ -646,6 +657,7 @@ class Hardware(Screen):
         card = self.deep_card(app, deep)
         if card is not None:
             cards.append(card)
+        cards.extend(self.power_cards(app, guard))
         known = app.nodes.known()
         if not app.hw.adapters and not any(node["connected"] for node in known):
             cards.append({"tag": "WIFI", "color": AMBER, "title": "No Wi-Fi adapter found",
@@ -682,6 +694,29 @@ class Hardware(Screen):
         return cards
 
     @staticmethod
+    def power_cards(app, guard):
+        """The USB power estimate, and what Power guard eased in this wardrive."""
+        cards = []
+        for title, detail, problem in powerguard.load_cards(guard.get("load") or getattr(app.hw, "power", None)):
+            card = {"tag": "PWR", "color": AMBER if problem else MUTED, "title": title, "detail": detail}
+            if problem:
+                card.update(edge=AMBER, detail_color=AMBER)
+            cards.append(card)
+        if guard.get("troubles"):
+            if guard.get("parked"):
+                title = "USB power ran short: %s paused" % plural(len(guard["parked"]), "adapter")
+            elif guard.get("eased"):
+                title = "USB power ran short: adapters eased"
+            else:
+                title = "USB power ran short"
+            reason = guard.get("reason") or ""
+            detail = reason if guard.get("eased") else ("%s. Use a powered USB hub." % reason if reason else
+                                                        "Use a powered USB hub.")
+            cards.append({"tag": "PWR", "color": AMBER, "edge": AMBER, "title": title, "detail": detail,
+                          "detail_color": AMBER})
+        return cards
+
+    @staticmethod
     def monitor_card(monitor, deep, live):
         stats = deep.get("stats") or {}
         heard = "ch 11·6·1 + 2.4 GHz" if deep.get("plan") == "flock" else "ch 11·6·1 + 2.4 + 5 GHz busy"
@@ -710,7 +745,10 @@ class Hardware(Screen):
             problem = reason.startswith(("No monitor", "Connected", "Only 6"))
             words = {"detail": reason, "detail_color": AMBER if problem else FAINT}
         tuning = (deep.get("tuning") or {}).get(adapter["interface"])
-        if tuning and not tuning.get("error"):
+        if tuning and tuning.get("eased"):
+            words = {"detail": (words["detail"] + "  ·  " if words.get("detail") else "") +
+                     "Tuning undone to save USB power", "detail_color": AMBER}
+        elif tuning and not tuning.get("error"):
             tx = tuning.get("txpower")
             limit = tuning.get("limit")
             line = "Power save off · tx %s dBm%s" % ("%g" % tx if tx is not None else "?",

@@ -19,7 +19,7 @@ import threading
 import time
 import zlib
 
-from . import faults, recon, tones
+from . import faults, recon, tones, wigle
 from .config import is_mac
 from .recon_vendors import VENDOR_PREFIXES
 
@@ -288,6 +288,7 @@ class DriveWatch:
         self._clashes = OrderedDict()
         self._paused = {}
         self._log = None
+        self._synced = 0.0
         self._lock = threading.Lock()
         self._ready = threading.Event()
         self._stop = threading.Event()
@@ -968,6 +969,9 @@ class DriveWatch:
                     self._log = os.fdopen(fd, "a", encoding="utf-8")
                 self._log.write(json.dumps(record, ensure_ascii=True, allow_nan=False, default=_plain) + "\n")
                 self._log.flush()
+                if time.monotonic() - self._synced >= wigle.SYNC_SECONDS:
+                    wigle.fsync(self._log.fileno())
+                    self._synced = time.monotonic()
             except (OSError, ValueError):
                 self.errors += 1
 

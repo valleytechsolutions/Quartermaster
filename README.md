@@ -263,6 +263,33 @@ When an adapter is plugged in but does not scan, the Hardware screen says why:
 - **In setup mode.** The adapter still shows as a driver disc. Replug it.
 - **On USB but not starting.** Replug it, try the other port, or use a powered hub.
 
+### USB power and Power guard
+
+The Cardputer runs on its battery, and its one USB port can only give so much power. Every USB Wi-Fi adapter tells Linux it needs 100 mA, so Linux never warns you. A tri-band adapter such as the ALFA AWUS036AXM really takes about 600 mA, and up to 900 mA when it starts. When the adapters, an RTL-SDR stick and a node on an unpowered hub ask for more than the port gives, devices drop off the bus, the hub can drop off with everything on it, and the GPS can go with it.
+
+The Hardware screen adds up what is plugged in, from a table of typical draw for each chip. The numbers are estimates:
+
+| Device | Typical | Peak |
+|---|---|---|
+| MT7921AU (ALFA AWUS036AXM and other tri-band adapters) | 600 mA | 900 mA |
+| RTL8812AU, RTL8812BU (AC1200 adapters) | 500 mA | 700 mA |
+| MT7612U | 450 mA | 650 mA |
+| RTL-SDR stick | 300 mA | 300 mA |
+| ESP32-C5 node | 150 mA | 350 mA |
+| USB GPS (CP210x) | 50 mA | 50 mA |
+
+It counts the Cardputer's port, about 1,000 mA, and each unpowered hub on it, about 900 mA. Devices on a hub with its own power supply are not counted. Some powered hubs say they have no power of their own: set **USB hub power** to **Hub has power** in Settings > Scanning for those. When the total is over, the Hardware screen says "Too many adapters for USB power" and to use a powered USB hub. When a node sits on a crowded unpowered hub, it suggests running the node on its own battery: nodes work wirelessly too.
+
+Power guard is on by default, under Settings > Scanning. During a wardrive it:
+
+- Starts the USB adapters, the RTL-SDR stick and the nodes about 1.5 seconds apart, so their start-up spikes do not add up. An adapter plugged in during the drive waits 1.5 seconds too. With only one of them plugged in, nothing waits.
+- Watches for signs that power runs short: a USB device starting again on the same port, an adapter that goes away and comes back, a hub dropping off with several devices at once, the Pi's under-voltage alarm, power errors in the kernel log when the app may read it, and sharp dips in battery voltage. It needs two of these signs a few seconds apart, or the under-voltage alarm. A device or a hub unplugged or replugged by hand is not enough, and the errors a driver prints while its adapter is unplugged are left out.
+- Only while it sees those signs, eases the extra adapters, one step at a time: first it undoes Radio tuning on them, then it spaces out their sweeps, then it pauses the adapter whose bands the others cover best. An adapter plugged in later gets the gentle steps first too. The adapter that keeps 6 GHz is never paused while another can be. The GPS, the built-in radio and the nodes are never touched.
+- After a few minutes of steady power, it tries a paused adapter once more. If trouble comes back, that adapter stays paused while it is plugged in. Unplug it, or move it to a powered hub, and it scans again.
+- Tells you once on the Wardrive screen. The Hardware screen shows what it eased and why. When it could not ease anything, for example with only one USB adapter, it tells you to use a powered USB hub.
+
+When power is fine, Power guard changes nothing: every adapter scans and is tuned as before and the logs are the same. It never changes the country, never fakes power limits and never adds a node. A paused adapter still draws a little power while plugged in, so for many adapters the real fix is a powered USB hub.
+
 ## Nodes
 
 A Quartermaster Node is a small ESP32-C5 board on USB that scans Wi-Fi on 2.4 and 5 GHz, and Bluetooth when you ask, beside your adapters. Quartermaster shares the channels out between the nodes, so with more nodes each channel is heard more often. Up to 8 nodes can be used at once.
@@ -448,6 +475,8 @@ Every screen shows its own keys along the bottom.
 | Scanning | Wi-Fi adapters | All, USB only, Built-in only | All |
 | | Wi-Fi bands kept | All, 2.4 GHz, 5 GHz, 6 GHz, 5 + 6 GHz | All |
 | | Pause between sweeps | None, 1 s, 3 s, 10 s | None |
+| | Power guard | On, Off | On |
+| | USB hub power | Auto, Hub has power | Auto |
 | | Weakest signal kept | Everything, -90, -85, -80, -70 dBm | Everything |
 | | Bluetooth scan | On, Off | On |
 | | Random BLE addresses | Log, Skip | Log |
@@ -509,7 +538,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.5,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.6,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.

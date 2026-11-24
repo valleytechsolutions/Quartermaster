@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.6
+
+- New: Power guard, in Settings > Scanning. It is on by default. It helps when many USB devices share the Cardputer's one USB port.
+- The USB adapters, the RTL-SDR stick and nodes on USB now start about 1.5 seconds apart, so their start-up power spikes do not add up. An adapter plugged in during a wardrive waits 1.5 seconds too.
+- The Hardware screen shows about how much power everything on USB takes, from a table of typical values for each chip. When it is too much it says "Too many adapters for USB power" and tells you to use a powered USB hub. It also checks unpowered hubs, and suggests running a node on its own battery when it sits on a crowded one.
+- New: USB hub power, in Settings > Scanning. Some hubs with their own power supply say they have none. Pick "Hub has power" and the devices on it are no longer counted against the Cardputer's port.
+- When power runs short during a wardrive, Quartermaster sees it: devices that start again on the same port, a hub dropping off with its devices, the under-voltage alarm, power errors in the kernel log and sharp battery voltage dips. One of these on its own, like a device or a hub you unplug or replug by hand, is not enough. Only the under-voltage alarm counts at once.
+- Then it eases the extra adapters, one step at a time and only while the trouble lasts: Radio tuning is undone on them first, then their sweeps are spaced out, then the adapter that adds the least is paused. The adapter that keeps 6 GHz stays. The GPS is never touched. An adapter plugged in later gets the gentle steps first too.
+- A paused adapter is tried again once after a few minutes of steady power. If the trouble comes back, it stays paused while it is plugged in. When you unplug it, or move it to a powered hub, it is forgotten and scans again.
+- The Wardrive screen tells you once. The Hardware screen shows what was eased and why, in plain words. When nothing could be eased, it tells you to use a powered USB hub.
+- When power is fine, nothing changes: every adapter scans and is tuned as in 1.2.5, and the logs are the same.
+- Drive alert and Recon logs are now put on disk every few seconds, so a sudden power cut loses at most a few seconds of them.
+
 ## 1.2.5
 
 - New: Deep scan, in Settings. It is off by default. When you turn it on, a spare USB Wi-Fi adapter listens in monitor mode while a wardrive or Recon runs. It only listens and never sends anything.

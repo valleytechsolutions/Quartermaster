@@ -230,6 +230,7 @@ class DeepScan:
         self.monitor = None
         self.tuned = []
         self.tuning = {}
+        self.eased = set()
         self.stats = {}
         self.counts = {"flock": 0, "deauth": 0, "networks": 0}
         self.error = ""
@@ -431,13 +432,34 @@ class DeepScan:
         if self.client is None or not self.cfg.get("radio_tuning"):
             return
         for a in adapters:
-            if not a.get("external") or a.get("interface") == self.vif:
+            name = a.get("interface")
+            if not a.get("external") or name == self.vif or name in self.eased:
                 continue
             try:
-                self.tuning[a["interface"]] = self.client.request("tune", iface=a["interface"])
-                self.tuned.append(a["interface"])
+                self.tuning[name] = self.client.request("tune", iface=name)
+                if name not in self.tuned:
+                    self.tuned.append(name)
             except radio_helper.HelperError as exc:
-                self.tuning[a["interface"]] = {"error": str(exc)[:60]}
+                self.tuning[name] = {"error": str(exc)[:60]}
+
+    def ease(self, name):
+        """Undo Radio tuning on one adapter while it stays plugged in, as USB power runs short."""
+        if self.client is None or name not in self.tuned:
+            return False
+        try:
+            self.client.request("untune", iface=name)
+        except radio_helper.HelperError:
+            return False
+        self.tuned.remove(name)
+        self.eased.add(name)
+        self.tuning[name] = {"eased": True}
+        return True
+
+    def forget(self, name):
+        """An eased adapter left, or another took its name: whatever has that name now is tuned as usual."""
+        if name in self.eased:
+            self.eased.discard(name)
+            self.tuning.pop(name, None)
 
     def scanners(self, adapters):
         """The adapters as the Wi-Fi fleet should get them: with the helper for direct scans when that is on."""
