@@ -12,6 +12,11 @@
 - Recon's watch list shows all 20 types. Deauth floods, evil twin APs, LoRaWAN networks and My alerts are marked Wardrive only, as Recon does not look for them.
 - Proximity beacons and smart speakers start off in Recon's watch list, as in SquachWatch. A watch list you already set stays.
 - Thanks to ChrisDaCrunk, in the README and on the About screen.
+- A wardrive now waits for a GPS fix. You can press Start at any time; until the first fix that meets GPS accuracy needed, the Wardrive screen says Waiting for GPS fix, with the GPS and its satellites, or what to plug in when no GPS is found. The radios start, but nothing is counted or logged, no log file is made, and the timer shows GPS WAIT. At the first fix, the timer starts at 00:00:00, the counters start from zero and the log opens. Devices heard while waiting are logged once heard again with the fix. Sightings a node sends in late, and aircraft, heard while waiting are left out too.
+- Aircraft and mesh nodes wait for the first fix too.
+- Drive Alerts work while the wardrive waits for a fix, as they are there to warn you. They were never part of the wardrive's counts or log.
+- A fix lost later in the drive pauses logging as before, and the screen now says "GPS fix lost". The timer keeps running.
+- While a wardrive waits for its fix, OK just says Stop, and the screen says why when the GPS has a fix it cannot use yet, such as one too old. A wardrive stopped before any fix saves nothing. The summary says "Nothing: GPS never had a fix" and to start again once the GPS has one.
 
 ## 1.2.3
 

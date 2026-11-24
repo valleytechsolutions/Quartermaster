@@ -394,6 +394,42 @@ def test_a_logs_folder_that_cannot_be_used_is_said_and_no_wardrive_starts(tmp_pa
     assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == [leftover.name]
 
 
+def test_the_wardrive_screen_waits_for_the_fix_then_shows_the_counters(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(NO_FIX, source="CP210x USB GPS (/dev/ttyUSB0)", satellites=3))
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" in text and "CP210x USB GPS (/dev/ttyUSB0): 3 satellites in view" in text
+    assert "Give it a clear view of the sky." in text and "GPS WAIT" in text and "LOGGED" not in text
+    press(app, "ESC")
+    assert "No fix yet" in screen_text(app, drawn)
+    app.gps.fix = FIX
+    app.drive._wifi_sink(networks(4), ADAPTERS[0])
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" not in text and "LOGGED" in text and "00:00:0" in text and "GPS WAIT" not in text
+    app.gps.fix = dict(NO_FIX, source="CP210x USB GPS (/dev/ttyUSB0)")
+    text = screen_text(app, drawn)
+    assert "GPS fix lost. Logging pauses until it is back." in text and "Waiting for GPS fix" not in text
+    app.stop_wardrive()
+
+
+def test_a_fix_too_old_to_use_is_said_while_waiting(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(FIX, age_seconds=30.0, source="gpsd"))
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "gpsd: fix too old" in text and "Waiting for a current position and time." in text
+    assert "clear view of the sky" not in text
+    app.stop_wardrive()
+
+
+def test_a_fix_too_weak_for_the_setting_is_said_while_waiting(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(FIX, hdop=7.5, source="gpsd"), gps_max_hdop=5)
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" in text and "gpsd: fix too weak (HDOP 7.5)" in text
+    app.stop_wardrive()
+
+
 def test_a_stalled_adapter_is_told_once_at_wardrive_start(tmp_path, drawn):
     stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
     app = make_app(tmp_path, hw=Hardware(stalled=stalled))
@@ -407,11 +443,25 @@ def test_wardrive_without_gps_says_why_nothing_is_logged(tmp_path, drawn):
     app = make_app(tmp_path, fix=NO_FIX, hw=Hardware(stalled=stalled))
     press(app, "W")
     text = screen_text(app, drawn)
-    assert "No GPS found. Nothing is logged until one has a fix." in text and "NO GPS" in text
-    assert "MT7921AU tri-band is not starting" in app.toast_text
-    press(app, "ENTER", "ENTER")
+    assert "Waiting for GPS fix" in text and "CP210x USB GPS found" in text and "NO GPS" in text
+    assert "Waiting for it to send a position." in text and "GPS WAIT" in text and "WI-FI" not in text
+    assert "Radios are warming up. Nothing is counted yet." in text
+    assert "The timer, the counters and the log start at the fix." in text
+    assert "Stop + save" not in text and "Wi-Fi" not in text and "All" not in text
+    ports, app.hw.gps_ports = app.hw.gps_ports, []
+    text = screen_text(app, drawn)
+    app.hw.gps_ports = ports
+    assert "No GPS found" in text and "Plug in a USB GPS, the LoRa cap or a Grove GPS." in text
+    assert "MT7921AU tri-band is not starting. See Hardware." in text
+    kicked = []
+    app.uploader.kick = lambda: kicked.append(True)
+    press(app, "ENTER")
+    text = screen_text(app, drawn)
+    assert "Stop" in text and "Stop + save" not in text and "No GPS fix yet, so nothing is" in text
+    press(app, "ENTER")
     text = screen_text(app, drawn)
     assert "WARDRIVE ENDED" in text and "Nothing: GPS never had a fix" in text and not list(tmp_path.glob("logs/*"))
+    assert "Start again once the GPS has a fix." in text and "No fix" in text and kicked == [True]
     press(app, "ESC", "H")
     text = screen_text(app, drawn)
     assert "On USB but not starting" in text and "CP210x USB GPS found" in text and "wlan1" in text
@@ -787,11 +837,21 @@ def test_a_wardrive_without_a_log_is_never_called_saved(tmp_path, drawn):
     press(app, "W")
     assert app.wardriving and app.drive.log_path is None
     press(app, "ESC", "ESC")
-    assert "The scan stops. Nothing has been logged yet." in screen_text(app, drawn).replace("\n", " ")
+    assert "The scan stops. No GPS fix yet, so nothing is logged." in screen_text(app, drawn).replace("\n", " ")
     press(app, "ESC", "R", "SPACE")
     text = screen_text(app, drawn).replace("\n", " ")
-    assert "The wardrive stops and Recon starts. Nothing has been logged yet." in text and "saved" not in text
+    assert "The wardrive stops and Recon starts. No GPS fix yet, so nothing is logged." in text and "saved" not in text
     press(app, "ESC", "ESC", "W", "ENTER")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "The wardrive stops. No GPS fix yet, so nothing is logged." in text and "saved" not in text
+
+
+def test_a_wardrive_with_a_fix_and_no_log_yet_is_never_called_saved(tmp_path, drawn, monkeypatch):
+    monkeypatch.setattr(Fleet, "found", [])
+    app = make_app(tmp_path)
+    press(app, "W")
+    assert app.wardriving and not app.drive.waiting and app.drive.log_path is None
+    press(app, "ENTER")
     text = screen_text(app, drawn).replace("\n", " ")
     assert "The wardrive stops. Nothing has been logged yet." in text and "saved" not in text
 
@@ -1770,8 +1830,9 @@ def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_doe
     press(live, "ENTER", "ENTER")
 
 
-def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn):
-    app = sky_app(tmp_path, fix=NO_FIX, adsb=True, keys=KEYS)
+def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn, monkeypatch):
+    monkeypatch.setattr(Fleet, "found", [])
+    app = sky_app(tmp_path, adsb=True, keys=KEYS)
     press(app, "W")
     hear(app, plane("a1b2c3", 25.2, -77.7))
     press(app, "ENTER", "ENTER")

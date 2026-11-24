@@ -222,6 +222,31 @@ def gps_text(fix):
     return "Searching for a fix"
 
 
+def gps_wait(app, s):
+    """What the GPS is doing while a wardrive waits for its first usable fix, and what to do about it."""
+    fix = s["gps"]
+    source = fix.get("source", "none")
+    satellites = fix.get("satellites")
+    plugged = [port for port in app.hw.gps_ports if port.get("kind") == "usb" and port.get("likely")]
+    if app.cfg.get("gps_source") == "off":
+        return "GPS is off in Settings", "Turn it on in Settings to log."
+    if source != "none":
+        if s["gps_weak"]:
+            detail = "%s: fix too weak (HDOP %.1f)" % (source, fix["hdop"])
+        elif fix.get("valid"):
+            old = (fix.get("age_seconds") or 0) > wigle.FIX_MAX_AGE
+            return "%s: fix %s" % (source, "too old" if old else "not usable yet"), \
+                "Waiting for a current position and time."
+        elif satellites:
+            detail = "%s: %s in view" % (source, plural(satellites, "satellite"))
+        else:
+            detail = "%s: searching for satellites" % source
+        return detail, "Give it a clear view of the sky."
+    if plugged:
+        return plugged[0]["label"] + " found", "Waiting for it to send a position."
+    return "No GPS found", "Plug in a USB GPS, the LoRa cap or a Grove GPS."
+
+
 class Splash(Screen):
     chrome = False
     refresh = 0.04
@@ -260,6 +285,8 @@ class Home(Screen):
     def subtitle(self, label, app):
         if label == "Wardrive":
             if app.wardriving:
+                if app.drive.waiting:
+                    return "No fix yet", AMBER
                 return "REC " + clock(app.drive.elapsed()), RED
             radios = len(app.hw.adapters) + len(app.nodes.in_use())
             return (plural(radios, "radio") if radios else "BLE only"), MUTED
@@ -347,7 +374,10 @@ class Wardrive(Screen):
         self.filter = app.cfg.get("live_list", "all")
 
     def hints(self, app):
-        hints = [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
+        if app.drive is not None and app.drive.waiting:
+            hints = [("OK", "Stop"), ("Esc", "Menu")]
+        else:
+            hints = [("OK", "Stop + save"), ("Tab", self.LABEL[self.filter]), ("Esc", "Menu")]
         if app.drive is not None and app.drive.watch is not None:
             hints.insert(2, ("A", "Alerts"))
             if app.drive.watch.quiet_left() > 0:
@@ -355,15 +385,28 @@ class Wardrive(Screen):
         return hints
 
     @staticmethod
+    def waiting(c, app, s, y):
+        """The drive has not had a usable fix yet: the timer, the counters and the log start with the first one."""
+        c.rect((4, y, W - 4, y + 43), fill=SURFACE, radius=5)
+        c.rect((4, y, 7, y + 43), fill=AMBER, radius=1)
+        on = int(time.monotonic() * 2) % 2 == 0
+        c.draw.ellipse((14, y + 7, 22, y + 15), fill=AMBER if on else SURFACE, outline=AMBER)
+        c.text((28, y + 2), "Waiting for GPS fix", font("display", 16), AMBER, width=W - 40)
+        detail, hint = gps_wait(app, s)
+        c.text((14, y + 21), detail, font("ui", 10), TEXT, width=W - 26)
+        c.text((14, y + 32), hint, font("ui", 8), MUTED, width=W - 26)
+
+    @staticmethod
     def warning(app, s):
         fix = s["gps"]
         if s["error"]:
             return s["error"], RED
-        if not fix.get("valid"):
+        waiting = s.get("waiting_for_fix")
+        if not waiting and not fix.get("valid"):
             if fix.get("source", "none") == "none":
-                return "No GPS found. Nothing is logged until one has a fix.", AMBER
-            return "Waiting for a GPS fix. Nothing is logged yet.", AMBER
-        if s["gps_weak"]:
+                return "No GPS found. Logging pauses until one has a fix.", AMBER
+            return "GPS fix lost. Logging pauses until it is back.", AMBER
+        if not waiting and s["gps_weak"]:
             return "GPS fix is too weak. Logging waits for a better one.", AMBER
         errors = ["%s: %s" % (a["interface"], a["error"]) for a in s["adapters"] if a.get("error")]
         if errors:
@@ -384,18 +427,22 @@ class Wardrive(Screen):
         if drive is None:
             return
         s = drive.status()
+        waiting = s["waiting_for_fix"]
         y = TOP - 1
-        counters = (("WI-FI", s["wifi"], GOLD), ("BLUETOOTH", s["ble"], CYAN), ("LOGGED", s["rows"], GREEN))
-        for i, (label, value, color) in enumerate(counters):
-            x = 4 + i * 105
-            c.rect((x, y, x + 101, y + 43), fill=SURFACE, radius=5)
-            c.text((x + 6, y + 2), label, font("ui", 8), MUTED)
-            text = "{:,}".format(value)
-            size = 30 if len(text) <= 5 else 24 if len(text) <= 6 else 19
-            c.put((x + 6, y + 41), text, font("display", size), color, "ls")
-        y += 46
         x = 4
-        for band in ("2.4", "5", "6"):
+        if waiting:
+            self.waiting(c, app, s, y)
+        else:
+            counters = (("WI-FI", s["wifi"], GOLD), ("BLUETOOTH", s["ble"], CYAN), ("LOGGED", s["rows"], GREEN))
+            for i, (label, value, color) in enumerate(counters):
+                cx = 4 + i * 105
+                c.rect((cx, y, cx + 101, y + 43), fill=SURFACE, radius=5)
+                c.text((cx + 6, y + 2), label, font("ui", 8), MUTED)
+                text = "{:,}".format(value)
+                size = 30 if len(text) <= 5 else 24 if len(text) <= 6 else 19
+                c.put((cx + 6, y + 41), text, font("display", size), color, "ls")
+        y += 46
+        for band in () if waiting else ("2.4", "5", "6"):
             x += c.pill(x, y, "%s GHz %d" % (band, s["bands"].get(band, 0)), font("monob", 8), BG, BAND_COLOR[band],
                         height=11) + 4
         watch = s.get("watch")
@@ -441,6 +488,11 @@ class Wardrive(Screen):
         if warning:
             c.text((5, y - 1), warning[0], font("ui", 9), warning[1], width=W - 10)
             y += 12
+        if waiting:
+            c.text_center(W // 2, y + 4, "Radios are warming up. Nothing is counted yet.", font("ui", 9), MUTED)
+            c.text_center(W // 2, y + 17, "The timer, the counters and the log start at the fix.", font("ui", 9),
+                          MUTED)
+            return
         devices = drive.tracker.recent(max(0, (bottom - y) // 13), self.KINDS[self.filter])
         for device in devices:
             wifi = device.kind == WIFI
@@ -493,7 +545,8 @@ class Summary(Screen):
         saved = s["log"] or s.get("aircraft_log") or s.get("mesh_log") or ""
         rows = [("Wi-Fi networks", "{:,}".format(s["wifi"])), ("Bluetooth devices", "{:,}".format(s["ble"])),
                 ("2.4 / 5 / 6 GHz", "%d / %d / %d" % tuple(s["bands"].get(b, 0) for b in ("2.4", "5", "6"))),
-                ("WiGLE rows", "{:,}".format(s["rows"])), ("Time", clock(s["elapsed"])),
+                ("WiGLE rows", "{:,}".format(s["rows"])),
+                ("Time", "No fix" if s.get("waiting_for_fix") else clock(s["elapsed"])),
                 ("Saved as", (saved.rsplit("/", 1)[-1][14:29] + ("  +%d more" % (files - 1) if files > 1 else ""))
                  if saved else "Nothing" if s["failed"] else "Nothing: GPS never had a fix")]
         sky, heard = s.get("aircraft"), s.get("mesh")
@@ -515,7 +568,9 @@ class Summary(Screen):
         status = app.upload_status()
         sites = [info["name"] for service, info in status["services"].items()
                  if info["configured"] and service in uploads.sites(saved)]
-        if not saved:
+        if s.get("waiting_for_fix"):
+            text, color = "Start again once the GPS has a fix.", AMBER
+        elif not saved:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
         elif not sites:
             text, color = "Press K to add your upload keys.", AMBER

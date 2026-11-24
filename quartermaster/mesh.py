@@ -457,11 +457,12 @@ class Listener:
     """The mesh side of one wardrive. The radio is opened, read and closed by one thread of its own."""
 
     def __init__(self, logs, gps, radio, plan, clock=time.time, log=None, max_hdop=None, epoch=None,
-                 dwell=lora.DWELL_SECONDS, retry=RETRY_SECONDS):
+                 dwell=lora.DWELL_SECONDS, retry=RETRY_SECONDS, gate=None):
         self.logs, self.gps, self.radio_factory, self.plan = Path(logs), gps, radio, list(plan)
         self.clock, self.log, self.max_hdop = clock, log or (lambda: None), max_hdop
         self.epoch = epoch or (lambda fix: self.clock())
         self.dwell, self.retry = dwell, retry
+        self.gate = gate or (lambda: True)
         self.mesh = Mesh()
         self.lorawan_sink = None
         self.operators = lorawan.Operators()
@@ -620,6 +621,8 @@ class Listener:
             sink = self.lorawan_sink
             if hit is not None and sink is not None:
                 sink(hit)
+            return
+        if not self.gate():
             return
         self.packets += 1
         packet = meshpackets.decode(raw, self.plan[self.index].protocol)

@@ -356,6 +356,8 @@ class App:
         failed = self.drive.failed if self.wardriving else ""
         if failed:
             return "%s %s." % (stops, failed)
+        if self.wardriving and self.drive.waiting:
+            return "%s No GPS fix yet, so nothing is logged." % stops
         if self.wardriving and self.drive.log_path is None:
             return "%s Nothing has been logged yet." % stops
         return saved
@@ -665,7 +667,8 @@ class App:
 
     def ask_stop_wardrive(self):
         self.confirm("Stop the wardrive?", self.ending("The log is saved and sent to your upload sites.",
-                                                       "The wardrive stops."), "Stop + save",
+                                                       "The wardrive stops."),
+                     "Stop" if self.drive.waiting else "Stop + save",
                      self.stop_wardrive, default=1)
 
     def stop_wardrive(self, show=True, upload=True):
@@ -848,7 +851,10 @@ class App:
             color = RED if summary["strong"] or summary["following"] else AMBER if summary["flagged"] else GREEN
             parts.append(self.counted(c, "eye", str(summary["flagged"] or ""), color))
         if self.wardriving:
-            parts.append(self.recording(c, clock(self.drive.elapsed())))
+            if self.drive.waiting:
+                parts.append(self.recording(c, "GPS WAIT", AMBER))
+            else:
+                parts.append(self.recording(c, clock(self.drive.elapsed())))
         return parts
 
     def gauge(self, c, battery, room):
@@ -885,15 +891,16 @@ class App:
                 icons.draw(c, icon, right - width - (15 if text else 13), 2, 13, color)
         return width + ((15 if text else 13) if icon else 0), paint
 
-    def recording(self, c, text):
+    def recording(self, c, text, color=RED):
         small = font("monob", 8)
         width = int(c.text_width(text, small)) + 18
 
         def paint(right):
-            c.rect((right - width, 3, right, 15), fill=REC_FILL, radius=6)
+            c.rect((right - width, 3, right, 15), fill=REC_FILL if color == RED else SURFACE, radius=6)
             blink = int(time.monotonic() * 2) % 2 == 0
-            c.draw.ellipse((right - width + 5, 6, right - width + 11, 12), fill=RED if blink else (120, 30, 30))
-            c.text((right - width + 14, 4), text, small, RED)
+            c.draw.ellipse((right - width + 5, 6, right - width + 11, 12),
+                           fill=color if blink else tuple(part // 2 for part in color))
+            c.text((right - width + 14, 4), text, small, color)
         return width, paint
 
     def footer(self, c, screen):

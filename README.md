@@ -128,10 +128,24 @@ These still need a press:
 
 1. Plug in your GPS, and any Wi-Fi adapters you have.
 2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
-3. Press **Esc** to go back to the menu, then **W**. The three counters show Wi-Fi networks, Bluetooth devices and rows logged.
+3. Press **Esc** to go back to the menu, then **W**. Until the GPS has a fix, the screen says **Waiting for GPS fix**. Once it has one, the three counters show Wi-Fi networks, Bluetooth devices and rows logged.
 4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
 
-Rows are only written while the GPS has a fix. Without one, the screen tells you and keeps counting.
+### Waiting for a GPS fix
+
+You can start a wardrive at any time, even before the GPS has a fix. Until the first fix that meets **GPS accuracy needed**, the wardrive waits:
+
+- The radios start, so they are ready, but nothing is counted or logged and no log file is made. The aircraft and mesh logs wait too.
+- The screen says **Waiting for GPS fix**, with the GPS it is using and how many satellites it sees. With no GPS found, it tells you what to plug in. The status bar shows **GPS WAIT** instead of the timer.
+- Drive Alerts already work, as they are there to warn you. Alerts are not part of the wardrive's counts or its log.
+
+At the first fix, the timer starts at 00:00:00, the counters start from zero and the log opens. Devices heard while waiting are logged as soon as they are heard again.
+
+If the fix is lost later in the drive, logging pauses and the screen says so, but the timer keeps running and the counters keep what they have. Stopping before any fix saves nothing: the summary says **Nothing: GPS never had a fix**.
+
+<p align="center">
+  <img src="docs/screens/wardrive-waiting.png" width="320" alt="A wardrive waiting for its first GPS fix">
+</p>
 
 ## Screens
 

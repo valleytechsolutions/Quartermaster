@@ -185,6 +185,22 @@ def press(app, *names):
     app.step(0)
 
 
+def wait(app, root, shot):
+    """A wardrive started before the GPS has a fix, and stopped before it gets one."""
+    factory = app.wardrive_factory
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
+                                                 clock=lambda: NOW)
+    app.gps.fix = {"valid": False, "source": "CP210x USB GPS (/dev/ttyUSB0)", "satellites": 3, "status": "no_fix",
+                   "age_seconds": 0.4}
+    press(app, "W")
+    shot("wardrive-waiting")
+    app.stop_wardrive()
+    shot("summary-no-fix")
+    app.gps.fix = FIX
+    app.wardrive_factory = factory
+    app.home()
+
+
 def fly(app, root, shot):
     """A wardrive with aircraft on and an RTL-SDR stick plugged in."""
     ticks = iter(range(NOW + 7200, NOW + 10 ** 7, 3))
@@ -272,11 +288,12 @@ def main():
         app.toast_until = 0
         while not (lit(time.monotonic()) and lit(time.monotonic() + 0.1)):    # every blinking mark is lit
             time.sleep(0.005)
-        if app.wardriving:
+        if app.wardriving and not app.drive.waiting:
             app.drive._started = time.monotonic() - 1574
         save(app.compose(), name)
 
     shot("home")
+    wait(app, root, shot)
     press(app, "W")
     deadline = time.monotonic() + 5
     while app.drive.tracker.summary()["ble"] < len(BLUETOOTH) and time.monotonic() < deadline:
