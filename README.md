@@ -455,6 +455,11 @@ Every screen shows its own keys along the bottom.
 | | Aircraft (ADS-B) | Auto, On, Off | Auto |
 | | LoRa mesh | Auto, On, Off | Auto |
 | | Country | 44 countries, or Anywhere else | United States |
+| Deep scan | Deep scan | Off, On | Off |
+| | Listen pattern | Balanced, Flock first | Balanced |
+| | Monitor adapter | Auto, or one USB adapter | Auto |
+| | Direct scans | Off, On | Off |
+| | Radio tuning | Off, During a wardrive | Off |
 | Nodes | Nodes | The nodes in use, and new ones to add | |
 | | Flash a node | Install or update the node firmware | |
 | Logging | Rows per device | Closest + furthest, Full track | Closest + furthest |
@@ -504,7 +509,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.4,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.5,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.
@@ -573,6 +578,22 @@ While you wardrive, Quartermaster can warn you about the devices you pick, from 
 
 Without a Dragon Detector, a Flock camera alerts when it shows its own Wi-Fi network or Bluetooth signal. Detection is best effort: a device may be quiet as you pass it.
 
+## Deep scan
+
+Deep scan is off until you turn it on in **Settings > Deep scan**. With it on, one spare USB Wi-Fi adapter stops scanning and listens in monitor mode while a wardrive or Recon runs. It only listens: it never sends a frame.
+
+- **Every network it hears goes into the log.** Beacons and probe responses become the same WiGLE rows a normal scan writes, with the same columns. A network also found by a normal scan is still one device. Deep scan only adds to the wardrive.
+- **Flock cameras from their probes.** Flock cameras send probe requests as they hop between channels, even with no network of their own. Deep scan uses the rules of flock-you: a probe from a Flock address prefix with the Flock fingerprint is medium evidence and alerts. Without the fingerprint it is a weak hint, unless the same sender probes on two channels that are far apart (such as 1 and 6) within 3 seconds, as Flock cameras do when they hop; then it alerts too. Probes heard on neighbouring channels do not count, because one radio can be heard a channel or two away. Frames from or to a Flock prefix are weak hints. Espressif prefixes are left out on purpose, as SquachWatch does, because your own nodes and many smart plugs use them.
+- **Disconnect floods.** 12 disconnect frames from one sender in 3 seconds, 6 of them to everyone, or 24 to everyone from any senders, alert as a deauth flood (SquachWatch's rule).
+- **Evil twins.** Raw beacons feed the evil twin check. Two access points from the same maker are never called twins. One access point heard on two channels at once, or both open and protected, is added to an evil twin alert as evidence.
+- **Listen pattern.** Balanced listens on channels 11, 6 and 1 for 250 ms each, as flock-you does, then the other 2.4 GHz channels by how busy they are, then the busy 5 GHz channels. Flock first stays on 11, 6 and 1, with a pass over the other 2.4 GHz channels every fourth round.
+- **Which adapter listens.** Never the built-in radio, never an adapter that is connected to a network, and never the only adapter that can scan 6 GHz. Every band of the listening adapter must still be scanned by another adapter. With an ALFA AWUS036AXM and a second USB adapter, the second one listens and the ALFA keeps 2.4, 5 and 6 GHz. With only the ALFA, Deep scan is not available and everything scans as before. **Monitor adapter** can pick one adapter instead of Auto. The Hardware screen shows which adapter listens and why the others do not.
+- **Direct scans.** Adapters on USB start their own sweeps through the radio helper instead of NetworkManager, for fresher results.
+- **Radio tuning.** During a wardrive, power saving goes off on USB adapters and their transmit power goes up to the limit your country allows, as the kernel reports it. Both are put back at the end. The country setting is never changed. The install keeps known USB Wi-Fi adapters, GPS receivers and nodes from going to sleep while they are plugged in.
+- **Bluetooth** works exactly as before.
+
+Deep scan needs the radio helper that the install adds: a small system service that starts only when Quartermaster asks for it, runs as its own unprivileged user with only the two network rights it needs, answers only members of the `quartermaster-radio` group and only a fixed list of commands. It has no way to change the country or to send frames, it never touches the built-in radio, and it puts every adapter back when the wardrive stops, when the app closes or crashes, and when the helper itself is stopped. After the first install, restart the Cardputer once so your user joins the new group. If the busy street costs too much CPU, Deep scan first drops data frames, then reads beacons less often, then stays on 11, 6 and 1, and at last hands the adapter back to normal scans and says so on the Hardware screen.
+
 ## Good to know
 
 - Quartermaster only scans. It never joins a network and never pairs with a Bluetooth device.
@@ -602,7 +623,8 @@ Recon and Drive Alerts build on this work and research:
 - SquachWatch, created by Talking Sasquach, through [SquachWatch-CYD](https://github.com/skizzophrenic/SquachWatch-CYD) by skizzophrenic, GPL-3.0, at commit `4dba83c0494d789bff952f74b8b39046ff06c3c9`: the detection types with their names and order, how trackers split into Samsung, Google and Tile, fleet camera, dashcam, fleet router and smart speaker address prefixes, hotspot names, AirTag owner and HomePod adverts, evil twin, flood and burst checks, My alerts, and the LoRaWAN frame layout, NetID registry and one-alert-per-operator rule.
 - [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) by Valleytech Custom Solutions, MIT: the classifier Recon is ported from, its alert rules, its tone queue, and the alerts it sends over USB.
 - Flock Noir (Your Pal Kal, MIT): Flock facts.
-- [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg.
+- [flock-you](https://github.com/colonelpanichacks/flock-you) by colonelpanichacks, MIT, with research by NitekryDPaul, DeFlockJoplin and wgreenberg. Deep scan's Flock probe tiers and IE signature come from flock-you, with community research by @NitekryDPaul and DeFlockJoplin.
+- Deep scan's deauth, 5 GHz slice and evil-twin logic are ported from SquachWatch-CYD (GPL-3.0).
 - OUI Spy, Unified Blue and AXEOFF by colonelpanichacks, MIT: body camera research.
 - [nyanBOX](https://github.com/jbohack/nyanBOX) by jbohack, MIT: AirTag and Find My adverts.
 - ESP32 Marauder by justcallmekoko: Pwnagotchi and DULT details.

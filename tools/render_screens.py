@@ -9,7 +9,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quartermaster import accounts, adsb, config, drive_watch, lora, mesh, tones, uploads, wigle  # noqa: E402
+from quartermaster import accounts, adsb, config, deepscan, drive_watch, lora, mesh, tones, uploads, wigle  # noqa: E402
 from quartermaster.recon import STRONG  # noqa: E402
 from quartermaster.engine import Wardrive  # noqa: E402
 from quartermaster.nodes import NodeManager  # noqa: E402
@@ -84,6 +84,32 @@ class MeshNodes(mesh.Listener):
 
     def stop(self):
         pass
+
+
+class Listening(deepscan.DeepScan):
+    """Stands in for Deep scan with the AC1200 listening and the ALFA keeping 6 GHz."""
+
+    def open(self):
+        self.state = "ready"
+        return True
+
+    def plan_roles(self, adapters, nodes=()):
+        self.roles = deepscan.assign(adapters, nodes, choice="wlan2")
+        return [a for a in adapters if a["interface"] != "wlan2"]
+
+    def start(self, *sinks):
+        self.vif = "qmmon0"
+        self.monitor = {"interface": "qmmon0", "label": "MT7921AU (AC1200)", "original": "wlan2", "role": "monitor"}
+        self.stats = {"frames_per_s": 1240.0, "dropped_share": 0.3}
+        self.counts = {"flock": 3, "deauth": 0, "networks": 412}
+        self.tuning = {"wlan1": {"power_save": "off", "txpower": 20.0, "limit": 30.0}}
+        return True
+
+    def tune(self, adapters):
+        pass
+
+    def stop(self):
+        self.monitor = None
 
 
 def build(root):
@@ -223,6 +249,29 @@ def fly(app, root, shot):
     app.stop_wardrive()
     app.screen.s.update(ble=187, elapsed=1574)
     shot("summary-aircraft")
+
+
+def deep_scan(app, root, shot):
+    """A wardrive with Deep scan on: a second USB adapter listens in monitor mode."""
+    ticks = iter(range(NOW + 21600, NOW + 10 ** 7, 3))
+    adapters = [dict(ADAPTERS[0]), dict(ADAPTERS[0], interface="wlan2", phy="phy2", label="MT7921AU (AC1200)"),
+                dict(ADAPTERS[2])]
+    app.cfg.update(deep_scan=True, radio_tuning=True)
+    app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=adapters, ble=Ble(BLUETOOTH), fleet=Fleet,
+                                                 clock=lambda: next(ticks), deep=Listening)
+    shown = app.hw.adapters
+    app.hw.adapters = [adapters[0], dict(adapters[1], interface="qmmon0"), adapters[2]]
+    app.home()
+    press(app, "W")
+    app.drive.tracker.counts["BLE"] = 187
+    app.drive.rows = 1263
+    shot("wardrive-deep")
+    app.open("Hardware")
+    shot("hardware-deep")
+    app.stop_wardrive()
+    app.hw.adapters = shown
+    app.cfg.update(deep_scan=False, radio_tuning=False)
+    app.home()
 
 
 def listen(app, root, shot):
@@ -415,6 +464,7 @@ def main():
     shot("recon-alert")
     app.stop_recon()
     fly(app, root, shot)
+    deep_scan(app, root, shot)
     listen(app, root, shot)
     app.shutdown()
     print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))

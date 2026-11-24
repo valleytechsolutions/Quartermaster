@@ -453,6 +453,10 @@ class Wardrive(Screen):
         elif watch and watch["alerts"]:
             x += c.pill(x, y, "!%d" % watch["alerts"], font("monob", 8), BG, RED if watch["urgent"] else AMBER,
                         height=11) + 4
+        deep = s.get("deep")
+        if deep and deep.get("monitor"):
+            flock = (deep.get("counts") or {}).get("flock", 0)
+            x += c.pill(x, y, "DEEP" + (" F%d" % flock if flock else ""), font("monob", 8), BG, GOLD, height=11) + 4
         if watch and watch["speaker"] is False and not drive.watch.speaker_said:
             drive.watch.speaker_said = True
             app.toast("No speaker found: alerts show on screen only", AMBER, 5)
@@ -615,8 +619,15 @@ class Hardware(Screen):
             title, detail = hardware.stall_words(item)
             cards.append({"tag": "!", "color": AMBER, "title": title, "edge": AMBER, "detail": detail,
                           "detail_color": AMBER})
+        deep = status.get("deep") if status is not None else None
+        monitor = (deep or {}).get("monitor")
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
+            if monitor is not None and adapter["interface"] == monitor.get("interface"):
+                cards.append(self.monitor_card(monitor, deep, live))
+                continue
+            if monitor is not None and adapter["interface"] == monitor.get("original"):
+                continue
             card = {"tag": "USB" if adapter["external"] else "INT", "color": GOLD if adapter["external"] else MUTED,
                     "title": "%s  %s" % (adapter["interface"], adapter["label"]), "bands": adapter["bands"],
                     "right": adapter["band_label"]}
@@ -626,6 +637,14 @@ class Hardware(Screen):
                 card["right"] = plural(live.get("sweeps") or 0, "sweep")
             elif not adapter["bands"]:
                 card.update(detail="No usable bands reported", detail_color=AMBER, right="")
+            if deep is not None and not card.get("detail"):
+                card.update(self.deep_words(adapter, deep, monitor))
+            cards.append(card)
+        if deep is not None and monitor is not None and monitor.get("interface") not in \
+                {a["interface"] for a in app.hw.adapters}:
+            cards.append(self.monitor_card(monitor, deep, scanning.get(monitor.get("interface"))))
+        card = self.deep_card(app, deep)
+        if card is not None:
             cards.append(card)
         known = app.nodes.known()
         if not app.hw.adapters and not any(node["connected"] for node in known):
@@ -661,6 +680,69 @@ class Hardware(Screen):
                               "detail": "Scans Bluetooth LE and classic" if app.cfg.get("ble", True)
                               else "Bluetooth scan is off in Settings"})
         return cards
+
+    @staticmethod
+    def monitor_card(monitor, deep, live):
+        stats = deep.get("stats") or {}
+        heard = "ch 11·6·1 + 2.4 GHz" if deep.get("plan") == "flock" else "ch 11·6·1 + 2.4 + 5 GHz busy"
+        parts = ["Deep scan: " + heard]
+        if stats.get("frames_per_s") is not None:
+            parts.append("{:,} fr/s".format(int(stats["frames_per_s"])))
+            parts.append("%.1f%% dropped" % (stats.get("dropped_share") or 0.0))
+        counts = deep.get("counts") or {}
+        right = "%d Flock" % counts.get("flock", 0)
+        if deep.get("level", 0) >= 3:
+            parts = ["Busy CPU: Flock channels only"]
+        card = {"tag": "MON", "color": GOLD, "title": "%s  %s" % (monitor.get("interface"), monitor.get("label", "")),
+                "detail": "  ·  ".join(parts), "right": right}
+        if live and live.get("error"):
+            card.update(detail=live["error"], detail_color=AMBER)
+        return card
+
+    @staticmethod
+    def deep_words(adapter, deep, monitor):
+        """Why an adapter scans normally while Deep scan is on, and the tuning line."""
+        words = {}
+        reason = (deep.get("reasons") or {}).get(adapter["interface"])
+        if monitor is not None and "6" in adapter.get("bands", ()):
+            words = {"detail": "Keeps 6 GHz"}
+        elif reason:
+            problem = reason.startswith(("No monitor", "Connected", "Only 6"))
+            words = {"detail": reason, "detail_color": AMBER if problem else FAINT}
+        tuning = (deep.get("tuning") or {}).get(adapter["interface"])
+        if tuning and not tuning.get("error"):
+            tx = tuning.get("txpower")
+            limit = tuning.get("limit")
+            line = "Power save off · tx %s dBm%s" % ("%g" % tx if tx is not None else "?",
+                                                     " (limit %g)" % limit if limit is not None else "")
+            if adapter.get("autosuspend") in ("on", "auto"):
+                line += " · autosuspend %s" % ("off" if adapter["autosuspend"] == "on" else "on")
+            words = {"detail": (words["detail"] + "  ·  " if words.get("detail") else "") + line,
+                     "detail_color": words.get("detail_color", MUTED)}
+        return words
+
+    @staticmethod
+    def deep_card(app, deep):
+        """Deep scan's own line: why it does not listen, or the helper's state."""
+        from .. import radio_helper
+        if not app.cfg.get("deep_scan"):
+            return None
+        if deep is None:
+            if not os.path.exists(radio_helper.SOCKET):
+                return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan",
+                        "detail": radio_helper.words("missing"), "detail_color": AMBER}
+            return {"tag": "DEEP", "color": MUTED, "title": "Deep scan",
+                    "detail": "Starts with the next wardrive or Recon."}
+        if deep.get("state") != "ready":
+            return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan",
+                    "detail": radio_helper.words(deep.get("state"), deep.get("detail", "")), "detail_color": AMBER}
+        if deep.get("error"):
+            return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan", "detail": deep["error"],
+                    "detail_color": AMBER}
+        if deep.get("unavailable"):
+            return {"tag": "DEEP", "color": AMBER, "title": "Deep scan unavailable", "detail": deep["unavailable"],
+                    "detail_color": AMBER}
+        return None
 
     @staticmethod
     def aircraft_card(app, status):
@@ -1190,11 +1272,14 @@ class PhoneSetup(Screen):
 class Settings(Screen, ListMixin):
     title = "SETTINGS"
     VISIBLE = 7
-    WHILE_SCANNING = {key for section, entries in config.SECTIONS if section in ("SCANNING", "LOGGING", "GPS")
+    WHILE_SCANNING = {key for section, entries in config.SECTIONS
+                      if section in ("SCANNING", "DEEP SCAN", "LOGGING", "GPS")
                       for key, _, _, _ in entries} - {"ignore"}
+    HELPER_EVERY = 5.0
 
     def __init__(self):
         self.index, self.top = 1, 0
+        self._helper = None
         self.items = []
         for section, entries in config.SECTIONS:
             self.items.append((None, section, None, ""))
@@ -1226,6 +1311,17 @@ class Settings(Screen, ListMixin):
             return "v" + __version__
         return config.shown(key, app.cfg.get(key))
 
+    def helper_words(self, app, key):
+        """What the radio helper's state means for a Deep scan setting, when it is not ready; "" otherwise."""
+        if key not in config.HELPER_SETTINGS or not app.cfg.get(key):
+            return ""
+        now = time.monotonic()
+        if self._helper is None or now - self._helper[0] >= self.HELPER_EVERY:
+            from .. import radio_helper
+            self._helper = (now,) + radio_helper.state(app.cfg)
+        state, words = self._helper[1], self._helper[2]
+        return "" if state in ("ready", "off") else words
+
     def skip_headers(self, direction):
         for _ in range(len(self.items)):
             if self.items[self.index][0] is not None:
@@ -1252,8 +1348,11 @@ class Settings(Screen, ListMixin):
             c.text((W - 18, y - 1), "›", font("bold", 11), FAINT)
         self.scrollbar(c, len(self.items), self.VISIBLE, y1=TOP + self.VISIBLE * 15 - 2)
         key, _, _, help_text = self.items[self.index]
+        helper = self.helper_words(app, key)
         if self.locked(app, key):
             help_text, color = "Stop the wardrive to change this setting.", AMBER
+        elif helper:
+            help_text, color = "Helper: " + helper, AMBER
         else:
             color = MUTED
         for i, line in enumerate(c.wrap(help_text, W - 20, font("ui", 9))[:2]):
@@ -1293,6 +1392,12 @@ class Settings(Screen, ListMixin):
         elif name == "check_updates":
             app.push(Updates())
             app.check_updates()
+        elif name == "deep_scan_adapter" and not self.locked(app, name):
+            choices = [("auto", "Auto", "Picks a spare adapter")]
+            for adapter in hardware.wifi_adapters():
+                if adapter.get("external"):
+                    choices.append((adapter["interface"], adapter["interface"], adapter.get("label", "")))
+            app.push(Picker(label, choices, app.cfg.get(name), lambda value: app.change(name, value)))
         elif self.locked(app, name):
             app.toast("Stop the wardrive to change this", AMBER)
         elif key == "ENTER" and len(choices) > 2:

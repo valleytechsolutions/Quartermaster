@@ -45,6 +45,20 @@ SECTIONS = [
         ("country", "Country", COUNTRIES, "Where you are. Nodes use the Wi-Fi channels and LoRa the band allowed "
          "here."),
     ]),
+    ("DEEP SCAN", [
+        ("deep_scan", "Deep scan", [(False, "Off"), (True, "On")],
+         "Listens with a spare USB adapter: Flock probes, deauth floods, evil twins, and every network it hears. "
+         "6 GHz stays covered."),
+        ("deep_scan_plan", "Listen pattern", [("balanced", "Balanced"), ("flock", "Flock first")],
+         "Balanced also covers busy 5 GHz channels. Flock first stays on 1, 6 and 11."),
+        ("deep_scan_adapter", "Monitor adapter", [("auto", "Auto")],
+         "Auto picks a spare adapter and never the only 6 GHz one."),
+        ("direct_scan", "Direct scans", [(False, "Off"), (True, "On")],
+         "USB adapters scan through Quartermaster's radio helper instead of NetworkManager: fresher results."),
+        ("radio_tuning", "Radio tuning", [(False, "Off"), (True, "During a wardrive")],
+         "Power save off and full legal transmit power on USB adapters, put back after. The country is never "
+         "changed."),
+    ]),
     ("NODES", [
         ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
          "name or update them here."),
@@ -135,6 +149,8 @@ _NODE_ID = re.compile(r"[0-9a-f]{12}")
 _LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
 _KEY = re.compile(r"[0-9a-f]{32}")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_IFACE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
+HELPER_SETTINGS = ("deep_scan", "direct_scan", "radio_tuning")
 
 
 def is_mac(text):
@@ -225,6 +241,9 @@ def load(path=PATH):
     for key, _, choices, _ in SETTINGS:
         if choices and key in data and any(data[key] == v and type(data[key]) is type(v) for v, _ in choices):
             cfg[key] = data[key]
+    adapter = data.get("deep_scan_adapter")
+    if isinstance(adapter, str) and _IFACE.fullmatch(adapter):
+        cfg["deep_scan_adapter"] = adapter
     if "alert_place" not in data and cfg["drive_alert_volume"] == "high":
         cfg["drive_alert_volume"] = "medium"
     ignore = data.get("ignore")

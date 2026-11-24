@@ -1065,6 +1065,16 @@ class NodeManager:
         with self.lock:
             return self._members()
 
+    def wifi_bands(self):
+        """The Wi-Fi capabilities ("wifi24", "wifi5") the nodes in use have between them."""
+        with self.lock:
+            found = set()
+            for node_id in self._members():
+                link = self._link(node_id)
+                if link is not None and link.hello:
+                    found |= {cap for cap in link.hello["capabilities"] if cap in ("wifi24", "wifi5")}
+            return tuple(sorted(found))
+
     def adapters(self):
         """Each node of the running wardrive or Recon as an adapter, for the screens that list them."""
         with self.lock:

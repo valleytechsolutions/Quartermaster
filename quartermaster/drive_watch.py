@@ -65,7 +65,7 @@ START_SILENCE, QUIET_SECONDS = 60.0, 600.0
 BACKOFF_TONES, BACKOFF_WINDOW, BACKOFF_MAX = 5, 600.0, 240.0
 FLOOD_COUNT, FLOOD_WINDOW, FLOOD_QUIET, FIRST_FLOOD = 15, 60.0, 300.0, 30
 HANDOFF_SECONDS, TWIN_SECONDS, DRAGON_FOLD_SECONDS, DRAGON_PASS = 20.0, 60.0, 30.0, 120.0
-HEARD_BY = {"wifi": "Wi-Fi", "ble": "BLE", "dragon": "Dragon Detector", "lora": "LoRa"}
+HEARD_BY = {"wifi": "Wi-Fi", "ble": "BLE", "dragon": "Dragon Detector", "lora": "LoRa", "monitor": "Wi-Fi monitor"}
 BURST_WINDOW, BURST_TRACKERS, BURST_PAIRING = 5.0, 12, 24
 LOG_INTERVAL = 30.0
 QUEUE_LIMIT = 256
@@ -74,6 +74,18 @@ MAX_WATCH, WATCH_LENGTH = 8, 32
 APPLE = ("airtag", "ibeacon", "listener")
 TAGS = ("airtag", "samsung_tag", "google_tag", "tile")
 MIN_FREE_BYTES = 32 * 1024 * 1024
+CLASH_KEEP = 120.0
+
+
+def same_vendor(one, other):
+    """Two addresses from one maker's block, with the locally administered bit set aside: mesh nodes and the
+    other band of one box, which SquachWatch never pairs as twins."""
+    try:
+        a = (int(one[0:2], 16) & ~2, one[3:8].upper())
+        b = (int(other[0:2], 16) & ~2, other[3:8].upper())
+    except (TypeError, ValueError):
+        return False
+    return a == b
 
 
 def _uuid_text(raw):
@@ -243,7 +255,7 @@ class SsidConflicts:
                 continue
             for other in group:
                 peer = self.aps[other]
-                if other != bssid and peer["open"] != open_ and peer["hits"] >= 3 and \
+                if other != bssid and peer["open"] != open_ and peer["hits"] >= 3 and not same_vendor(other, bssid) and \
                         peer["last"] - peer["first"] >= RUN_SPACING and now - peer["last"] < 15:
                     found.append((ssid, bssid if open_ else other, other if open_ else bssid))
                     break
@@ -273,6 +285,7 @@ class DriveWatch:
         self._floods, self._muted = {}, {}
         self._bursts, self._pairing = deque(), deque()
         self._conflicts = SsidConflicts()
+        self._clashes = OrderedDict()
         self._paused = {}
         self._log = None
         self._lock = threading.Lock()
@@ -405,6 +418,30 @@ class DriveWatch:
         except Exception:
             faults.note("Drive alerts, Dragon Detector")
 
+    def offer_frames(self, events):
+        """From Deep scan: frames that may come from a Flock camera. Never raises and never waits."""
+        try:
+            for event in events:
+                self._put(("frame", event), "flock")
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
+    def offer_incident(self, incident, sender, evidence, rssi=None):
+        """From Deep scan: a pattern seen in raw frames, such as a disconnect flood."""
+        try:
+            self._put(("incident", {"incident": incident, "sender": sender, "evidence": evidence, "rssi": rssi}),
+                      INCIDENTS.get(incident))
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
+    def offer_clash(self, clash):
+        """From Deep scan: one access point beaconing on two channels at once, or open and protected. Only kept as
+        evidence for an evil twin alert; it never alerts by itself."""
+        try:
+            self._put(("clash", clash), "clash")
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
     def offer_lorawan(self, hit):
         """From the LoRa thread: a LoRaWAN operator heard, {"net_id", "operator", "address", "rssi", "exact"}."""
         try:
@@ -438,6 +475,17 @@ class DriveWatch:
             return self._external(payload)
         if kind == "lorawan":
             return self._lorawan(payload)
+        if kind == "frame":
+            return self._frame(payload)
+        if kind == "incident":
+            sender = str(payload.get("sender") or "").upper()
+            return self._incident(payload["incident"], sender, payload.get("evidence", ""), "Disconnect flood",
+                                  payload.get("rssi"), "wifi", address=sender)
+        if kind == "clash":
+            self._clashes[str(payload.get("bssid", "")).upper()] = (self.monotonic(), payload.get("evidence", ""))
+            while len(self._clashes) > 64:
+                self._clashes.popitem(last=False)
+            return
         if len(self._cache) > 8000:
             self._cache.clear()
         if kind == "wifi":
@@ -457,6 +505,17 @@ class DriveWatch:
         self._burst(address, result, payload)
         self._consider("ble", address_type, address, payload.get("name") or result.get("name", ""),
                        payload.get("rssi"), result, payload)
+
+    def _frame(self, event):
+        frame = event.get("frame") or b""
+        hopping = bool(event.get("hopping"))
+        key = ("frame", event.get("address"), zlib.crc32(bytes(frame[:64])), hopping)
+        result = self._cache.get(key)
+        if result is None:
+            result = self._cache[key] = recon.classify_wifi(event.get("address"), frame=bytes(frame), hopping=hopping)
+        address = str(result.get("address") or event.get("address") or "").upper()
+        item = {"channel": event.get("channel"), "frequency": event.get("frequency")}
+        self._consider("wifi", 0, address, "", event.get("rssi"), result, item, source="monitor")
 
     def _burst(self, address, result, item):
         now = self.monotonic()
@@ -481,6 +540,11 @@ class DriveWatch:
         differ = open_bssid[:8] != other[:8]
         evidence = "Same name open on %s and protected on %s%s" % (
             open_bssid, other, "; different makers" if differ else "")
+        now = self.monotonic()
+        for bssid in (open_bssid, other):
+            clash = self._clashes.get(bssid)
+            if clash is not None and now - clash[0] <= CLASH_KEEP:
+                evidence += "; " + clash[1]
         rssi = next((n.get("rssi") for n in networks if str(n.get("bssid", "")).upper() == open_bssid), None)
         tag = zlib.crc32(ssid.encode("utf-8", "replace")) ^ zlib.crc32(open_bssid.encode())
         self._incident("eviltwin", tag, evidence, ssid, rssi, "wifi", address=open_bssid)

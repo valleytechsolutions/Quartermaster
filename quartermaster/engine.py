@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import adsb, faults, hardware, lora, mesh, radios, wigle
+from . import adsb, deepscan, faults, hardware, lora, mesh, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .drive_watch import DriveWatch
@@ -162,8 +162,9 @@ def _record(device):
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
                  nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
-                 player=None):
+                 player=None, deep=deepscan.DeepScan):
         self.cfg = dict(cfg)
+        self.deep_class, self.deep = deep, None
         self.alerts, self.player = alerts, player
         self.watch = None
         self.sdr = sdr
@@ -261,6 +262,7 @@ class Wardrive:
         self._stop.clear()
         self._started, self._stopped = None, None
         self.waiting, self._waited_at = True, None
+        chosen = self._deep_scan(chosen)
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self._watch_on()
@@ -279,6 +281,44 @@ class Wardrive:
             self._threads.append(threading.Thread(target=self._ble_loop, daemon=True, name="ble"))
         for thread in self._threads:
             thread.start()
+
+    def _deep_scan(self, chosen):
+        """With Deep scan, Direct scans or Radio tuning on: the radio helper session. Returns the adapters that scan
+        as before, which never lose a band. Any failure leaves every adapter scanning as before."""
+        self.deep = None
+        if self.deep_class is None or not deepscan.wanted(self.cfg):
+            return chosen
+        try:
+            deep = self.deep = self.deep_class(self.cfg)
+            if not deep.open():
+                return chosen
+            managed = deep.plan_roles(chosen, self._node_bands())
+            if len(managed) < len(chosen) and not deep.start(self._wifi_sink, self._deep_frames, self._deep_flood,
+                                                              self._deep_clash):
+                managed = chosen
+            deep.tune(managed)
+            return deep.scanners(managed)
+        except Exception:
+            faults.note("Starting Deep scan")
+            return chosen
+
+    def _node_bands(self):
+        return self.nodes.wifi_bands() if self.nodes is not None else ()
+
+    def _deep_frames(self, event):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_frames([event])
+
+    def _deep_flood(self, burst):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_incident("deauth", burst["sender"], deauth_words(burst), burst.get("rssi"))
+
+    def _deep_clash(self, clash):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_clash(clash)
 
     def _watch_on(self):
         if self.watch is not None or self.alerts is None or not self.cfg.get("drive_alerts", True):
@@ -511,7 +551,10 @@ class Wardrive:
         if self._hotplug and hasattr(self.fleet, "refresh"):
             try:
                 self.adapters = hardware.wifi_adapters()
-                self.fleet.refresh(self._chosen_adapters())
+                chosen = self._chosen_adapters()
+                if self.deep is not None:
+                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands())
+                self.fleet.refresh(chosen)
             except OSError:
                 pass
 
@@ -535,6 +578,11 @@ class Wardrive:
             self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
+        if self.deep is not None:
+            try:
+                self.deep.stop()
+            except Exception:
+                faults.note("Stopping Deep scan")
         for thread in self._threads:
             thread.join(timeout=5)
         if self.aircraft is not None:
@@ -796,6 +844,7 @@ class Wardrive:
                        lora=self.mesh.status() if self.mesh is not None else None,
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        watch=self.watch.status() if self.watch is not None else None,
+                       deep=self.deep.status() if self.deep is not None else None,
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
@@ -804,6 +853,8 @@ class Wardrive:
     def radio_status(self):
         """The radios of the wardrive: the Wi-Fi adapters, then the nodes."""
         found = self.fleet.status() if self.fleet else []
+        if self.deep is not None and self.fleet:
+            found += self.deep.radio_status()
         return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
 
     def _set_aside(self, devices):
@@ -850,6 +901,16 @@ class Wardrive:
             except OSError:
                 pass
         _settle(path.parent)
+
+
+def deauth_words(burst):
+    """The evidence line of a disconnect flood heard by Deep scan."""
+    if burst.get("any"):
+        text = "Disconnect burst: %d frames to everyone in 3 s from several senders" % burst["count"]
+    else:
+        text = "Disconnect burst: %d frames in 3 s from %s; %d to everyone" % (
+            burst["count"], burst["sender"], burst["bcast"])
+    return text + (", ch %s" % burst["channel"] if burst.get("channel") else "")
 
 
 def _mend(path):

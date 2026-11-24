@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from quartermaster import engine, faults, hardware, lora, radios, tones
+from quartermaster import drive_watch, engine, faults, hardware, lora, radios, tones
 from quartermaster.names import one_line
 from quartermaster.ui import gfx, keys
 
@@ -47,6 +47,42 @@ def no_wardrive_left_running(monkeypatch):
     yield
     for drive in started:
         engine.Wardrive.stop(drive)
+
+
+@pytest.fixture(autouse=True)
+def no_alert_log_left_open(monkeypatch):
+    """Drive alerts and Recon that a test started without stopping them must not leave their log file open."""
+    started, start = [], drive_watch.DriveWatch.start
+
+    def record(watch, epoch):
+        started.append(watch)
+        start(watch, epoch)
+    monkeypatch.setattr(drive_watch.DriveWatch, "start", record)
+    from quartermaster.recon_engine import Recon
+    made, init = [], Recon.__init__
+
+    def keep(recon_mode, *args, **kwargs):
+        made.append(recon_mode)
+        init(recon_mode, *args, **kwargs)
+    monkeypatch.setattr(Recon, "__init__", keep)
+    yield
+    for watch in started:
+        with watch._lock:
+            if watch._log is not None:
+                watch._log.close()
+                watch._log = None
+    for recon_mode in made:
+        if recon_mode._log is not None:
+            recon_mode._log.close()
+            recon_mode._log = None
+
+
+@pytest.fixture(autouse=True)
+def no_radio_helper(monkeypatch, tmp_path):
+    """The radio helper of the machine the tests run on is never asked for anything."""
+    from quartermaster import radio_helper
+    monkeypatch.setattr(radio_helper, "SOCKET", str(tmp_path / "no-radio.sock"))
+    monkeypatch.setattr(radio_helper.connect, "__defaults__", (str(tmp_path / "no-radio.sock"), radio_helper.Client))
 
 
 @pytest.fixture(autouse=True)

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.5
+
+- New: Deep scan, in Settings. It is off by default. When you turn it on, a spare USB Wi-Fi adapter listens in monitor mode while a wardrive or Recon runs. It only listens and never sends anything.
+- Deep scan adds every network it hears to the wardrive log, with the same WiGLE columns as before. It never takes networks away: the adapter that listens is only picked when every one of its bands is still scanned by another adapter.
+- 6 GHz always keeps an adapter that scans it. With an ALFA AWUS036AXM and a second USB adapter, the second one listens and the ALFA keeps scanning 2.4, 5 and 6 GHz. With only the ALFA plugged in, Deep scan is not available and everything scans as before.
+- The built-in Wi-Fi and any adapter that is connected to a network are never used for Deep scan.
+- Deep scan finds Flock cameras from the probes they send, with the rules of flock-you: the Flock fingerprint alerts, and so does a Flock address that probes on two channels far apart, such as 1 and 6, within 3 seconds. Espressif addresses are still left out, so your own nodes and smart plugs never look like Flock cameras.
+- Deep scan alerts on disconnect floods: 12 frames from one sender in 3 seconds, or 6 sent to everyone, or 24 to everyone from several senders.
+- The evil twin check now also sees raw beacons. Two access points from the same maker are never called twins.
+- Listen pattern: Balanced listens on channels 11, 6 and 1 for 250 ms each, then the other 2.4 GHz channels and the busy 5 GHz ones. Flock first stays on 11, 6 and 1.
+- New: Direct scans, which lets USB adapters start their own sweeps for fresher results, and Radio tuning, which turns power saving off and transmit power up to your country's limit during a wardrive and puts both back after. The country setting is never changed.
+- The install adds a small radio helper service and a quartermaster-radio group. It only starts when the app asks for it, runs without root and only accepts a short list of commands. Restart the Cardputer once after installing so the new group applies.
+- Everything Deep scan changes is put back when the wardrive stops, when the app closes or crashes, and when the helper stops.
+- The Hardware screen shows which adapter listens, which one keeps 6 GHz and why the others scan normally. The Wardrive screen shows DEEP when it listens.
+- Bluetooth works the same as before. With Deep scan off, the WiGLE logs are exactly the same as in 1.2.4.
+
 ## 1.2.4
 
 - Recon and Drive Alerts now use SquachWatch's detection types, with its names and in its order: Flock cameras, Axon body cams, Meta glasses, card skimmers, Raven sensors, AirTags, drones, ALPR cameras, cameras, Samsung tags, Google tags, Tile trackers, Ring cameras, deauth floods, evil twin APs, proximity beacons, hacker hardware, LoRaWAN networks, My alerts and smart speakers. Every detection rule is kept.

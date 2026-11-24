@@ -250,6 +250,7 @@ def wifi_adapters(sys_net=SYS_NET, runner=subprocess.run):
             "product": product, "chipset": DRIVER_CHIPSETS.get(driver, ""), "label": label,
             "bands": info["bands"], "band_label": band_label(info["bands"]), "monitor": info["monitor"],
             "mac": _read(base / "address").upper(), "type": _read(base / "type"),
+            "autosuspend": _read(usb / "power" / "control") if usb is not None else "",
         })
     # External adapters first: they are why the user plugged them in.
     adapters.sort(key=lambda a: (not a["external"], -len(a["bands"]), a["interface"]))

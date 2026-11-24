@@ -413,25 +413,8 @@ def parse_wifi(p):
             return {"valid": False}
         f["match"] = named(f["name"], "Wifi") if beacon else \
             ("Wifi", NONE, "probe request does not identify the advertised AP")
-        if probe and flock_prefix(p[10:16]):
-            ids = (0, 2, 12, 127, 221, 45, 191, 221)
-            v1, v2 = bytes((0x50, 0x6f, 0x9a, 0x16, 3, 1, 3)), bytes((0, 0x50, 0xf2, 8, 0, 0, 0))
-            at, k, exact = 24, 0, True
-            while at + 2 <= n:
-                ie, z = p[at], p[at + 1]
-                at += 2
-                if k >= len(ids) or ie != ids[k]:
-                    exact = False
-                if k == 0 and z != 0:
-                    exact = False
-                if k == 4 and p[at:at + z] != v1:
-                    exact = False
-                if k == 7 and p[at:at + z] != v2:
-                    exact = False
-                at += z
-                k += 1
-            if exact and k == len(ids):
-                f["match"] = ("Flock", MEDIUM, "Flock research OUI + wildcard probe IE fingerprint; spoofable")
+        if probe and flock_prefix(p[10:16]) and _probe_signature_primary(p[24:]) and wildcard_probe(p[24:]) == 1:
+            f["match"] = ("Flock", MEDIUM, "Flock research OUI + wildcard probe IE fingerprint; spoofable")
         peer = _peer_name(p[36:]) if beacon else None
         if peer:
             f["match"] = ("Pwnagotchi", STRONG if p[10:16] == b"\xde\xad\xbe\xef\xde\xad" else MEDIUM,
@@ -445,6 +428,133 @@ def parse_wifi(p):
         f["match"] = ("Drone", STRONG, "decoded Remote ID broadcast; position and identity self-reported")
     f["match"] = address_hint(p[10:16], True, f["match"])
     return f
+
+
+FLOCK_IE_SIGNATURE = "2,12,127,221:506f9a16030103,45,191,221:0050f208000000"
+_LITEON = "221:506f9a16030103"
+_MONITOR_FLOCK = _FLOCK_OUIS | {0x826bf2}
+
+
+def monitor_flock(mac):
+    """A Flock prefix as flock-you matches it on the air: locally administered 82:6b:f2 counts too."""
+    return len(mac) >= 3 and _prefix(mac) in _MONITOR_FLOCK
+
+
+def wildcard_probe(ies):
+    """1: an empty SSID element (a Flock-style probe), 0: a named one, -1: none. Retries without a trailing FCS."""
+    for body in (ies, ies[:-4] if len(ies) > 4 else None):
+        if body is None:
+            break
+        at = 0
+        while at + 2 <= len(body):
+            ie, size = body[at], body[at + 1]
+            if size + 2 > len(body) - at:
+                break
+            if ie == 0:
+                return 1 if size == 0 else 0
+            at += size + 2
+    return -1
+
+
+def _liteon_at(ies, pos):
+    return pos + 9 <= len(ies) and ies[pos] == 221 and ies[pos + 1] == 7 and ies[pos + 2:pos + 5] == b"\x50\x6f\x9a"
+
+
+def _phantom(ies, ie, size, at):
+    if at + 2 + size <= len(ies):
+        return False
+    if size > 200:
+        return True
+    return ie == 64 and size == 128 and any(_liteon_at(ies, j) for j in range(at + 2, min(at + 34, len(ies) - 1)))
+
+
+def _resync(ies, start):
+    for j in range(start, min(start + 64, len(ies) - 1)):
+        if ies[j + 1] <= 200 and j + 2 + ies[j + 1] <= len(ies):
+            return j
+    return -1
+
+
+def ie_signature(ies):
+    """flock-you's probe fingerprint of the elements after the header: (signature, every byte used) or None.
+
+    The SSID element is left out, vendor elements are 221: and up to 8 payload bytes in hex, others their number.
+    A length that runs past the frame is skipped when it looks like a driver's phantom tag, and parsing picks up
+    again at the next element that fits."""
+    parts, at, skips, n = [], 0, 0, len(ies)
+    while at + 2 <= n:
+        ie, size = ies[at], ies[at + 1]
+        if at + 2 + size > n:
+            if skips < 16 and _phantom(ies, ie, size, at):
+                skips += 1
+                at += 2
+                continue
+            j = _resync(ies, at)
+            if j > at:
+                at = j
+                continue
+            return None
+        at += 2
+        if ie == 0:
+            if size == 0:
+                while at + 2 <= n and ies[at] == 0 and ies[at + 1] == 0:
+                    at += 2
+            else:
+                at += size
+            continue
+        parts.append("221:" + bytes(ies[at:at + min(size, 8)]).hex() if ie == 221 and size >= 4 else str(ie))
+        at += size
+    return (",".join(parts), at == n) if parts else None
+
+
+def _probe_signature(body):
+    first = ie_signature(body)
+    second = ie_signature(body[2:]) if len(body) >= 2 and body[0] == 0 and body[1] == 0 else None
+    if first and second:
+        if first[1] != second[1]:
+            pick = first if first[1] else second
+        else:
+            pick = second if len(second[0]) > len(first[0]) else first
+    else:
+        pick = first or second
+    if not pick:
+        return ""
+    sig = pick[0]
+    if _LITEON in sig and not sig.startswith("2,12,127,"):
+        sig = "2,12,127," + sig[sig.index(_LITEON):]
+    return sig
+
+
+def _probe_signature_primary(body):
+    return _probe_signature(body) == FLOCK_IE_SIGNATURE or \
+        len(body) > 4 and _probe_signature(body[:-4]) == FLOCK_IE_SIGNATURE
+
+
+def flock_frame(frame, address=None, hopping=False):
+    """flock-you's tiers on a monitor frame, or None when the frame says nothing about a Flock prefix.
+
+    Returns (address of the Flock device, (family, confidence, evidence)). A wildcard probe from a Flock prefix with
+    the fingerprint is medium evidence; without it, weak, unless the same sender hops between channels as Flock
+    cameras do. Any other frame from a Flock prefix is a weak hint, and a frame sent to one is second-hand."""
+    if len(frame) < 24 or frame[0] & 3 or (frame[0] >> 2) & 3 not in (0, 2):
+        return None
+    mgmt = (frame[0] >> 2) & 3 == 0
+    addr1, addr2, addr3 = bytes(frame[4:10]), bytes(frame[10:16]), bytes(frame[16:22])
+    target = parse_mac(address) if isinstance(address, str) else address
+    if target not in (None, addr2) and monitor_flock(target) and (
+            target == addr1 and not addr1[0] & 1 or mgmt and target == addr3):
+        return target, ("Flock", LOW, "Second-hand: a frame addressed to a Flock-prefix device; shared vendor "
+                                      "possible")
+    if not monitor_flock(addr2):
+        return None
+    if mgmt and frame[0] == 0x40 and wildcard_probe(frame[24:]) == 1:
+        if _probe_signature_primary(frame[24:]):
+            return addr2, ("Flock", MEDIUM, "Flock prefix + wildcard probe IE fingerprint (flock-you); spoofable")
+        if hopping:
+            return addr2, ("Flock", MEDIUM, "Hopping wildcard prober from a Flock prefix: probes on several "
+                                            "channels within seconds, as Flock cameras do; spoofable")
+        return addr2, ("Flock", LOW, "Wildcard probe from a Flock prefix; IE fingerprint not matched")
+    return None
 
 
 _BASE_UUID = bytes((0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00))
@@ -828,11 +938,19 @@ def parse_mac(text):
         return None
 
 
-def classify_wifi(address, ssid="", frame=None):
-    """Classify an AP from its BSSID and SSID, or a full 802.11 frame without FCS."""
+def classify_wifi(address, ssid="", frame=None, hopping=False):
+    """Classify an AP from its BSSID and SSID, or a full 802.11 frame without FCS.
+
+    With a frame from a monitor adapter, the result's "address" is the Flock device the frame points to, which for
+    a frame sent to a Flock prefix is not the sender."""
     if frame is not None:
         if len(frame) > MAX_WIFI_BYTES:
             return {"category": None, "confidence": NONE, "payload_valid": False}
+        tier = flock_frame(frame, address, hopping)
+        if tier is not None:
+            result = _result(tier[1])
+            result["address"] = ":".join("%02X" % b for b in tier[0])
+            return result
         parsed = parse_wifi(frame)
         signals = 0
         if len(frame) >= 24 and not frame[0] & 3 and (frame[0] >> 2) & 3 in (0, 2):

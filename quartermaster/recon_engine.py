@@ -14,7 +14,9 @@ import shutil
 import threading
 import time
 
-from . import faults, hardware, radios, recon, tones
+import zlib
+
+from . import deepscan, faults, hardware, radios, recon, tones
 from .ble import BleScanner
 from .engine import DEFAULT_ROOT, MIN_FREE_BYTES, gps_epoch
 from .tracker import distance_m
@@ -41,8 +43,9 @@ class AlertSound:
 
 class Recon:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, sound=None,
-                 clock=time.time, nodes=None):
+                 clock=time.time, nodes=None, deep=deepscan.DeepScan):
         self.cfg = dict(cfg)
+        self.deep_class, self.deep = deep, None
         self.nodes = nodes
         self.gps = gps
         self.root = Path(root)
@@ -102,7 +105,7 @@ class Recon:
             self._stop.clear()
             self.started = time.monotonic()
             self.state = "running"
-            self.fleet = self.fleet_class(self._usable(), self._wifi_sink, 0.0)
+            self.fleet = self.fleet_class(self._deep_scan(self._usable()), self._wifi_sink, 0.0)
             self.fleet.start()
             if self.nodes is not None:
                 self.nodes.attach(self, self._wifi_sink, self._node_ble)
@@ -116,6 +119,35 @@ class Recon:
             self.state = "idle"
             radios.release("recon")
             raise
+
+    def _deep_scan(self, usable):
+        """Deep scan in Recon: the monitor adds what it hears; the other adapters scan as before."""
+        self.deep = None
+        if self.deep_class is None or not deepscan.wanted(self.cfg):
+            return usable
+        try:
+            deep = self.deep = self.deep_class(self.cfg)
+            if not deep.open():
+                return usable
+            managed = deep.plan_roles(usable, self._node_bands())
+            if len(managed) < len(usable) and not deep.start(self._wifi_sink, self._deep_frame):
+                managed = usable
+            deep.tune(managed)
+            return deep.scanners(managed)
+        except Exception:
+            faults.note("Starting Deep scan in Recon")
+            return usable
+
+    def _node_bands(self):
+        return self.nodes.wifi_bands() if self.nodes is not None else ()
+
+    def _deep_frame(self, event):
+        frame = bytes(event.get("frame") or b"")
+        result = recon.classify_wifi(event.get("address"), frame=frame, hopping=bool(event.get("hopping")))
+        item = {"bssid": str(result.get("address") or event.get("address") or "").upper(), "ssid": "",
+                "rssi": event.get("rssi"), "channel": event.get("channel"), "frequency": event.get("frequency"),
+                "frame": frame, "hopping": bool(event.get("hopping"))}
+        self._observe("wifi", item)
 
     def _usable(self):
         return [a for a in self.adapters if a.get("bands") or not a.get("phy")]
@@ -131,7 +163,10 @@ class Recon:
         if self._hotplug and hasattr(self.fleet, "refresh"):
             try:
                 self.adapters = hardware.wifi_adapters()
-                self.fleet.refresh(self._usable())
+                usable = self._usable()
+                if self.deep is not None:
+                    usable = self.deep.follow(usable, self.adapters, self._node_bands())
+                self.fleet.refresh(usable)
             except OSError:
                 pass
         errors = [("%s: %s" % (s["label"], s["error"]) if s.get("method") == "node" else s["error"])
@@ -150,6 +185,11 @@ class Recon:
             self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
+        if self.deep is not None:
+            try:
+                self.deep.stop()
+            except Exception:
+                faults.note("Stopping Deep scan in Recon")
         for thread in self._threads:
             thread.join(timeout=5)
         if self.ble is not None:
@@ -170,6 +210,8 @@ class Recon:
     def radio_status(self):
         """The radios Recon listens with: the Wi-Fi adapters, then the nodes."""
         found = self.fleet.status() if self.fleet else []
+        if self.deep is not None and self.fleet:
+            found += self.deep.radio_status()
         return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
 
     def _wifi_sink(self, networks, adapter):
@@ -212,6 +254,15 @@ class Recon:
 
     def classify(self, transport, item):
         if transport == "wifi":
+            frame = item.get("frame")
+            if frame:
+                key = ("frame", item["bssid"], zlib.crc32(bytes(frame[:64])), bool(item.get("hopping")))
+                if key not in self._cache:
+                    if len(self._cache) > 8000:
+                        self._cache.clear()
+                    self._cache[key] = recon.classify_wifi(item["bssid"], frame=bytes(frame),
+                                                           hopping=bool(item.get("hopping")))
+                return self._cache[key]
             key = ("wifi", item["bssid"], item.get("ssid", ""))
             if key not in self._cache:
                 self._cache[key] = recon.classify_wifi(item["bssid"], item.get("ssid", ""))

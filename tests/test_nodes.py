@@ -1471,3 +1471,11 @@ def test_only_a_port_where_gpsd_found_a_gps_is_marked_and_a_node_port_stays_a_no
     gnss._mark_gpsd({"class": "DEVICES", "devices": [{"path": node, "driver": "NMEA0183"},
                                                      {"path": first, "driver": "NMEA0183"}]})
     assert hardware.port_mark(node) == "node" and hardware.port_mark(first) == "gps"
+
+
+def test_deep_scan_learns_which_bands_the_nodes_in_use_have(tmp_path):
+    rig = Rig(tmp_path, {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE, caps="wifi24+ble"))}, node_cfg(ONE))
+    assert rig.manager.wifi_bands() == ()
+    rig.manager.scan()
+    rig.settle()
+    assert rig.manager.in_use() == [ONE] and rig.manager.wifi_bands() == ("wifi24",)

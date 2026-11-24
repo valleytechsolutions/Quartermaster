@@ -228,11 +228,14 @@ class AdapterScanner:
         return self.runner(args, capture_output=True, text=True, errors="replace", timeout=timeout, check=False)
 
     def scan(self):
-        if not shutil.which("iw"):
-            raise ScanUnavailable("The iw tool is missing")
         started = self.clock()
         text = None
-        if self.direct is not False:
+        helper = self.adapter.get("helper")
+        if helper is not None:
+            text = self._helper_sweep(helper)
+        if text is None and not shutil.which("iw"):
+            raise ScanUnavailable("The iw tool is missing")
+        if text is None and self.direct is not False:
             # A direct trigger returns when the sweep ends, with fresh results. It needs
             # CAP_NET_ADMIN; without it NetworkManager triggers the sweep instead.
             result = self._run(["iw", "dev", self.interface, "scan"])
@@ -254,6 +257,19 @@ class AdapterScanner:
         for net in networks:
             net["interface"] = self.interface
         return networks
+
+    def _helper_sweep(self, helper):
+        """A sweep the radio helper starts, when Direct scans is on. None sends the adapter back to the usual way."""
+        from .radio_helper import HelperError
+        try:
+            text = helper.request("scan", iface=self.interface)["text"]
+        except HelperError as exc:
+            self.last_error = str(exc)[:80]
+            if "busy" not in str(exc).lower():
+                self.adapter = dict(self.adapter, helper=None)
+            return None
+        self.method = "helper"
+        return text
 
     def _managed_sweep(self, started):
         """Ask NetworkManager for a sweep, then read the kernel's results once they stop arriving.

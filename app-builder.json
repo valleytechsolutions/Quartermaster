@@ -1,12 +1,12 @@
 {
   "package_name": "quartermaster",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "app_name": "Quartermaster",
   "bin_name": "quartermaster",
   "description": "Wi-Fi, Bluetooth, aircraft and LoRa mesh wardriver with WiGLE logs, uploads and Recon",
   "store": {
     "summary": "Wi-Fi, Bluetooth, aircraft and LoRa mesh wardriver: WiGLE logs, auto uploads",
-    "description": "Quartermaster turns the CardputerZero into a wardriver for every supported radio you plug in. Every supported USB Wi-Fi adapter scans at once across 2.4, 5 and 6 GHz, next to the built-in radio and Bluetooth, and it still wardrives with no adapter at all. Add ESP32-C5 boards as Quartermaster Nodes, on USB or wireless through one hub node, and the channels are shared out between them. Flash a node from the Cardputer itself. With an RTL-SDR stick it logs the aircraft around you, and with the Cap LoRa-1262 it logs the Meshtastic and MeshCore nodes it hears. It only listens. GPS comes from a USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd, found by itself. Each device is counted once, with only its closest and its furthest sighting. Logs are WigleWifi-1.6 CSV files, and finished logs go by themselves to WiGLE, WDGWars and Wardrift whenever the Cardputer is online. Aircraft and mesh nodes go to WDGWars and Wardrift only. Add your keys by scanning a QR code with your phone or by typing them, and test each one from the device. While you wardrive, Drive Alerts can warn you with a banner and a tone of your choice about Flock cameras, body cameras, camera glasses and the other kinds you pick, from what the scan already hears and without slowing it, and a Dragon Detector on USB adds its own detections. Recon is a separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more, warns you, tells you if a device seems to follow you, and has a signal finder. Large live counters, a log browser with the upload state of every site, a hardware screen for every radio, and Check for updates. GPL-3.0 open source.",
+    "description": "Quartermaster turns the CardputerZero into a wardriver for every supported radio you plug in. Every supported USB Wi-Fi adapter scans at once across 2.4, 5 and 6 GHz, next to the built-in radio and Bluetooth, and it still wardrives with no adapter at all. Add ESP32-C5 boards as Quartermaster Nodes, on USB or wireless through one hub node, and the channels are shared out between them. Flash a node from the Cardputer itself. With an RTL-SDR stick it logs the aircraft around you, and with the Cap LoRa-1262 it logs the Meshtastic and MeshCore nodes it hears. It only listens. GPS comes from a USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd, found by itself. Each device is counted once, with only its closest and its furthest sighting. Logs are WigleWifi-1.6 CSV files, and finished logs go by themselves to WiGLE, WDGWars and Wardrift whenever the Cardputer is online. Aircraft and mesh nodes go to WDGWars and Wardrift only. Add your keys by scanning a QR code with your phone or by typing them, and test each one from the device. While you wardrive, Drive Alerts can warn you with a banner and a tone of your choice about Flock cameras, body cameras, camera glasses and the other kinds you pick, from what the scan already hears and without slowing it, and a Dragon Detector on USB adds its own detections. Recon is a separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, camera glasses, trackers such as AirTag and SmartTag, Remote ID drones and more, warns you, tells you if a device seems to follow you, and has a signal finder. Deep scan, off by default, lets a spare USB adapter listen in monitor mode during a wardrive or Recon: it only listens, adds every network it hears to the log, and finds Flock cameras from their probes, disconnect floods and evil twins. Large live counters, a log browser with the upload state of every site, a hardware screen for every radio, and Check for updates. GPL-3.0 open source.",
     "categories": [
       "Radio & Comms",
       "Security"
@@ -33,7 +33,7 @@
       "imu": false,
       "network": true,
       "additional_hardware": true,
-      "background_service": false,
+      "background_service": true,
       "external_display": false
     },
     "locales": {
