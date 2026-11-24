@@ -10,7 +10,7 @@ from quartermaster import config, deepscan, drive_watch, monitor, radio_helper, 
 from quartermaster.drive_watch import DriveWatch, SsidConflicts
 from quartermaster.engine import Wardrive
 from quartermaster.wifi import parse_iw_scan
-from tests.fakes import Clock, Fleet, Gps, networks
+from tests.fakes import Clock, Fleet, Gps, NoBle, networks
 from tests.test_core import FIX, NOW
 from tests.test_radiod import radiod
 
@@ -830,7 +830,7 @@ def run_drive(root, cfg, deep):
     Fleet.found = networks(200, seed=9)
     try:
         drive = Wardrive(dict(cfg, drive_alerts=False), Gps(FIX), root=root, adapters=[ALFA, AC1200, BUILTIN],
-                         fleet=Fleet, clock=lambda: NOW, deep=deep)
+                         ble=NoBle(), fleet=Fleet, clock=lambda: NOW, deep=deep)
         drive.start()
         drive.stop()
     finally:
@@ -870,8 +870,11 @@ def test_deep_scan_is_off_by_default_and_its_settings_load_safely(tmp_path):
     assert sections.index("DEEP SCAN") == sections.index("SCANNING") + 1
 
 
-def test_the_settings_screen_shows_deep_scan_off_and_says_when_the_helper_is_missing(tmp_path, drawn):
+def test_the_settings_screen_shows_deep_scan_off_and_says_when_the_helper_is_missing(tmp_path, drawn, monkeypatch):
     from tests.test_ui import make_app, press, screen_text
+    real_state = radio_helper.state
+    monkeypatch.setattr(radio_helper, "SOCKET", str(tmp_path / "no-helper.sock"))
+    monkeypatch.setattr(radio_helper, "state", lambda cfg: real_state(cfg, path=radio_helper.SOCKET))
     app = make_app(tmp_path)
     app.home()
     press(app, "S")
