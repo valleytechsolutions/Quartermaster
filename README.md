@@ -26,6 +26,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/guide/README.md">User guide</a> ·
   <a href="#install">Install</a> ·
   <a href="#what-it-does">What it does</a> ·
   <a href="#your-first-wardrive">First wardrive</a> ·
@@ -36,6 +37,15 @@
 </p>
 
 Plug in your radios and a GPS, press one key, and drive. Quartermaster finds your hardware by itself and scans on every radio at the same time. It counts each device once and writes logs in exactly the format WiGLE expects. When the Cardputer is back online, the logs go to WiGLE, WDGWars and Wardrift on their own.
+
+## User guide
+
+New to Quartermaster? The [user guide](docs/guide/README.md) explains everything step by step, in plain words:
+
+- [Install and update](docs/guide/install.md) · [First start and the GPS](docs/guide/first-start.md) · [The wardrive screen and keys](docs/guide/wardrive.md) · [Settings](docs/guide/settings.md)
+- [Wi-Fi adapters](docs/guide/wifi-adapters.md) · [Power and USB hubs](docs/guide/power.md) · [Getting the most networks](docs/guide/more-networks.md) · [Deep scan](docs/guide/deep-scan.md)
+- [Drive Alerts and Recon](docs/guide/alerts.md) · [Nodes](docs/guide/nodes.md) · [Aircraft and LoRa mesh](docs/guide/aircraft-and-lora.md) · [Uploads](docs/guide/uploads.md)
+- [Files and logs](docs/guide/files.md) · [Troubleshooting](docs/guide/troubleshooting.md) · [License and credits](docs/guide/license.md)
 
 ## Install
 
@@ -256,12 +266,13 @@ Many cheap Realtek adapters first show up as a small disc with a Windows driver 
 
 When an adapter is plugged in but does not scan, the Hardware screen says why:
 
-- **No driver for it here.** The chip has no driver in this Linux. See the table.
+- **No driver for it here. It needs Linux 6.19** (or another version). The chip needs a newer Linux than the CardputerZero has. See the table.
+- **This system has no driver for it.** The chip has no driver in this Linux.
 - **This model is too new for the driver here.** The chip is supported, but this model came out after Linux 6.18.
 - **Firmware missing.** Install the package it names, for example `sudo apt install firmware-misc-nonfree`. When it says the system needs newer firmware, the package is there but too old for this adapter.
 - **Needs more power.** Use a powered USB hub or a smaller adapter.
-- **In setup mode.** The adapter still shows as a driver disc. Replug it.
-- **On USB but not starting.** Replug it, try the other port, or use a powered hub.
+- **Wi-Fi adapter in setup mode.** The adapter still shows as a driver disc. Replug it.
+- **On USB but not starting.** Replug it or use a powered hub.
 
 ### USB power and Power guard
 
@@ -278,19 +289,19 @@ The Hardware screen adds up what is plugged in, from a table of typical draw for
 | ESP32-C5 node | 150 mA | 350 mA |
 | USB GPS (CP210x) | 50 mA | 50 mA |
 
-It counts the Cardputer's port, about 1,000 mA, and each unpowered hub on it, about 900 mA. Devices on a hub with its own power supply are not counted. Some powered hubs say they have no power of their own: set **USB hub power** to **Hub has power** in Settings > Scanning for those. When the total is over, the Hardware screen says "Too many adapters for USB power" and to use a powered USB hub. When a node sits on a crowded unpowered hub, it suggests running the node on its own battery: nodes work wirelessly too.
+It counts the Cardputer's port, about 1,000 mA, and takes about 900 mA as the most each unpowered hub on it can pass on (the hub itself counts as about 50 mA). Devices on a hub with its own power supply are not counted. Some powered hubs say they have no power of their own: set **USB hub power** to **Hub has power** in Settings > Scanning for those. When the total is over, the Hardware screen says "Too many adapters for USB power" and to use a powered USB hub. When a node sits on a crowded unpowered hub, it suggests running the node on its own battery: nodes work wirelessly too.
 
 Power guard is on by default, under Settings > Scanning. During a wardrive it:
 
 - Starts the USB adapters, the RTL-SDR stick and the nodes about 1.5 seconds apart, so their start-up spikes do not add up. An adapter plugged in during the drive waits 1.5 seconds too. With only one of them plugged in, nothing waits.
-- Watches for signs that power runs short: a USB device starting again on the same port, an adapter that goes away and comes back, a hub dropping off with several devices at once, the Pi's under-voltage alarm, power errors in the kernel log when the app may read it, and sharp dips in battery voltage. It needs two of these signs a few seconds apart, or the under-voltage alarm. A device or a hub unplugged or replugged by hand is not enough, and the errors a driver prints while its adapter is unplugged are left out.
+- Watches for signs that power runs short: a USB device starting again on the same port, an adapter that goes away and comes back, a hub dropping off with several devices at once, the Pi's under-voltage alarm, power errors in the kernel log when the app may read it, and sharp dips in battery voltage. It needs two of these signs from separate checks within 60 seconds, or one strong sign: the under-voltage alarm, or a kernel line about under-voltage or over-current. A device or a hub unplugged or replugged by hand is not enough, and the errors a driver prints while its adapter is unplugged are left out.
 - Only while it sees those signs, eases the extra adapters, one step at a time: first it undoes Radio tuning on them, then it spaces out their sweeps, then it pauses the adapter whose bands the others cover best. An adapter plugged in later gets the gentle steps first too. The adapter that keeps 6 GHz is never paused while another can be. The GPS, the built-in radio and the nodes are never touched.
 - After a few minutes of steady power, it tries a paused adapter once more. If trouble comes back, that adapter stays paused while it is plugged in. Unplug it, or move it to a powered hub, and it scans again.
 - Also counts the USB port running out of channels (dwc2 "no free channel"; the harmless "ChHltd" lines and lines from an adapter just unplugged are left out) and USB errors (-71) on adapters, when the app may read the kernel log, as power trouble, and the Hardware screen shows "USB port at its limit".
-- When an adapter that worked earlier in the drive stays on USB but has no network interface any more, as after a brownout, the radio helper resets its USB port, at most 3 times and further apart each time (10, 30 and 90 seconds). Then the Hardware screen says it needs power. Only the radio helper may reset, and only the known adapters listed in the install's udev rule: the rule gives their USB device nodes to a `quartermaster-usbreset` group that only the helper is in, and runs no program.
+- When an adapter that worked earlier in the drive stays on USB but has no network interface any more, as after a brownout, the radio helper resets its USB port, at most 3 times and further apart each time (10, 30 and 90 seconds). Then the Hardware screen says it needs power. A reset needs the radio helper running, which it is only when Deep scan, Direct scans or Radio tuning is on. Only the radio helper may reset, and only the known adapters listed in the install's udev rule: the rule gives their USB device nodes to a `quartermaster-usbreset` group that only the helper is in, and runs no program.
 - Tells you once on the Wardrive screen. The Hardware screen shows what it eased and why. When it could not ease anything, for example with only one USB adapter, it tells you to use a powered USB hub.
 
-During a wardrive the Hardware screen sums it up in one line, such as "Adapters: 4 active, est. 2.1 A, hub: unpowered". A listening adapter counts at about 60% of its typical draw, as it never transmits.
+During a wardrive the Hardware screen sums it up in one line, such as "Adapters: 4 active, est. 2.1 A, hub: unpowered" (or "hub: none" with no hub). In that line a listening adapter counts at about 60% of its typical draw, as it never transmits. The USB power estimate and Power guard count every adapter at its full draw.
 
 When power is fine, Power guard changes nothing: every adapter scans and is tuned as before and the logs are the same. It never changes the country, never fakes power limits and never adds a node. A paused adapter still draws a little power while plugged in, so for many adapters the real fix is a powered USB hub.
 
@@ -465,7 +476,7 @@ What is not there yet: Quartermaster listens on one uplink channel and one data 
 | **W R L U H S K A** | From the menu: jump to Wardrive, Recon, Logs, Uploads, Hardware, Settings, Keys, About |
 | **Tab** | On the wardrive screen: show Wi-Fi, Bluetooth or both. In a text box: list every symbol |
 | **A** | On the wardrive screen: the alerts of this wardrive |
-| **N** | On an alert from that list: no more alerts for that device |
+| **N** | On an alert's details (OK on an alert in that list, then N): no more alerts for that device |
 | **Del** | While an alert banner shows: hide it |
 | **Q** | On the wardrive screen, the alert list or an alert banner: no alert tones or banners for 10 minutes. Again to end it |
 | **Sym**, then a key | In a text box: the symbol printed on that key |
@@ -607,7 +618,7 @@ While you wardrive, Quartermaster can warn you about the devices you pick, from 
 - **Quiet for 10 minutes.** **Q** on the wardrive screen, on the alert list or while a banner shows: no tones and no banners for 10 minutes. Alerts are still listed and logged, and the wardrive screen shows how long is left, such as Q 9m, in place of the alert count. **Q** again ends it.
 - **Calm tones.** No tones in the first minute of a wardrive; those alerts still show and are not sounded later. A Flock camera tone plays at most once a minute, a My alert every 30 seconds, Meta glasses every 2 minutes, and body cameras and other kinds every 5 minutes. More body cameras in between add to the banner without a sound. In a busy town a kind sounds less often: after 5 tones in 10 minutes its gap doubles, up to 4 minutes. Tones are spaced 8 seconds apart, at most 30 an hour. A body camera or My alert sounds even then, up to 6 times an hour each. A flood of new devices of one kind, such as a Flipper sending fake adverts, mutes that kind for 5 minutes; Flock cameras, body cameras, Meta glasses and My alerts are never muted, and a flood of them shows one card such as "30 flock cameras in 1 min". **Tone volume** sets the volume of Drive Alerts and of the Recon beep.
 - **No alerts for this.** Open an alert from the list and press **N**: that device does not alert again, but it is still logged and uploaded, unlike an ignored network. Its address is kept, or its name when its Bluetooth address keeps changing; then anything with that name stops alerting. A device whose Bluetooth address keeps changing and that has no name, such as most Meta glasses, is silenced for this drive only. **Settings > No alerts for** lists the kept ones.
-- **My alerts.** Names or addresses that always alert, whatever kind of device: `veh*` catches every network whose name starts with veh.
+- **My alerts.** Up to 8 Wi-Fi or Bluetooth names, patterns or addresses that always alert, whatever kind of device: `veh` catches every name that starts with veh, `*` and `?` match any text, and capitals do not matter.
 - **Dragon Detector.** Plug a [Dragon Detector](https://github.com/valleytechsolutions/dragon-detector) into USB and its alerts join in, graded the same way. Its radar hears what scanning cannot, such as Flock cameras that only send probe requests.
 
 Without a Dragon Detector, a Flock camera alerts when it shows its own Wi-Fi network or Bluetooth signal. Detection is best effort: a device may be quiet as you pass it.
@@ -618,13 +629,13 @@ Deep scan is off until you turn it on in **Settings > Deep scan**. With it on, o
 
 - **Every network it hears goes into the log.** Beacons and probe responses become the same WiGLE rows a normal scan writes, with the same columns. A network also found by a normal scan is still one device. Deep scan only adds to the wardrive.
 - **Flock cameras from their probes.** Flock cameras send probe requests as they hop between channels, even with no network of their own. Deep scan uses the rules of flock-you: a probe from a Flock address prefix with the Flock fingerprint is medium evidence and alerts. Without the fingerprint it is a weak hint, unless the same sender probes on two channels that are far apart (such as 1 and 6) within 3 seconds, as Flock cameras do when they hop; then it alerts too. Probes heard on neighbouring channels do not count, because one radio can be heard a channel or two away. Frames from or to a Flock prefix are weak hints. Espressif prefixes are left out on purpose, as SquachWatch does, because your own nodes and many smart plugs use them.
-- **Disconnect floods.** 12 disconnect frames from one sender in 3 seconds, 6 of them to everyone, or 24 to everyone from any senders, alert as a deauth flood (SquachWatch's rule).
+- **Disconnect floods.** Within 3 seconds, 12 disconnect frames from one sender, or 6 to everyone from one sender, or 24 to everyone from any senders, alert as a deauth flood (SquachWatch's rule).
 - **Evil twins.** Raw beacons feed the evil twin check. Two access points from the same maker are never called twins. One access point heard on two channels at once, or both open and protected, is added to an evil twin alert as evidence.
 - **Listen pattern.** Balanced listens on channels 11, 6 and 1 for 250 ms each, as flock-you does, then the other 2.4 GHz channels by how busy they are, then the busy 5 GHz channels. Flock first stays on 11, 6 and 1, with a pass over the other 2.4 GHz channels every fourth round.
-- **Which adapter listens.** Never the built-in radio, never an adapter that is connected to a network, and never the only adapter that can scan 6 GHz. Every band of the listening adapter must still be scanned by another adapter. With an ALFA AWUS036AXM and a second USB adapter, the second one listens and the ALFA keeps 2.4, 5 and 6 GHz. With only the ALFA, Deep scan is not available and everything scans as before. **Monitor adapter** can pick one adapter instead of Auto. The Hardware screen shows which adapter listens and why the others do not.
-- **All adapters listen.** With two or more USB adapters that can listen, Auto keeps the fewest adapters scanning normally that still cover every band any adapter has, with 6 GHz always on a 6 GHz adapter that scans normally, and every other USB adapter listens. Each listening adapter gets its own share of the channels: one keeps 11, 6 and 1 for Flock cameras, the rest go to the adapter with the least to do, busiest channels first, so busy 5 GHz channels are spread out. 6 GHz adapters also listen on the main 6 GHz channels while another 6 GHz adapter still scans normally. How many may listen (up to 6) follows what reading their frames costs the CPU, measured during the drive, so the rest of the wardrive never waits; the others keep scanning normally. A listening adapter that drops out hands its channels to the others at once and listens again 1.5 seconds after it is back. Off keeps one listening adapter, exactly as in 1.2.6.
+- **Which adapter listens.** Never the built-in radio, never an adapter that is connected to a network, and never the only adapter that can scan 6 GHz. Every band of the listening adapter must still be covered: 6 GHz by another adapter that scans normally, 2.4 and 5 GHz by another adapter or by nodes. With an ALFA AWUS036AXM and a second USB adapter, the second one listens and the ALFA keeps 2.4, 5 and 6 GHz. With only the ALFA, Deep scan is not available and everything scans as before. **Monitor adapter** can pick one adapter instead of Auto. The Hardware screen shows which adapter listens and why the others do not.
+- **All adapters listen.** With two or more USB adapters that can listen, and Monitor adapter on Auto, Auto keeps the fewest adapters scanning normally that still cover every band any adapter has, with 6 GHz always on a 6 GHz adapter that scans normally, and every other USB adapter listens. Each listening adapter gets its own share of the channels: one keeps 11, 6 and 1 for Flock cameras, the rest go to the adapter with the least to do, busiest channels first, so busy 5 GHz channels are spread out. 6 GHz adapters also listen on the main 6 GHz channels while another 6 GHz adapter still scans normally. How many may listen (3 at the start of a drive, up to 6 later) follows what reading their frames costs the CPU, measured during the drive, so the rest of the wardrive never waits; the others keep scanning normally. A listening adapter that drops out hands its channels to the others at once and listens again 1.5 seconds after it is back. Off keeps one listening adapter, exactly as in 1.2.6.
 - **Direct scans.** Adapters on USB start their own sweeps through the radio helper instead of NetworkManager, for fresher results.
-- **Radio tuning.** During a wardrive, power saving goes off on USB adapters and their transmit power goes up to the limit your country allows, as the kernel reports it. Both are put back at the end. The country setting is never changed. The install keeps known USB Wi-Fi adapters, GPS receivers and nodes from going to sleep while they are plugged in.
+- **Radio tuning.** During a wardrive, power saving goes off on USB adapters and their transmit power goes up to the limit your country allows, as the kernel reports it. Both are put back at the end. The country setting is never changed. The install keeps the 7 adapters that can listen, u-blox GPS receivers and nodes on the ESP32-C5's own USB port from going to sleep while they are plugged in.
 - **Bluetooth** works exactly as before.
 
 Deep scan needs the radio helper that the install adds: a small system service that starts only when Quartermaster asks for it, runs as its own unprivileged user with only the two network rights it needs, answers only members of the `quartermaster-radio` group and only a fixed list of commands. It has no way to change the country or to send frames, it never touches the built-in radio, and it puts every adapter back when the wardrive stops, when the app closes or crashes, and when the helper itself is stopped. After the first install, restart the Cardputer once so your user joins the new group. It can also write to the USB device nodes of the known Wi-Fi adapters, only to reset one that stopped working. If the busy street costs too much CPU with several adapters listening, they go back to normal scans one at a time. With one, Deep scan first drops data frames, then reads beacons less often, then stays on 11, 6 and 1, and at last hands the adapter back to normal scans and says so on the Hardware screen.
@@ -691,7 +702,7 @@ Recon and Drive Alerts build on this work and research:
 </p>
 
 <p align="center">
-  <img src="docs/screens/about.png" width="320" alt="The About screen: Quartermaster version 1.2.0, with the Valleytech Solutions and BWM logos">
+  <img src="docs/screens/about.png" width="320" alt="The About screen, with the Valleytech Solutions and BWM logos">
 </p>
 
 ## License
