@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import adsb, faults, hardware, lora, mesh, radios, wigle
+from . import adsb, deepscan, faults, hardware, lora, mesh, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .drive_watch import DriveWatch
@@ -162,8 +162,9 @@ def _record(device):
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
                  nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
-                 player=None):
+                 player=None, deep=deepscan.DeepScan):
         self.cfg = dict(cfg)
+        self.deep_class, self.deep = deep, None
         self.alerts, self.player = alerts, player
         self.watch = None
         self.sdr = sdr
@@ -171,6 +172,7 @@ class Wardrive:
         self.mesh = None
         self.mesh_path = None
         self.nodes = nodes
+        self.node_clock = getattr(nodes, "clock", None) or time.monotonic
         self.gps = gps
         self.root = Path(root)
         self.logs = self.root / "logs"
@@ -197,6 +199,8 @@ class Wardrive:
         self._parts = queue.Queue()
         self._finisher = None
         self._started = self._stopped = None
+        self.waiting = False
+        self._waited_at = None
         self.skipped_no_fix = 0
         self.ble_error = ""
         self.set_ignore(self.cfg.get("ignore", ()))
@@ -216,6 +220,7 @@ class Wardrive:
         self.ignore_macs, self.ignore_names = ignoring(items)
 
     def elapsed(self):
+        """Drive time, counted from the first usable GPS fix."""
         if self._started is None:
             return 0
         return (self._stopped if self._stopped is not None else time.monotonic()) - self._started
@@ -255,7 +260,9 @@ class Wardrive:
             raise RuntimeError("No Wi-Fi adapter found and Bluetooth is off")
         radios.claim("wardrive")
         self._stop.clear()
-        self._started, self._stopped = time.monotonic(), None
+        self._started, self._stopped = None, None
+        self.waiting, self._waited_at = True, None
+        chosen = self._deep_scan(chosen)
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         self.state = "running"
         self._watch_on()
@@ -274,6 +281,44 @@ class Wardrive:
             self._threads.append(threading.Thread(target=self._ble_loop, daemon=True, name="ble"))
         for thread in self._threads:
             thread.start()
+
+    def _deep_scan(self, chosen):
+        """With Deep scan, Direct scans or Radio tuning on: the radio helper session. Returns the adapters that scan
+        as before, which never lose a band. Any failure leaves every adapter scanning as before."""
+        self.deep = None
+        if self.deep_class is None or not deepscan.wanted(self.cfg):
+            return chosen
+        try:
+            deep = self.deep = self.deep_class(self.cfg)
+            if not deep.open():
+                return chosen
+            managed = deep.plan_roles(chosen, self._node_bands())
+            if len(managed) < len(chosen) and not deep.start(self._wifi_sink, self._deep_frames, self._deep_flood,
+                                                              self._deep_clash):
+                managed = chosen
+            deep.tune(managed)
+            return deep.scanners(managed)
+        except Exception:
+            faults.note("Starting Deep scan")
+            return chosen
+
+    def _node_bands(self):
+        return self.nodes.wifi_bands() if self.nodes is not None else ()
+
+    def _deep_frames(self, event):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_frames([event])
+
+    def _deep_flood(self, burst):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_incident("deauth", burst["sender"], deauth_words(burst), burst.get("rssi"))
+
+    def _deep_clash(self, clash):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_clash(clash)
 
     def _watch_on(self):
         if self.watch is not None or self.alerts is None or not self.cfg.get("drive_alerts", True):
@@ -305,6 +350,9 @@ class Wardrive:
             watch.configure(self.cfg)
         elif self.state == "running":
             self._watch_on()
+        replan = getattr(self.mesh, "replan", None)
+        if replan is not None:
+            replan(self._lora_plan())
 
     def _sky_wanted(self):
         """Whether aircraft are listened for now: On always, Auto while an RTL-SDR stick is plugged in."""
@@ -319,7 +367,7 @@ class Wardrive:
     def _listen_sky(self):
         self.aircraft = self.receiver(self.logs, self.gps, clock=self.clock, log=lambda: self.log_path,
                                       max_hdop=self.cfg.get("gps_max_hdop") or None,
-                                      epoch=lambda fix: gps_epoch(fix, self.clock()))
+                                      epoch=lambda fix: gps_epoch(fix, self.clock()), gate=self._counting)
         self.aircraft.start(gps_epoch(self.gps.snapshot(), self.clock()))
 
     def _follow_sky(self):
@@ -338,11 +386,22 @@ class Wardrive:
             return False
         return mode is True or self.cap.found
 
+    def _lora_plan(self):
+        """The LoRa settings to listen on in turn. LoRaWAN uplinks join them only while LoRaWAN networks alert."""
+        wanted = self.cfg.get("drive_alerts", True) and "lorawan" in self.cfg.get("drive_alert_types", ())
+        return lora.plan(self.cfg.get("country", "US"), lorawan_too=wanted)
+
+    def _lorawan_heard(self, hit):
+        watch = self.watch
+        if watch is not None:
+            watch.offer_lorawan(hit)
+
     def _listen_mesh(self):
-        self.mesh = self.listener(self.logs, self.gps, self.cap.radio, lora.plan(self.cfg.get("country", "US")),
+        self.mesh = self.listener(self.logs, self.gps, self.cap.radio, self._lora_plan(),
                                   clock=self.clock, log=lambda: self.log_path,
                                   max_hdop=self.cfg.get("gps_max_hdop") or None,
-                                  epoch=lambda fix: gps_epoch(fix, self.clock()))
+                                  epoch=lambda fix: gps_epoch(fix, self.clock()), gate=self._counting)
+        self.mesh.lorawan_sink = self._lorawan_heard
         self.mesh.start(gps_epoch(self.gps.snapshot(), self.clock()))
 
     def _follow_mesh(self):
@@ -365,6 +424,7 @@ class Wardrive:
         while not self._stop.wait(UPKEEP_SECONDS):
             ticks += 1
             try:
+                self._position()
                 self._sync()
                 self._follow_adapters()
                 self._follow_sky()
@@ -491,7 +551,10 @@ class Wardrive:
         if self._hotplug and hasattr(self.fleet, "refresh"):
             try:
                 self.adapters = hardware.wifi_adapters()
-                self.fleet.refresh(self._chosen_adapters())
+                chosen = self._chosen_adapters()
+                if self.deep is not None:
+                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands())
+                self.fleet.refresh(chosen)
             except OSError:
                 pass
 
@@ -515,6 +578,11 @@ class Wardrive:
             self.nodes.detach(self)
         if self.fleet is not None:
             self.fleet.stop()
+        if self.deep is not None:
+            try:
+                self.deep.stop()
+            except Exception:
+                faults.note("Stopping Deep scan")
         for thread in self._threads:
             thread.join(timeout=5)
         if self.aircraft is not None:
@@ -613,13 +681,36 @@ class Wardrive:
 
     def _position(self):
         """The fix, the time to stamp rows with, and the fix again only if it may be logged."""
+        looked = self.node_clock()
         fix = self.gps.snapshot()
         now = gps_epoch(fix, self.clock())
         usable = fix if wigle.usable(fix, now, self.cfg.get("gps_max_hdop") or None) else None
         fixes = self._fixes
         if usable is not None and (not fixes or fixes[-1][0] != now or fixes[-1][1] != usable):
             fixes.append((now, usable))
+        if self.waiting:
+            if usable is None:
+                self._waited_at = looked
+            else:
+                self._fixed()
         return fix, now, usable
+
+    def _fixed(self):
+        """The first usable fix: the drive time, the counters and the log start from here."""
+        with self._lock:
+            if self.waiting and self.state == "running":
+                self._started, self.waiting = time.monotonic(), False
+
+    def _before_fix(self, record, arrived):
+        """Whether this was heard while the drive still had no usable fix, as a node reporting late may say."""
+        lag, waited = record.get("lag"), self._waited_at
+        return self.waiting or (lag is not None and waited is not None and arrived - lag < waited)
+
+    def _counting(self):
+        """Whether what is heard counts: not before the drive's first usable fix."""
+        if self.waiting:
+            self._position()
+        return not self.waiting
 
     def _placed(self, record, now, fix):
         """When and where a node heard what it reports "lag" seconds late: the fix nearest that moment, its accuracy
@@ -639,10 +730,13 @@ class Wardrive:
 
     def _wifi_sink(self, networks, adapter):
         _, now, fix = self._position()
+        arrived = self.node_clock()
         min_rssi = self.cfg.get("min_rssi", -100)
-        for net in networks:
+        for net in () if self.waiting else networks:
             try:
-                self._wifi_seen(net, *self._placed(net, now, fix), min_rssi)
+                when, place = self._placed(net, now, fix)
+                if not self._before_fix(net, arrived):
+                    self._wifi_seen(net, when, place, min_rssi)
             except Exception:
                 faults.note("Logging a Wi-Fi network")
         watch = self.watch
@@ -666,12 +760,15 @@ class Wardrive:
 
     def _ble_loop(self):
         interval = self.cfg.get("ble_interval", 1.0)
-        last_rssi = {}
+        last_rssi, waited = {}, True
         while not self._stop.is_set():
             try:
                 seen = self.ble.scan()
                 self.ble_error = ""
                 self._listening(True)
+                if waited and not self.waiting:
+                    last_rssi.clear()
+                waited = self.waiting
                 self._ble_sink(seen, last_rssi)
             except ScanUnavailable as exc:
                 self.ble_error = str(exc)
@@ -699,15 +796,18 @@ class Wardrive:
 
     def _ble_sink(self, seen, last_rssi):
         _, now, fix = self._position()
+        arrived = self.node_clock()
         include_random = self.cfg.get("ble_random", True)
         min_rssi = self.cfg.get("min_rssi", -100)
         for item in seen:
             try:
-                self._ble_seen(item, last_rssi, *self._placed(item, now, fix), include_random, min_rssi)
+                when, place = self._placed(item, now, fix)
+                early = self._before_fix(item, arrived)
+                self._ble_seen(item, last_rssi, when, place, include_random, min_rssi, early)
             except Exception:
                 faults.note("Logging a Bluetooth device")
 
-    def _ble_seen(self, item, last_rssi, now, fix, include_random, min_rssi):
+    def _ble_seen(self, item, last_rssi, now, fix, include_random, min_rssi, early):
         mac = item["address"]
         # BlueZ keeps a device listed for a while; only a changed RSSI is a new sighting.
         if not is_mac(mac) or last_rssi.get(mac) == item["rssi"]:
@@ -716,7 +816,7 @@ class Wardrive:
         watch = self.watch
         if watch is not None:
             watch.offer_ble(item)
-        if item["rssi"] < min_rssi or (item.get("address_type", 1) != 0 and not include_random):
+        if early or item["rssi"] < min_rssi or (item.get("address_type", 1) != 0 and not include_random):
             return
         kind = BT if item.get("classic") else BLE
         manufacturer = item.get("manufacturer") or {}
@@ -729,14 +829,14 @@ class Wardrive:
             self._log(kind, _record(device), item["rssi"], fix, now)
 
     def status(self):
-        fix = self.gps.snapshot()
+        fix = self.gps.snapshot() if self.state != "running" else self._position()[0]
         summary = self.tracker.summary()
         hdop, limit = fix.get("hdop"), self.cfg.get("gps_max_hdop") or None
         paths = self.log_paths
         kept = self.tracker.kept if self.extremes and self.writer is not None else 0
         summary.update(state=self.state, rows=self.rows + self._finishing + kept, files=len(paths),
                        log=str(paths[0]) if paths else "", skipped_no_fix=self.skipped_no_fix,
-                       elapsed=self.elapsed(),
+                       elapsed=self.elapsed(), waiting_for_fix=self.waiting,
                        aircraft=self.aircraft.count if self.aircraft is not None else None,
                        adsb=self.aircraft.status() if self.aircraft is not None else None,
                        aircraft_log=str(self.aircraft_path) if self.aircraft_path else "",
@@ -744,6 +844,7 @@ class Wardrive:
                        lora=self.mesh.status() if self.mesh is not None else None,
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        watch=self.watch.status() if self.watch is not None else None,
+                       deep=self.deep.status() if self.deep is not None else None,
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
@@ -752,6 +853,8 @@ class Wardrive:
     def radio_status(self):
         """The radios of the wardrive: the Wi-Fi adapters, then the nodes."""
         found = self.fleet.status() if self.fleet else []
+        if self.deep is not None and self.fleet:
+            found += self.deep.radio_status()
         return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
 
     def _set_aside(self, devices):
@@ -798,6 +901,16 @@ class Wardrive:
             except OSError:
                 pass
         _settle(path.parent)
+
+
+def deauth_words(burst):
+    """The evidence line of a disconnect flood heard by Deep scan."""
+    if burst.get("any"):
+        text = "Disconnect burst: %d frames to everyone in 3 s from several senders" % burst["count"]
+    else:
+        text = "Disconnect burst: %d frames in 3 s from %s; %d to everyone" % (
+            burst["count"], burst["sender"], burst["bcast"])
+    return text + (", ch %s" % burst["channel"] if burst.get("channel") else "")
 
 
 def _mend(path):

@@ -88,11 +88,122 @@ def test_no_fix_means_no_rows_and_no_file(tmp_path):
     drive = Wardrive(dict(TRACK, wifi_adapters="external"), FakeGPS({"valid": False}), root=tmp_path,
                      adapters=ADAPTERS, fleet=FakeFleet, clock=lambda: NOW)
     drive.start()
-    assert drive.status()["wifi"] == 3 and drive.status()["rows"] == 0 and drive.log_path is None
-    assert drive.skipped_no_fix == 6
+    status = drive.status()
+    assert status["waiting_for_fix"] and status["wifi"] == 0 and status["rows"] == 0 and status["elapsed"] == 0
+    assert drive.log_path is None and drive.skipped_no_fix == 0
     drive._sync()
     drive.stop()
     assert list((tmp_path / "logs").iterdir()) == []
+    status = drive.status()
+    assert status["waiting_for_fix"] and status["elapsed"] == 0 and status["log"] == ""
+
+
+class Alerts:
+    """Stands in for Drive Alerts and keeps what it is offered."""
+
+    def __init__(self, cfg, gps, root, player=None, clock=None):
+        self.wifi, self.ble = [], []
+
+    def start(self, epoch):
+        pass
+
+    def stop(self):
+        pass
+
+    def offer_wifi(self, networks):
+        self.wifi.extend(net["bssid"] for net in networks)
+
+    def offer_ble(self, item):
+        self.ble.append(item["address"])
+
+    def listening(self, kind, on):
+        pass
+
+    def status(self):
+        return {"alerts": 0, "urgent": False, "speaker": None}
+
+
+def test_a_wardrive_waits_for_the_first_fix_then_starts_timer_counters_and_log_together(tmp_path, monkeypatch):
+    gps = FakeGPS({"valid": False})
+    drive = Wardrive(dict(TRACK), gps, root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet, clock=lambda: NOW,
+                     alerts=Alerts)
+    drive.start()
+    seen = networks(5)
+    drive._wifi_sink(seen, ADAPTERS[0])
+    drive._ble_sink([{"address": "C4:7C:8D:11:22:01", "name": "Buds", "rssi": -60, "address_type": 0}], {})
+    status = drive.status()
+    assert status["waiting_for_fix"] and status["wifi"] == status["ble"] == status["rows"] == 0
+    assert status["elapsed"] == 0 and drive.elapsed() == 0 and drive.tracker.found() == []
+    assert drive.log_path is None and list((tmp_path / "logs").iterdir()) == []
+    assert len(drive.watch.wifi) == 5 and drive.watch.ble == ["C4:7C:8D:11:22:01"]
+    started = time.monotonic()
+    gps.fix = FIX
+    status = drive.status()
+    assert not status["waiting_for_fix"] and status["wifi"] == 0 and 0 <= drive.elapsed() < 1
+    assert drive._started >= started
+    drive._wifi_sink(seen, ADAPTERS[0])
+    drive._wifi_sink(seen, ADAPTERS[0])
+    drive._ble_sink([{"address": "C4:7C:8D:11:22:01", "name": "Buds", "rssi": -60, "address_type": 0}], {})
+    status = drive.status()
+    assert status["wifi"] == 5 and status["ble"] == 1 and status["rows"] == 6
+    assert all(device.sightings == 2 for device in drive.tracker.found() if device.kind == "WIFI")
+    drive.stop()
+    expected = sorted([n["bssid"].lower() for n in seen] + ["c4:7c:8d:11:22:01"])
+    assert sorted(r[0] for r in rows_of(drive.log_path)) == expected
+
+
+def test_a_fix_too_weak_for_the_gps_accuracy_setting_keeps_the_wardrive_waiting(tmp_path):
+    gps = FakeGPS(dict(FIX, hdop=7.5))
+    drive = Wardrive(dict(TRACK, gps_max_hdop=5), gps, root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: NOW)
+    drive.start()
+    drive._wifi_sink(networks(3), ADAPTERS[0])
+    status = drive.status()
+    assert status["waiting_for_fix"] and status["gps_weak"] and status["wifi"] == 0 and drive.elapsed() == 0
+    gps.fix = FIX
+    drive._wifi_sink(networks(3), ADAPTERS[0])
+    assert not drive.status()["waiting_for_fix"] and drive.status()["wifi"] == 3
+    drive.stop()
+
+
+def test_the_upkeep_starts_the_drive_at_the_fix_when_nothing_is_heard(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "UPKEEP_SECONDS", 0.01)
+    gps = FakeGPS({"valid": False})
+    drive = Wardrive(dict(TRACK), gps, root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet, clock=lambda: NOW)
+    drive.start()
+    assert drive.waiting
+    gps.fix = FIX
+    wait_for(lambda: not drive.waiting)
+    drive.stop()
+
+
+def test_a_fix_lost_during_the_drive_pauses_logging_but_not_the_timer_or_the_counts(tmp_path):
+    gps = FakeGPS(FIX)
+    drive = Wardrive(dict(TRACK), gps, root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet, clock=lambda: NOW)
+    drive.start()
+    drive._wifi_sink(networks(3), ADAPTERS[0])
+    started = drive._started
+    gps.fix = {"valid": False}
+    drive._wifi_sink(networks(5), ADAPTERS[0])
+    status = drive.status()
+    assert not status["waiting_for_fix"] and drive._started == started and status["elapsed"] > 0
+    assert status["wifi"] == 5 and status["rows"] == 3 and drive.skipped_no_fix == 5
+    drive.stop()
+
+
+def test_bluetooth_heard_while_waiting_is_logged_once_heard_again_with_the_fix(tmp_path):
+    from tests.fakes import Ble
+    gps = FakeGPS({"valid": False})
+    ble = Ble([("C4:7C:8D:11:22:01", "Buds", -60)])
+    drive = Wardrive({"log_rows": "track", "ble_interval": 0.01}, gps, root=tmp_path, adapters=ADAPTERS,
+                     fleet=QuietFleet, clock=lambda: NOW, ble=ble)
+    drive.start()
+    time.sleep(0.1)
+    assert drive.status()["ble"] == 0
+    gps.fix = FIX
+    wait_for(lambda: drive.status()["rows"] == 1)
+    drive.stop()
+    assert drive.status()["ble"] == 1 and [r[0] for r in rows_of(drive.log_path)] == ["c4:7c:8d:11:22:01"]
 
 
 class Sweeps:
@@ -166,7 +277,7 @@ def test_ignored_hidden_and_band_filters(tmp_path):
 def test_weak_gps_fix_holds_rows_back(tmp_path):
     weak = FakeGPS(dict(FIX, hdop=7.5))
     drive = run_sweeps(tmp_path, [-60], {"gps_max_hdop": 5}, weak)
-    assert drive.rows == 0 and drive.skipped_no_fix == 1
+    assert drive.rows == 0 and drive.waiting and drive.log_path is None
     drive = run_sweeps(tmp_path, [-60], {"gps_max_hdop": 10}, weak)
     assert drive.rows == 1
 
@@ -713,9 +824,11 @@ def long_drive(tmp_path, monkeypatch):
 def test_devices_let_go_before_the_first_row_are_not_set_aside(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "MAX_TRACKED", 10)
     clock = [NOW]
-    drive = Wardrive(dict(TRACK), FakeGPS({"valid": False}), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+    drive = Wardrive(dict(TRACK), FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
                      clock=lambda: clock[0])
     drive.start()
+    drive.status()
+    drive.gps.fix = {"valid": False}
     drive._wifi_sink(networks(30), ADAPTERS[0])
     clock[0] += 600
     drive._tidy()
@@ -1285,7 +1398,7 @@ def test_a_part_that_cannot_be_compacted_counts_no_rows_and_loses_no_summary_lin
     assert {row["LogRows"] for row in summary[12:20]} == {"0"}
 
 
-def sky_drive(tmp_path, gps=None, sdr=True, **cfg):
+def sky_drive(tmp_path, gps=None, sdr=True, fleet=FakeFleet, **cfg):
     from quartermaster import adsb
     from tests.fakes import FakeRtlAdsb
     fake = FakeRtlAdsb()
@@ -1295,7 +1408,7 @@ def sky_drive(tmp_path, gps=None, sdr=True, **cfg):
                                  out=tmp_path / "run", cpus=lambda: 4, kill=fake.kill, poll=0.01,
                                  runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
     drive = Wardrive(dict(TRACK, adsb=True, **cfg), gps or FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS,
-                     fleet=FakeFleet, clock=lambda: NOW, receiver=receiver)
+                     fleet=fleet, clock=lambda: NOW, receiver=receiver)
     drive.start()
     return drive, fake
 
@@ -1305,6 +1418,23 @@ def wait_for(test, seconds=5):
     while not test() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert test()
+
+
+def test_an_aircraft_heard_only_while_waiting_for_the_fix_is_not_counted(tmp_path):
+    from tests.fakes import plane
+    gps = FakeGPS({"valid": False})
+    drive, fake = sky_drive(tmp_path, gps=gps)
+    wait_for(lambda: fake.processes)
+    fake.air(plane("a1b2c3", 25.2, -77.7))
+    time.sleep(0.3)
+    gps.fix = FIX
+    drive.status()
+    time.sleep(0.3)
+    assert drive.status()["aircraft"] == 0
+    fake.air(plane("c0ffee", 25.2, -77.7))
+    wait_for(lambda: drive.status()["aircraft"] == 1)
+    drive.stop()
+    assert sorted(drive.aircraft.sky.planes) == ["c0ffee"]
 
 
 def test_aircraft_are_heard_beside_wifi_and_written_beside_the_wigle_log_at_the_stop(tmp_path):
@@ -1350,12 +1480,37 @@ def test_without_the_stick_the_wardrive_logs_wifi_as_ever_and_says_why_no_aircra
 
 def test_aircraft_heard_without_a_wigle_log_are_saved_under_the_time_the_wardrive_started(tmp_path):
     from tests.fakes import plane
-    drive, fake = sky_drive(tmp_path, gps=FakeGPS({"valid": False}))
+    drive, fake = sky_drive(tmp_path, fleet=QuietFleet)
     wait_for(lambda: fake.processes)
     fake.air(plane("a1b2c3", 25.2, -77.7))
     wait_for(lambda: drive.status()["aircraft"] == 1)
     drive.stop()
     assert drive.log_path is None and drive.aircraft_path.name == "quartermaster_20261118-110640.aircraft.json.gz"
+
+
+def test_aircraft_heard_before_the_first_fix_are_not_kept(tmp_path):
+    from tests.fakes import plane
+    gps = FakeGPS({"valid": False})
+    drive, fake = sky_drive(tmp_path, gps=gps)
+    wait_for(lambda: fake.processes)
+    fake.air(plane("a1b2c3", 25.2, -77.7))
+    time.sleep(0.2)
+    assert drive.status()["aircraft"] == 0 and drive.aircraft.count == 0
+    drive.stop()
+    assert drive.aircraft_path is None and list((tmp_path / "logs").iterdir()) == []
+
+
+def test_aircraft_count_from_the_first_fix(tmp_path):
+    from tests.fakes import plane
+    gps = FakeGPS({"valid": False})
+    drive, fake = sky_drive(tmp_path, gps=gps)
+    wait_for(lambda: fake.processes)
+    gps.fix = FIX
+    drive.status()
+    fake.air(plane("a1b2c3", 25.2, -77.7))
+    wait_for(lambda: drive.status()["aircraft"] == 1)
+    drive.stop()
+    assert drive.aircraft_path is not None
 
 
 def test_aircraft_left_in_a_journal_by_a_power_cut_are_finished_at_the_next_start(tmp_path):
@@ -1420,13 +1575,13 @@ def test_finishing_a_journal_keeps_where_rows_start_not_the_rows_themselves(tmp_
 
 def test_a_node_line_heard_late_is_placed_where_and_when_it_was_heard(tmp_path):
     drive, clock = closest_and_furthest(tmp_path)
-    for second in range(21):
+    for second in range(0, 21, 10):
         drive.gps.fix = dict(FIX, latitude=25 + second / 1000, speed=14.0)
         drive._wifi_sink([], ADAPTERS[0])
-        clock[0] += 1
-    clock[0] -= 1
+        clock[0] += 10
+    clock[0] -= 10
     drive._wifi_sink([dict(NET, rssi=-60, lag=10.0, air=False)], ADAPTERS[0])
-    drive._wifi_sink([dict(NET, bssid="AA:BB:CC:DD:EE:02", rssi=-60, lag=60.0, air=False)], ADAPTERS[0])
+    drive._wifi_sink([dict(NET, bssid="AA:BB:CC:DD:EE:02", rssi=-60, lag=16.0, air=False)], ADAPTERS[0])
     wireless = dict(NET, bssid="AA:BB:CC:DD:EE:03", lag=0.0, air=True)
     drive._wifi_sink([dict(wireless, rssi=-60), dict(wireless, rssi=-85)], ADAPTERS[0])
     drive.stop()
@@ -1435,5 +1590,31 @@ def test_a_node_line_heard_late_is_placed_where_and_when_it_was_heard(tmp_path):
     usb = rows[("01", "-60")]
     assert (usb[3], usb[7], usb[10]) == (engine._utc(NOW + 10), "25.0100000", "4.5")
     old = rows[("02", "-60")]
-    assert (old[3], old[7], old[10]) == (engine._utc(NOW - 40), "25.0000000", str(4.5 + 14 * 40))
+    assert (old[3], old[7], old[10]) == (engine._utc(NOW + 4), "25.0000000", str(4.5 + 14 * 4))
     assert rows[("03", "-60")][10] == "54.5"
+
+
+def test_what_a_node_heard_before_the_first_fix_is_left_out_when_it_arrives_after(tmp_path):
+    clock = [NOW]
+    gps = FakeGPS({"valid": False})
+    drive = Wardrive({"log_rows": "track", "ble": False}, gps, root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0])
+    drive.start()
+    assert drive.status()["waiting_for_fix"]
+    clock[0] += 30
+    gps.fix = FIX
+    drive.status()
+    clock[0] += 5
+    early = [dict(NET, rssi=-60, lag=600.0, air=False), dict(NET, bssid="AA:BB:CC:DD:EE:02", lag=600.0)]
+    drive._wifi_sink(early, ADAPTERS[0])
+    drive._node_ble([{"address": "C4:7C:8D:11:22:01", "rssi": -60, "address_type": 0, "lag": 600.0}])
+    status = drive.status()
+    assert status["wifi"] == status["ble"] == status["rows"] == 0 and drive.skipped_no_fix == 0
+    drive._wifi_sink([dict(NET, rssi=-60, lag=0.0, air=False)], ADAPTERS[0])
+    drive._node_ble([{"address": "C4:7C:8D:11:22:01", "rssi": -61, "address_type": 0, "lag": 0.0}])
+    assert drive.status()["wifi"] == drive.status()["ble"] == 1 and drive.status()["rows"] == 2
+    gps.fix = {"valid": False}
+    drive._wifi_sink([dict(NET, bssid="AA:BB:CC:DD:EE:03", lag=0.0)], ADAPTERS[0])
+    assert drive.status()["wifi"] == 2 and drive.skipped_no_fix == 1
+    drive.stop()
+    assert sorted(row[0] for row in rows_of(drive.log_path)) == ["aa:bb:cc:dd:ee:01", "c4:7c:8d:11:22:01"]

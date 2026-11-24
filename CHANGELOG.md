@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.5
+
+- New: Deep scan, in Settings. It is off by default. When you turn it on, a spare USB Wi-Fi adapter listens in monitor mode while a wardrive or Recon runs. It only listens and never sends anything.
+- Deep scan adds every network it hears to the wardrive log, with the same WiGLE columns as before. It never takes networks away: the adapter that listens is only picked when every one of its bands is still scanned by another adapter.
+- 6 GHz always keeps an adapter that scans it. With an ALFA AWUS036AXM and a second USB adapter, the second one listens and the ALFA keeps scanning 2.4, 5 and 6 GHz. With only the ALFA plugged in, Deep scan is not available and everything scans as before.
+- The built-in Wi-Fi and any adapter that is connected to a network are never used for Deep scan.
+- Deep scan finds Flock cameras from the probes they send, with the rules of flock-you: the Flock fingerprint alerts, and so does a Flock address that probes on two channels far apart, such as 1 and 6, within 3 seconds. Espressif addresses are still left out, so your own nodes and smart plugs never look like Flock cameras.
+- Deep scan alerts on disconnect floods: 12 frames from one sender in 3 seconds, or 6 sent to everyone, or 24 to everyone from several senders.
+- The evil twin check now also sees raw beacons. Two access points from the same maker are never called twins.
+- Listen pattern: Balanced listens on channels 11, 6 and 1 for 250 ms each, then the other 2.4 GHz channels and the busy 5 GHz ones. Flock first stays on 11, 6 and 1.
+- New: Direct scans, which lets USB adapters start their own sweeps for fresher results, and Radio tuning, which turns power saving off and transmit power up to your country's limit during a wardrive and puts both back after. The country setting is never changed.
+- The install adds a small radio helper service and a quartermaster-radio group. It only starts when the app asks for it, runs without root and only accepts a short list of commands. Restart the Cardputer once after installing so the new group applies.
+- Everything Deep scan changes is put back when the wardrive stops, when the app closes or crashes, and when the helper stops.
+- The Hardware screen shows which adapter listens, which one keeps 6 GHz and why the others scan normally. The Wardrive screen shows DEEP when it listens.
+- Bluetooth works the same as before. With Deep scan off, the WiGLE logs are exactly the same as in 1.2.4.
+
+## 1.2.4
+
+- Recon and Drive Alerts now use SquachWatch's detection types, with its names and in its order: Flock cameras, Axon body cams, Meta glasses, card skimmers, Raven sensors, AirTags, drones, ALPR cameras, cameras, Samsung tags, Google tags, Tile trackers, Ring cameras, deauth floods, evil twin APs, proximity beacons, hacker hardware, LoRaWAN networks, My alerts and smart speakers. Every detection rule is kept.
+- Trackers are split the way SquachWatch splits them: Samsung SmartTag, Google Find Hub tags (Chipolo, Pebblebee, Moto Tag and unknown-tracker adverts) and Tile.
+- In-car fleet routers are now listed under Axon body cams, as SquachWatch files them, named "fleet router" and graded as weak hints, so they never alert unless Alert from is set to weak hints. Recon does not raise "Following?" for them either, so a work truck with its own router stays quiet.
+- Bursts of fake Bluetooth adverts and the Dragon Detector fox test beacon are now listed under hacker hardware. The fox is a weak hint and does not alert unless Alert from is set to weak hints.
+- New: LoRaWAN networks. With the Cap LoRa-1262 and this kind turned on, a wardrive also listens to one LoRaWAN uplink channel in turn with Meshtastic and MeshCore, and alerts once for each network operator it hears, read from the device address. Off by default.
+- The tone picker has only Quartermaster's own tones again: Siren, Yelp, Chirp, Shutter, Ping, Blip and Silent. The Dragon Detector melodies are gone. A kind that had one of them plays its default tone.
+- Settings from earlier versions carry over: trackers become Samsung tags, Google tags and Tile, fleet routers become Axon body cams, advert bursts and the fox become hacker hardware.
+- Recon's watch list shows all 20 types. Deauth floods, evil twin APs, LoRaWAN networks and My alerts are marked Wardrive only, as Recon does not look for them.
+- Proximity beacons and smart speakers start off in Recon's watch list, as in SquachWatch. A watch list you already set stays.
+- Thanks to ChrisDaCrunk, in the README and on the About screen.
+- A wardrive now waits for a GPS fix. You can press Start at any time; until the first fix that meets GPS accuracy needed, the Wardrive screen says Waiting for GPS fix, with the GPS and its satellites, or what to plug in when no GPS is found. The radios start, but nothing is counted or logged, no log file is made, and the timer shows GPS WAIT. At the first fix, the timer starts at 00:00:00, the counters start from zero and the log opens. Devices heard while waiting are logged once heard again with the fix. Sightings a node sends in late, and aircraft, heard while waiting are left out too.
+- Aircraft and mesh nodes wait for the first fix too.
+- Drive Alerts work while the wardrive waits for a fix, as they are there to warn you. They were never part of the wardrive's counts or log.
+- A fix lost later in the drive pauses logging as before, and the screen now says "GPS fix lost". The timer keeps running.
+- While a wardrive waits for its fix, OK just says Stop, and the screen says why when the GPS has a fix it cannot use yet, such as one too old. A wardrive stopped before any fix saves nothing. The summary says "Nothing: GPS never had a fix" and to start again once the GPS has one.
+
 ## 1.2.3
 
 The same app as 1.2.2 under a new number, so a CardputerZero that installed an early 1.2.2 test build also gets the calmer alerts: the banner at the bottom, Del to hide, Q for quiet, Alert position and the credits.

@@ -4,7 +4,8 @@ Each sighting gets a quick look-up on the scan thread. The few that may matter a
 thread, which grades them with Recon's classifier, decides whether they are worth an alert, writes them to a log of
 their own and plays the tone. The WiGLE logs are never touched.
 
-The alert rules follow Dragon Detector's alert policy and SquachWatch's alert controls.
+The alert rules follow Dragon Detector's alert policy and SquachWatch's alert controls. The kinds of device are
+SquachWatch's detection types, in its order.
 """
 
 from collections import OrderedDict, deque
@@ -22,26 +23,39 @@ from . import faults, recon, tones
 from .config import is_mac
 from .recon_vendors import VENDOR_PREFIXES
 
-INCIDENT_LABELS = {"eviltwin": "SSID conflict (possible evil twin)", "burst": "BLE advert burst",
-                   "deauth": "Wi-Fi disconnect burst", "mine": "My alerts"}
-INCIDENT_SHORT = {"eviltwin": "TWIN", "burst": "BURST", "deauth": "DEAUTH", "mine": "MINE"}
-LABELS = dict(recon.CATEGORY_LABELS, **INCIDENT_LABELS)
-SHORT = dict(recon.CATEGORY_SHORT, **INCIDENT_SHORT)
-PRIORITY = dict(recon.PRIORITY, eviltwin=50, burst=50, deauth=50, mine=100)
-NAMES = {"flock": "Flock cameras", "axon": "Body cameras", "glasses": "Camera glasses", "mine": "My alerts",
-         "alpr": "ALPR cameras", "ring": "Ring cameras", "camera": "Other cameras", "drone": "Drones",
-         "hacker": "Radio tools", "raven": "Raven sensors", "skimmer": "Serial modules", "fleet": "Fleet routers",
-         "eviltwin": "Evil twins", "burst": "BLE bursts", "deauth": "Disconnect bursts", "airtag": "Find My tags",
-         "tracker": "Trackers", "ibeacon": "iBeacons", "listener": "Smart speakers", "fox": "Dragon fox"}
+EXTRA_LABELS = {"deauth": "Deauth flood", "eviltwin": "Evil twin AP", "lorawan": "LoRaWAN network",
+                "mine": "My alert"}
+EXTRA_SHORT = {"deauth": "DEAUTH", "eviltwin": "EVIL TWIN", "lorawan": "LORAWAN", "mine": "MY ALERT"}
+LABELS = dict(recon.CATEGORY_LABELS, **EXTRA_LABELS)
+SHORT = dict(recon.CATEGORY_SHORT, **EXTRA_SHORT)
+PRIORITY = dict(recon.PRIORITY, eviltwin=50, deauth=50, lorawan=10, mine=100)
+NAMES = {"flock": "Flock cameras", "axon": "Axon body cams", "glasses": "Meta glasses", "skimmer": "Card skimmers",
+         "raven": "Raven sensors", "airtag": "AirTags", "drone": "Drones", "alpr": "ALPR cameras",
+         "camera": "Cameras", "samsung_tag": "Samsung tags", "google_tag": "Google tags", "tile": "Tile trackers",
+         "ring": "Ring cameras", "deauth": "Deauth floods", "eviltwin": "Evil twin APs",
+         "ibeacon": "Proximity beacons", "hacker": "Hacker hardware", "lorawan": "LoRaWAN networks",
+         "mine": "My alerts", "listener": "Smart speakers"}
+FLOOD_NAMES = {"flock": "Flock cameras", "axon": "Axon body cams", "glasses": "Meta glasses",
+               "skimmer": "card skimmers", "raven": "Raven sensors", "airtag": "AirTags", "drone": "drones",
+               "alpr": "ALPR cameras", "camera": "cameras", "samsung_tag": "Samsung tags", "google_tag": "Google tags",
+               "tile": "Tile trackers", "ring": "Ring cameras", "deauth": "deauth floods", "eviltwin": "evil twin APs",
+               "ibeacon": "proximity beacons", "hacker": "hacker devices", "lorawan": "LoRaWAN networks",
+               "mine": "watched devices", "listener": "smart speakers"}
 FIRST = ("flock", "axon", "glasses", "mine")
-TYPES = FIRST + tuple(sorted((k for k in LABELS if k not in FIRST), key=lambda k: (-PRIORITY[k], k)))
+SQUACHWATCH_ORDER = ("flock", "axon", "glasses", "skimmer", "raven", "airtag", "drone", "alpr", "camera",
+                     "samsung_tag", "google_tag", "tile", "ring", "deauth", "eviltwin", "ibeacon", "hacker", "lorawan",
+                     "mine", "listener")
+TYPES = FIRST + tuple(k for k in SQUACHWATCH_ORDER if k not in FIRST)
+RENAMED = {"tracker": ("samsung_tag", "google_tag", "tile")}
+FOLDED = {"fleet": "axon", "burst": "hacker", "fox": "hacker"}
 DEFAULT_TYPES = ["flock", "axon", "glasses", "mine"]
 DEFAULT_TONES = dict({key: "blip" for key in TYPES}, axon="siren", flock="chirp", glasses="ping")
-FIRST_HIT = {"flock", "alpr", "axon", "ring", "camera", "glasses", "drone", "hacker", "mine"}
-FIXED = frozenset({"flock", "alpr", "ring", "camera", "raven"})
+FIRST_HIT = {"flock", "alpr", "axon", "ring", "camera", "glasses", "drone", "hacker", "lorawan", "mine"}
+FIXED = frozenset({"flock", "alpr", "ring", "camera", "raven", "lorawan"})
 TONE_GAP = {"flock": 60.0, "axon": 300.0, "glasses": 120.0, "mine": 30.0}
 TONE_PRIORITY = {"axon": 99, "mine": 98}
 QUIET = {"eviltwin": 1800.0, "burst": 600.0, "deauth": 600.0}
+INCIDENTS = {"eviltwin": "eviltwin", "deauth": "deauth", "burst": "hacker"}
 BANNER_SECONDS, AXON_BANNER_SECONDS = 6.0, 10.0
 BANNER_MIN, BANNER_EXTEND, BANNER_MAX, BANNER_WAITING = 3.0, 3.0, 12.0, 3
 RUN_SECONDS, RUN_SPACING, PASS_SECONDS = 30.0, 0.4, 600.0
@@ -51,14 +65,27 @@ START_SILENCE, QUIET_SECONDS = 60.0, 600.0
 BACKOFF_TONES, BACKOFF_WINDOW, BACKOFF_MAX = 5, 600.0, 240.0
 FLOOD_COUNT, FLOOD_WINDOW, FLOOD_QUIET, FIRST_FLOOD = 15, 60.0, 300.0, 30
 HANDOFF_SECONDS, TWIN_SECONDS, DRAGON_FOLD_SECONDS, DRAGON_PASS = 20.0, 60.0, 30.0, 120.0
-HEARD_BY = {"wifi": "Wi-Fi", "ble": "BLE", "dragon": "Dragon Detector"}
+HEARD_BY = {"wifi": "Wi-Fi", "ble": "BLE", "dragon": "Dragon Detector", "lora": "LoRa", "monitor": "Wi-Fi monitor"}
 BURST_WINDOW, BURST_TRACKERS, BURST_PAIRING = 5.0, 12, 24
 LOG_INTERVAL = 30.0
 QUEUE_LIMIT = 256
 MAX_DEVICES = 4096
 MAX_WATCH, WATCH_LENGTH = 8, 32
-APPLE = ("airtag", "ibeacon", "tracker", "listener")
+APPLE = ("airtag", "ibeacon", "listener")
+TAGS = ("airtag", "samsung_tag", "google_tag", "tile")
 MIN_FREE_BYTES = 32 * 1024 * 1024
+CLASH_KEEP = 120.0
+
+
+def same_vendor(one, other):
+    """Two addresses from one maker's block, with the locally administered bit set aside: mesh nodes and the
+    other band of one box, which SquachWatch never pairs as twins."""
+    try:
+        a = (int(one[0:2], 16) & ~2, one[3:8].upper())
+        b = (int(other[0:2], 16) & ~2, other[3:8].upper())
+    except (TypeError, ValueError):
+        return False
+    return a == b
 
 
 def _uuid_text(raw):
@@ -66,22 +93,23 @@ def _uuid_text(raw):
     return "%s-%s-%s-%s-%s" % (text[:8], text[8:12], text[12:16], text[16:20], text[20:])
 
 
-_OUI_HINT = {prefix: recon._FAMILY_CATEGORY.get(family, "hacker") for prefix, family, _, _ in VENDOR_PREFIXES}
+_OUI_HINT = {prefix: "fleet" if family == "Fleet" else recon._FAMILY_CATEGORY.get(family, "hacker")
+             for prefix, family, _, _ in VENDOR_PREFIXES}
 for _prefix in recon._FLOCK_OUIS:
     _OUI_HINT.setdefault(_prefix, "flock")
 for _prefix in (0x0025df, 0x001d96, 0x0023bd, 0x2824ff, 0xe40540):
     _OUI_HINT[_prefix] = "axon"
 _LOCAL_HINT = {0x826bf2: "flock", 0x02c0ca: "hacker", 0x021337: "hacker"}
 _CID_HINT = {0x034d: "axon", 0x09c8: "flock", 0x0d53: "glasses", 0x01ab: "glasses", 0x060c: "glasses",
-             0x03c2: "glasses", 0x08c3: "tracker", 0x004c: "apple", 0x05a7: "listener", 0x0e29: "hacker"}
-_UUID16_HINT = {0xfd44: "airtag", 0xfc81: "axon", 0xfe6b: "axon", 0xfe6c: "axon", 0xfd5a: "tracker",
-                0xfd5f: "glasses", 0xfeb7: "glasses", 0xfeb8: "glasses", 0xfe45: "glasses", 0xfeed: "tracker",
-                0xfeec: "tracker", 0xfd84: "tracker", 0xfcb2: "tracker", 0xfe33: "tracker", 0xfe65: "tracker",
-                0x1101: "skimmer", 0xfeaa: "tracker", 0xfffa: "drone", 0xfe07: "listener"}
+             0x03c2: "glasses", 0x08c3: "google_tag", 0x004c: "apple", 0x05a7: "listener", 0x0e29: "hacker"}
+_UUID16_HINT = {0xfd44: "airtag", 0xfc81: "axon", 0xfe6b: "axon", 0xfe6c: "axon", 0xfd5a: "samsung_tag",
+                0xfd5f: "glasses", 0xfeb7: "glasses", 0xfeb8: "glasses", 0xfe45: "glasses", 0xfeed: "tile",
+                0xfeec: "tile", 0xfd84: "tile", 0xfcb2: "google_tag", 0xfe33: "google_tag", 0xfe65: "google_tag",
+                0x1101: "skimmer", 0xfeaa: "google_tag", 0xfffa: "drone", 0xfe07: "listener"}
 _UUID16_HINT.update((uuid, "hacker") for uuid in range(0x3080, 0x3084))
 _UUID16_HINT.update((uuid, "raven") for uuid in range(0x3100, 0x3501, 0x100))
-_UUID128_HINT = {_uuid_text(recon._FOX): "fox", _uuid_text(recon._BISCUIT): "hacker",
-                 _uuid_text(recon._FLOCK_SERVICE): "flock", _uuid_text(recon._DULT): "tracker"}
+_UUID128_HINT = {_uuid_text(recon._FOX): "hacker", _uuid_text(recon._BISCUIT): "hacker",
+                 _uuid_text(recon._FLOCK_SERVICE): "flock", _uuid_text(recon._DULT): "google_tag"}
 _MARKERS = (b"BWCDEVICE", b"ECIVEDCWB")
 _MARKER_HEX = tuple(marker.hex() for marker in _MARKERS)
 _NAME_HINT = re.compile(
@@ -227,7 +255,7 @@ class SsidConflicts:
                 continue
             for other in group:
                 peer = self.aps[other]
-                if other != bssid and peer["open"] != open_ and peer["hits"] >= 3 and \
+                if other != bssid and peer["open"] != open_ and peer["hits"] >= 3 and not same_vendor(other, bssid) and \
                         peer["last"] - peer["first"] >= RUN_SPACING and now - peer["last"] < 15:
                     found.append((ssid, bssid if open_ else other, other if open_ else bssid))
                     break
@@ -257,6 +285,7 @@ class DriveWatch:
         self._floods, self._muted = {}, {}
         self._bursts, self._pairing = deque(), deque()
         self._conflicts = SsidConflicts()
+        self._clashes = OrderedDict()
         self._paused = {}
         self._log = None
         self._lock = threading.Lock()
@@ -274,12 +303,12 @@ class DriveWatch:
         watch = WatchList(cfg.get("drive_watch", ()))
         skip = [str(e).strip() for e in cfg.get("drive_alert_skip", ()) if str(e).strip()]
         hot = set(types) | {"?"} | ({"mine"} if watch else set())
-        if hot & set(APPLE) or "burst" in types:
+        if hot & set(APPLE):
             hot.add("apple")
         sounds = dict(DEFAULT_TONES)
-        sounds.update(cfg.get("drive_alert_sounds") or {})
+        sounds.update((k, v) for k, v in (cfg.get("drive_alert_sounds") or {}).items() if v in tones.ORDER)
         self.settings = {
-            "types": frozenset(types), "hot": frozenset(hot), "watch": watch,
+            "types": frozenset(types), "hot": frozenset(hot), "burst": "hacker" in types, "watch": watch,
             "tones": cfg.get("drive_alert_tones", True), "volume": cfg.get("drive_alert_volume", "medium"),
             "min": recon.CONFIDENCE_BY_KEY.get(cfg.get("drive_alert_min", "medium"), recon.MEDIUM),
             "again": cfg.get("drive_alert_again", 900), "floor": cfg.get("drive_alert_floor", -100),
@@ -373,7 +402,7 @@ class DriveWatch:
         try:
             hint = ble_hint(item)
             watch = self.settings["watch"]
-            if hint == "apple" and "apple" not in self.settings["hot"]:
+            if hint == "apple" and "apple" not in self.settings["hot"] and not self.settings["burst"]:
                 hint = None
             if hint is None and watch and watch.match(item.get("address"), item.get("name")):
                 hint = "mine"
@@ -388,6 +417,37 @@ class DriveWatch:
             self._put(("external", alert), alert.get("category"))
         except Exception:
             faults.note("Drive alerts, Dragon Detector")
+
+    def offer_frames(self, events):
+        """From Deep scan: frames that may come from a Flock camera. Never raises and never waits."""
+        try:
+            for event in events:
+                self._put(("frame", event), "flock")
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
+    def offer_incident(self, incident, sender, evidence, rssi=None):
+        """From Deep scan: a pattern seen in raw frames, such as a disconnect flood."""
+        try:
+            self._put(("incident", {"incident": incident, "sender": sender, "evidence": evidence, "rssi": rssi}),
+                      INCIDENTS.get(incident))
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
+    def offer_clash(self, clash):
+        """From Deep scan: one access point beaconing on two channels at once, or open and protected. Only kept as
+        evidence for an evil twin alert; it never alerts by itself."""
+        try:
+            self._put(("clash", clash), "clash")
+        except Exception:
+            faults.note("Drive alerts, Deep scan")
+
+    def offer_lorawan(self, hit):
+        """From the LoRa thread: a LoRaWAN operator heard, {"net_id", "operator", "address", "rssi", "exact"}."""
+        try:
+            self._put(("lorawan", hit), "lorawan")
+        except Exception:
+            faults.note("Drive alerts, LoRaWAN")
 
     def listening(self, radio, on):
         """While a radio does not listen, time away from its devices does not count."""
@@ -413,6 +473,19 @@ class DriveWatch:
             return
         if kind == "external":
             return self._external(payload)
+        if kind == "lorawan":
+            return self._lorawan(payload)
+        if kind == "frame":
+            return self._frame(payload)
+        if kind == "incident":
+            sender = str(payload.get("sender") or "").upper()
+            return self._incident(payload["incident"], sender, payload.get("evidence", ""), "Disconnect flood",
+                                  payload.get("rssi"), "wifi", address=sender)
+        if kind == "clash":
+            self._clashes[str(payload.get("bssid", "")).upper()] = (self.monotonic(), payload.get("evidence", ""))
+            while len(self._clashes) > 64:
+                self._clashes.popitem(last=False)
+            return
         if len(self._cache) > 8000:
             self._cache.clear()
         if kind == "wifi":
@@ -433,10 +506,21 @@ class DriveWatch:
         self._consider("ble", address_type, address, payload.get("name") or result.get("name", ""),
                        payload.get("rssi"), result, payload)
 
+    def _frame(self, event):
+        frame = event.get("frame") or b""
+        hopping = bool(event.get("hopping"))
+        key = ("frame", event.get("address"), zlib.crc32(bytes(frame[:64])), hopping)
+        result = self._cache.get(key)
+        if result is None:
+            result = self._cache[key] = recon.classify_wifi(event.get("address"), frame=bytes(frame), hopping=hopping)
+        address = str(result.get("address") or event.get("address") or "").upper()
+        item = {"channel": event.get("channel"), "frequency": event.get("frequency")}
+        self._consider("wifi", 0, address, "", event.get("rssi"), result, item, source="monitor")
+
     def _burst(self, address, result, item):
         now = self.monotonic()
         apple = (item.get("manufacturer") or {}).get(0x004C)
-        if result.get("category") in ("airtag", "tracker"):
+        if result.get("category") in TAGS:
             self._bursts.append((now, address))
         if apple is not None and len(apple) == 27:
             self._pairing.append((now, bytes(apple)))
@@ -449,13 +533,18 @@ class DriveWatch:
         pairing = len({p for _, p in self._pairing})
         if trackers >= BURST_TRACKERS or pairing >= BURST_PAIRING:
             count, kind = (trackers, "addresses") if trackers >= BURST_TRACKERS else (pairing, "pairing adverts")
-            self._incident("burst", kind, "BLE advert burst: %d %s in %d s" % (count, kind, BURST_WINDOW),
-                           "%d nearby" % count, item.get("rssi"), "ble")
+            self._incident("burst", kind, "BLE advert burst: %d %s in %d s; fake adverts, often from a hacking tool" % (
+                count, kind, BURST_WINDOW), "BLE advert burst, %d nearby" % count, item.get("rssi"), "ble")
 
     def _conflict(self, ssid, open_bssid, other, networks):
         differ = open_bssid[:8] != other[:8]
         evidence = "Same name open on %s and protected on %s%s" % (
             open_bssid, other, "; different makers" if differ else "")
+        now = self.monotonic()
+        for bssid in (open_bssid, other):
+            clash = self._clashes.get(bssid)
+            if clash is not None and now - clash[0] <= CLASH_KEEP:
+                evidence += "; " + clash[1]
         rssi = next((n.get("rssi") for n in networks if str(n.get("bssid", "")).upper() == open_bssid), None)
         tag = zlib.crc32(ssid.encode("utf-8", "replace")) ^ zlib.crc32(open_bssid.encode())
         self._incident("eviltwin", tag, evidence, ssid, rssi, "wifi", address=open_bssid)
@@ -464,8 +553,9 @@ class DriveWatch:
         category = alert.get("category")
         if category not in LABELS:
             return
-        if category in QUIET:
-            return self._incident(category, ("dragon", alert.get("name") or alert.get("evidence")),
+        incident = alert.get("incident") or (category if category in QUIET else None)
+        if incident in QUIET:
+            return self._incident(incident, ("dragon", alert.get("name") or alert.get("evidence")),
                                   alert.get("evidence", ""), alert.get("name", ""), alert.get("rssi"), "dragon")
         result = {"category": category, "confidence": alert.get("confidence", recon.MEDIUM),
                   "evidence": alert.get("evidence", ""), "label": LABELS[category], "vendor": ""}
@@ -474,12 +564,22 @@ class DriveWatch:
         self._consider("dragon", 0, "%s / %s" % (name, evidence), name, alert.get("rssi"), result, alert,
                        source="dragon", key=key, unnamed=not name)
 
-    def _incident(self, category, tag, evidence, name, rssi, transport, address=""):
+    def _lorawan(self, hit):
+        """One alert per operator, as SquachWatch does: a street of meters is one network, not hundreds of devices."""
+        evidence = "LoRaWAN address prefix of NetID %06X%s" % (
+            hit["net_id"], "" if hit.get("exact") else "; the likeliest of several operators")
+        result = {"category": "lorawan", "confidence": recon.STRONG if hit.get("exact") else recon.MEDIUM,
+                  "evidence": evidence, "label": LABELS["lorawan"], "vendor": hit["operator"][:31]}
+        self._consider("lora", 0, hit["address"], hit["operator"], hit.get("rssi"), result, hit)
+
+    def _incident(self, incident, tag, evidence, name, rssi, transport, address=""):
+        """A pattern rather than one device: a deauth flood, an evil twin, or a burst of fake adverts."""
         now = self.monotonic()
-        key = (category, tag)
+        category = INCIDENTS[incident]
+        key = (incident, tag)
         last = self._incidents.get(key)
         again = self.settings["again"]
-        quiet = max(QUIET.get(category, 600.0), again) if again else float("inf")
+        quiet = max(QUIET[incident], again) if again else float("inf")
         self._incidents[key] = now
         if len(self._incidents) > 64:
             oldest = min(self._incidents, key=self._incidents.get)
@@ -490,7 +590,7 @@ class DriveWatch:
         record = {"time": self.clock(), "transport": transport, "address": address, "rssi_dbm": rssi, "name": name,
                   "category": category, "label": LABELS[category], "confidence": "medium", "evidence": evidence,
                   "vendor": "", "alert": alert, "source": "dragon" if transport == "dragon" else "scan",
-                  "count": 1}
+                  "count": 1, "incident": incident}
         self._place(record)
         self._write(record)
         if alert:
@@ -713,7 +813,7 @@ class DriveWatch:
         self._muted[category] = now
         times.clear()
         record = {"time": self.clock(), "category": category, "label": LABELS[category], "flood": True,
-                  "name": "Flood: %d new %s" % (FLOOD_COUNT + 1, NAMES[category].lower()), "address": "",
+                  "name": "Flood: %d new %s" % (FLOOD_COUNT + 1, FLOOD_NAMES[category]), "address": "",
                   "confidence": recon.LOW, "rssi": None, "count": 1, "evidence": "Over %d new devices in %d s; "
                   "this kind is muted for %d min" % (FLOOD_COUNT, FLOOD_WINDOW, FLOOD_QUIET // 60)}
         self._show(record, tone=False)
@@ -727,7 +827,7 @@ class DriveWatch:
         if len(times) < FIRST_FLOOD:
             return
         record = {"time": self.clock(), "category": category, "label": LABELS[category], "flood": True,
-                  "name": "%d %s in 1 min" % (len(times), NAMES[category].lower()), "address": "",
+                  "name": "%d %s in 1 min" % (len(times), FLOOD_NAMES[category]), "address": "",
                   "confidence": recon.LOW, "rssi": None, "count": 1,
                   "evidence": "Each one is still listed and logged"}
         times.clear()
@@ -741,7 +841,7 @@ class DriveWatch:
                  "confidence": recon.CONFIDENCE_BY_KEY.get(record.get("confidence"), recon.MEDIUM),
                  "evidence": record.get("evidence", ""), "vendor": record.get("vendor", ""),
                  "owner": record.get("owner"), "source": record.get("source", "scan"),
-                 "receiver": record.get("receiver")}
+                 "receiver": record.get("receiver"), "incident": record.get("incident")}
         self._show(shown, tone=True)
         return shown
 
@@ -933,7 +1033,7 @@ def silence_entry(shown):
 def summary_text(counts, limit=3):
     words = []
     for category, count in list(counts.items())[:limit]:
-        words.append("%d %s" % (count, SHORT.get(category, category).lower().replace("bodycam", "body cam")))
+        words.append("%d %s" % (count, SHORT.get(category, category).lower()))
     return ", ".join(words)
 
 
