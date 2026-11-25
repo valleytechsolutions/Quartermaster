@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 build/
 .pytest_cache/
-*.egg-info/
+tests/vendor/

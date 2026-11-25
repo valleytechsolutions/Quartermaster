@@ -639,8 +639,9 @@ class Receiver:
     def __init__(self, logs, gps, clock=time.time, log=None, launcher=subprocess.Popen, which=shutil.which,
                  dongles=hardware.rtl_sdr_dongles, feeds=SYSTEM_FEEDS, out=None, cpus=os.cpu_count,
                  runner=subprocess.run, kill=None, poll=POLL_SECONDS, max_hdop=None, epoch=None, tools=shutil.which,
-                 mono=None):
+                 mono=None, gate=None):
         self.logs, self.gps, self.clock, self.log = Path(logs), gps, clock, log or (lambda: None)
+        self.gate = gate or (lambda: True)
         self.epoch = epoch or (lambda fix: self.clock())
         self.launcher, self.which, self.dongles, self.feeds = launcher, which, dongles, feeds
         self.out, self.cpus, self.runner, self.kill, self.poll = out, cpus, runner, kill, poll
@@ -653,7 +654,7 @@ class Receiver:
         self.target = self.journal = self.started = None
         self._journaled = self._failed_at = None
         self._last, self._blind = None, False
-        self._offset = None
+        self._offset = self._shut = None
         self._stop = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
@@ -910,8 +911,14 @@ class Receiver:
         self._last = data["now"]
         fix = self.gps.snapshot()
         epoch = self._time(fix)
+        if not self.gate():
+            self._shut = now
+            return
         if epoch < wigle.MIN_EPOCH:
             return
+        if self._shut is not None and isinstance(data.get("aircraft"), list):
+            data = dict(data, aircraft=[report for report in data["aircraft"] if not isinstance(report, dict) or
+                                        data["now"] - (_number(report.get("seen")) or 0.0) >= self._shut])
         with self._lock:
             self.sky.update(data, epoch - max(0.0, now - data["now"]), self._here(fix, epoch))
 
@@ -922,7 +929,11 @@ class Receiver:
         epoch = self._time(fix)
         here = self._here(fix, epoch)
         now = self.mono()
+        counting = self.gate()
         with self._decoding:
+            if not counting:
+                decoder.planes.clear()
+                return
             decoder.receiver = here
             decoder.forget(now)
             planes = decoder.aircraft(now)

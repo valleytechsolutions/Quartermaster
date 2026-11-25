@@ -859,7 +859,7 @@ def test_on_without_a_cap_says_why_and_tries_again(tmp_path):
 @needs_crypto
 def test_the_nodes_are_saved_every_30_seconds_while_the_wardrive_runs(tmp_path, later):
     cap = FakeCap()
-    wardrive = drive(tmp_path, cap, fix=NO_FIX)
+    wardrive = drive(tmp_path, cap)
     wardrive.start()
     listener = wardrive.mesh
     cap.the_radio.hear(meshtastic_packet(0x1A2B3C4D, 3, position(35.0, -80.0)))
@@ -872,6 +872,36 @@ def test_the_nodes_are_saved_every_30_seconds_while_the_wardrive_runs(tmp_path, 
     wardrive.stop()
     assert not listener.journal.exists() and mesh.load(wardrive.mesh_path)["nodes"][0]["reported"]["lat"] == 35.0
     assert wardrive.mesh_path.name == wigle.log_filename(NOW).replace(".wigle.csv", ".mesh.json.gz")
+
+
+@needs_crypto
+def test_mesh_nodes_heard_before_the_first_fix_are_not_kept(tmp_path):
+    cap = FakeCap()
+    radio = cap.the_radio
+    wardrive = drive(tmp_path, cap, fix=NO_FIX)
+    wardrive.start()
+    radio.hear(meshtastic_packet(0x1A2B3C4D, 4, nodeinfo(0x1A2B3C4D, "Hilltop", "HTR", 2)))
+    wait_for(lambda: not radio.packets)
+    time.sleep(0.05)
+    status = wardrive.status()
+    assert status["waiting_for_fix"] and status["mesh"] == 0 and status["lora"]["packets"] == 0
+    wardrive.gps.fix = FIX
+    radio.hear(meshtastic_packet(0x1A2B3C4D, 5, nodeinfo(0x1A2B3C4D, "Hilltop", "HTR", 2)))
+    wait_for(lambda: wardrive.status()["mesh"] == 1)
+    assert not wardrive.status()["waiting_for_fix"]
+    wardrive.stop()
+    assert wardrive.mesh_path is not None
+
+
+@needs_crypto
+def test_a_wardrive_stopped_before_the_first_fix_leaves_no_mesh_file(tmp_path):
+    cap = FakeCap()
+    wardrive = drive(tmp_path, cap, fix=NO_FIX)
+    wardrive.start()
+    cap.the_radio.hear(meshtastic_packet(0x1A2B3C4D, 4, nodeinfo(0x1A2B3C4D, "Hilltop", "HTR", 2)))
+    wait_for(lambda: not cap.the_radio.packets)
+    wardrive.stop()
+    assert wardrive.mesh_path is None and list((tmp_path / "logs").iterdir()) == []
 
 
 def test_mesh_listening_costs_little(tmp_path):

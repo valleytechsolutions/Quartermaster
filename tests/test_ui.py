@@ -9,7 +9,8 @@ import time
 
 import pytest
 
-from quartermaster import accounts, config, flasher, hardware, nodes, radios, recon, updates_check, uploads
+from quartermaster import (accounts, config, drive_watch, flasher, hardware, nodes, radios, recon, updates_check,
+                           uploads)
 from quartermaster.engine import Wardrive
 from quartermaster.nodes import NOT_PLUGGED, UNPLUGGED
 from quartermaster.recon_engine import Recon
@@ -393,6 +394,42 @@ def test_a_logs_folder_that_cannot_be_used_is_said_and_no_wardrive_starts(tmp_pa
     assert [path.name for path in (tmp_path / "logs").iterdir() if path.name.startswith(".")] == [leftover.name]
 
 
+def test_the_wardrive_screen_waits_for_the_fix_then_shows_the_counters(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(NO_FIX, source="CP210x USB GPS (/dev/ttyUSB0)", satellites=3))
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" in text and "CP210x USB GPS (/dev/ttyUSB0): 3 satellites in view" in text
+    assert "Give it a clear view of the sky." in text and "GPS WAIT" in text and "LOGGED" not in text
+    press(app, "ESC")
+    assert "No fix yet" in screen_text(app, drawn)
+    app.gps.fix = FIX
+    app.drive._wifi_sink(networks(4), ADAPTERS[0])
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" not in text and "LOGGED" in text and "00:00:0" in text and "GPS WAIT" not in text
+    app.gps.fix = dict(NO_FIX, source="CP210x USB GPS (/dev/ttyUSB0)")
+    text = screen_text(app, drawn)
+    assert "GPS fix lost. Logging pauses until it is back." in text and "Waiting for GPS fix" not in text
+    app.stop_wardrive()
+
+
+def test_a_fix_too_old_to_use_is_said_while_waiting(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(FIX, age_seconds=30.0, source="gpsd"))
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "gpsd: fix too old" in text and "Waiting for a current position and time." in text
+    assert "clear view of the sky" not in text
+    app.stop_wardrive()
+
+
+def test_a_fix_too_weak_for_the_setting_is_said_while_waiting(tmp_path, drawn):
+    app = make_app(tmp_path, fix=dict(FIX, hdop=7.5, source="gpsd"), gps_max_hdop=5)
+    press(app, "W")
+    text = screen_text(app, drawn)
+    assert "Waiting for GPS fix" in text and "gpsd: fix too weak (HDOP 7.5)" in text
+    app.stop_wardrive()
+
+
 def test_a_stalled_adapter_is_told_once_at_wardrive_start(tmp_path, drawn):
     stalled = [{"usb_id": "0e8d:7961", "label": "MT7921AU tri-band", "port": "1-1.2"}]
     app = make_app(tmp_path, hw=Hardware(stalled=stalled))
@@ -406,11 +443,25 @@ def test_wardrive_without_gps_says_why_nothing_is_logged(tmp_path, drawn):
     app = make_app(tmp_path, fix=NO_FIX, hw=Hardware(stalled=stalled))
     press(app, "W")
     text = screen_text(app, drawn)
-    assert "No GPS found. Nothing is logged until one has a fix." in text and "NO GPS" in text
-    assert "MT7921AU tri-band is not starting" in app.toast_text
-    press(app, "ENTER", "ENTER")
+    assert "Waiting for GPS fix" in text and "CP210x USB GPS found" in text and "NO GPS" in text
+    assert "Waiting for it to send a position." in text and "GPS WAIT" in text and "WI-FI" not in text
+    assert "Radios are warming up. Nothing is counted yet." in text
+    assert "The timer, the counters and the log start at the fix." in text
+    assert "Stop + save" not in text and "Wi-Fi" not in text and "All" not in text
+    ports, app.hw.gps_ports = app.hw.gps_ports, []
+    text = screen_text(app, drawn)
+    app.hw.gps_ports = ports
+    assert "No GPS found" in text and "Plug in a USB GPS, the LoRa cap or a Grove GPS." in text
+    assert "MT7921AU tri-band is not starting. See Hardware." in text
+    kicked = []
+    app.uploader.kick = lambda: kicked.append(True)
+    press(app, "ENTER")
+    text = screen_text(app, drawn)
+    assert "Stop" in text and "Stop + save" not in text and "No GPS fix yet, so nothing is" in text
+    press(app, "ENTER")
     text = screen_text(app, drawn)
     assert "WARDRIVE ENDED" in text and "Nothing: GPS never had a fix" in text and not list(tmp_path.glob("logs/*"))
+    assert "Start again once the GPS has a fix." in text and "No fix" in text and kicked == [True]
     press(app, "ESC", "H")
     text = screen_text(app, drawn)
     assert "On USB but not starting" in text and "CP210x USB GPS found" in text and "wlan1" in text
@@ -572,7 +623,7 @@ def test_every_list_stops_at_its_ends_for_a_page_and_goes_round_for_a_row(tmp_pa
     press(app, "ESC", "ESC", "S")
     settings = app.screen
     for name, kind, count in (("recon_alert_min", screens.Picker, len(recon.CONFIDENCE_BY_KEY)),
-                              ("recon_categories", recon_screens.Categories, len(recon.CATEGORIES))):
+                              ("recon_categories", recon_screens.Categories, len(drive_watch.SQUACHWATCH_ORDER))):
         settings.index = next(i for i, item in enumerate(settings.items) if item[0] == name)
         press(app, "ENTER")
         assert isinstance(app.screen, kind) and ends(app, count), name
@@ -591,7 +642,7 @@ def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn, monk
     press(app, "T")
     assert isinstance(app.screen, recon_screens.Categories)
     press(app, "ENTER")
-    assert app.cfg["recon_categories"] == [c for c in config.default_lists()["recon_categories"] if c != "alpr"]
+    assert app.cfg["recon_categories"] == [c for c in config.default_lists()["recon_categories"] if c != "flock"]
     press(app, "A", "ESC", "SPACE")
     assert app.recon_running and radios.owner() == "recon"
     assert "Nothing flagged nearby" in screen_text(app, drawn)
@@ -600,18 +651,18 @@ def test_recon_lists_devices_and_never_overlaps_a_wardrive(tmp_path, drawn, monk
     app.recon.observe("wifi", {"bssid": "AA:BB:CC:00:00:01", "ssid": "Coffee Shop", "rssi": -70, "channel": 1,
                                "frequency": 2412, "security": "OPEN", "band": "2.4"})
     text = screen_text(app, drawn)
-    assert "BODYCAM" in text and "Coffee Shop" not in text
+    assert "AXON" in text and "Coffee Shop" not in text
     press(app, "A")
     assert "Coffee Shop" in screen_text(app, drawn)
     press(app, "A", "S", "ENTER")
-    assert isinstance(app.screen, recon_screens.ReconDetail) and "Body-camera candidate" in screen_text(app, drawn)
+    assert isinstance(app.screen, recon_screens.ReconDetail) and "Axon body camera" in screen_text(app, drawn)
     press(app, "ENTER")
     assert isinstance(app.screen, recon_screens.Finder) and "-48" in screen_text(app, drawn)
     press(app, "R", "ESC", "ESC", "ESC")
     assert isinstance(app.screen, screens.Home) and "1 flagged" in screen_text(app, drawn)
     app.recon.unseen_alerts = 2
     text = screen_text(app, drawn)
-    assert "Body-camera candidate  +1" in text and "Del hide" in text
+    assert "Axon body camera  +1" in text and "Del hide" in text
     press(app, "BACKSPACE")
     text = screen_text(app, drawn)
     assert isinstance(app.screen, screens.Home) and "Del hide" not in text and "Body-camera" not in text
@@ -786,11 +837,21 @@ def test_a_wardrive_without_a_log_is_never_called_saved(tmp_path, drawn):
     press(app, "W")
     assert app.wardriving and app.drive.log_path is None
     press(app, "ESC", "ESC")
-    assert "The scan stops. Nothing has been logged yet." in screen_text(app, drawn).replace("\n", " ")
+    assert "The scan stops. No GPS fix yet, so nothing is logged." in screen_text(app, drawn).replace("\n", " ")
     press(app, "ESC", "R", "SPACE")
     text = screen_text(app, drawn).replace("\n", " ")
-    assert "The wardrive stops and Recon starts. Nothing has been logged yet." in text and "saved" not in text
+    assert "The wardrive stops and Recon starts. No GPS fix yet, so nothing is logged." in text and "saved" not in text
     press(app, "ESC", "ESC", "W", "ENTER")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "The wardrive stops. No GPS fix yet, so nothing is logged." in text and "saved" not in text
+
+
+def test_a_wardrive_with_a_fix_and_no_log_yet_is_never_called_saved(tmp_path, drawn, monkeypatch):
+    monkeypatch.setattr(Fleet, "found", [])
+    app = make_app(tmp_path)
+    press(app, "W")
+    assert app.wardriving and not app.drive.waiting and app.drive.log_path is None
+    press(app, "ENTER")
     text = screen_text(app, drawn).replace("\n", " ")
     assert "The wardrive stops. Nothing has been logged yet." in text and "saved" not in text
 
@@ -1769,8 +1830,9 @@ def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_doe
     press(live, "ENTER", "ENTER")
 
 
-def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn):
-    app = sky_app(tmp_path, fix=NO_FIX, adsb=True, keys=KEYS, auto_upload=True)
+def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn, monkeypatch):
+    monkeypatch.setattr(Fleet, "found", [])
+    app = sky_app(tmp_path, adsb=True, keys=KEYS)
     press(app, "W")
     hear(app, plane("a1b2c3", 25.2, -77.7))
     press(app, "ENTER", "ENTER")
@@ -2093,7 +2155,7 @@ def test_every_word_about_the_lora_cap_fits_on_its_card():
         assert canvas.text_width(words, small) <= room, words
     beside = room - int(canvas.text_width("9999 packets", small)) - 6
     for country in lora.COUNTRY_REGION:
-        for profile in lora.plan(country):
+        for profile in lora.plan(country, lorawan_too=True):
             assert canvas.text_width(profile.short, small) <= beside, profile.short
     title = canvas.text_width("Cap LoRa-1262 for mesh nodes", gfx.font("ui", 10))
     for country in lora.COUNTRY_REGION:
@@ -2106,8 +2168,8 @@ def test_the_about_screen_thanks_the_people_who_helped(tmp_path, monkeypatch):
     found = placed(app, monkeypatch)
     lines = [text for text in found if text.startswith("Thanks to") or "Ekoms_Savior" in text or "Awok" in text]
     assert len(lines) == 3 and " ".join(lines) == screens.THANKS
-    for name in ("justcallmekoko", "Code_Hedge", "Ekoms_Savior", "Jesse Hale", "Vileer from Hacker Gadgets", "LocoSp",
-                 "Awok", "Talking Sasquach"):
+    for name in ("justcallmekoko", "Code_Hedge", "Ekoms_Savior", "Jesse Hale", "ChrisDaCrunk",
+                 "Vileer from Hacker Gadgets", "LocoSp", "Awok", "Talking Sasquach"):
         assert name in screens.THANKS.replace("\u00a0", " ")
     assert any("Hacker\u00a0Gadgets" in line for line in lines)
     assert all(found[line][0] + 9 < screens.CONTENT_BOTTOM - 37 for line in lines)

@@ -134,6 +134,21 @@ def test_a_readsb_the_system_already_runs_is_read_and_no_second_copy_starts(tmp_
     assert rx.status()["detail"] == "Uses the aircraft program that already runs"
 
 
+def test_aircraft_last_heard_before_the_gate_opens_are_left_out(tmp_path):
+    clock = Clock()
+    feed = tmp_path / "system" / "readsb" / "aircraft.json"
+    sky_json(feed, [plane("4ca7b3", *NEAR)], clock())
+    open_ = [False]
+    rx = receiver(tmp_path, clock, feeds=(feed,), gate=lambda: open_[0])
+    rx._tick()
+    assert rx.count == 0
+    clock.now += 5
+    open_[0] = True
+    sky_json(feed, [plane("4ca7b3", *NEAR, seen=6.0), plane("c0ffee", *NEAR, seen=1.0)], clock())
+    rx._tick()
+    assert sorted(rx.sky.planes) == ["c0ffee"]
+
+
 def test_a_dump1090_the_system_already_runs_is_read_too_with_its_older_field_names(tmp_path):
     assert {str(path) for path in adsb.SYSTEM_FEEDS} >= {"/run/dump1090-fa/aircraft.json",
                                                          "/run/dump1090-mutability/aircraft.json"}

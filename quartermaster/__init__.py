@@ -1,4 +1,4 @@
 """Quartermaster: headless Linux wardriving for Raspberry Pi Zero 2 W."""
 
-__version__ = "1.2.3"
+__version__ = "1.2.5"
 APP_NAME = "Quartermaster"

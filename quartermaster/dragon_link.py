@@ -20,9 +20,10 @@ TITLES = {"Flock": "flock", "Body cameras": "axon", "Camera glasses": "glasses",
           "Camera vendor": "camera", "Ring": "ring", "Drone / Remote ID": "drone", "Acoustic sensors": "raven",
           "Serial module": "skimmer", "Flipper": "hacker", "Pineapple": "hacker", "Pwnagotchi": "hacker",
           "Nyanbox": "hacker", "HaleHound": "hacker", "Biscuit": "hacker", "Find My / DULT": "airtag",
-          "SmartTag": "tracker", "Google Find Hub": "tracker", "Tile": "tracker", "iBeacon": "ibeacon",
-          "Disconnect burst": "deauth", "SSID conflict": "eviltwin", "BLE advert burst": "burst",
-          "Dragon fox": "fox", "WATCH LIST HIT": "mine"}
+          "SmartTag": "samsung_tag", "Google Find Hub": "google_tag", "Tile": "tile", "iBeacon": "ibeacon",
+          "Disconnect burst": "deauth", "SSID conflict": "eviltwin", "BLE advert burst": "hacker",
+          "Dragon fox": "hacker", "WATCH LIST HIT": "mine"}
+INCIDENTS = {"Disconnect burst": "deauth", "SSID conflict": "eviltwin", "BLE advert burst": "burst"}
 _ALERT = re.compile(r"ALERT (?P<title>[^:]+): (?:(?P<name>.*?) / )?(?P<rssi>-?[0-9]+) dBm / (?P<evidence>.*)")
 _GRADE = re.compile(r"\(\s*\"\w+\",\s*(LOW|MEDIUM|STRONG),\s*\"([^\"\n]+)\"\s*\)")
 _grades = None
@@ -53,14 +54,20 @@ def parse(line):
     if match is None or match["title"] not in TITLES:
         return None
     category, evidence = TITLES[match["title"]], match["evidence"]
+    incident = INCIDENTS.get(match["title"])
     if category == "mine":
         confidence = recon.STRONG
-    elif category in ("deauth", "eviltwin", "burst"):
+    elif incident:
         confidence = recon.MEDIUM
+    elif match["title"] == "Dragon fox":
+        confidence = recon.LOW
     else:
         confidence = grades().get(evidence, recon.MEDIUM)
-    return {"category": category, "name": (match["name"] or "")[:64], "rssi": int(match["rssi"]),
-            "confidence": confidence, "evidence": evidence[:160], "title": match["title"], "source": "dragon"}
+    alert = {"category": category, "name": (match["name"] or "")[:64], "rssi": int(match["rssi"]),
+             "confidence": confidence, "evidence": evidence[:160], "title": match["title"], "source": "dragon"}
+    if incident:
+        alert["incident"] = incident
+    return alert
 
 
 class DragonLink:

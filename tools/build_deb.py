@@ -17,7 +17,11 @@ HERE = Path(__file__).resolve().parents[1]
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
 COPYRIGHT = ("Quartermaster\nCopyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal)\n"
-             "License: GPL-3.0-only from 1.2.2. Earlier releases are MIT.\n\n")
+             "License: GPL-3.0-only from 1.2.2. Earlier releases are MIT.\n\n"
+             "Deep scan: deauth, 5 GHz slice and evil-twin logic ported from SquachWatch-CYD (GPL-3.0).\n"
+             "Flock probe tiers and IE signature from flock-you by colonelpanichacks (MIT), with community research "
+             "by @NitekryDPaul and DeFlockJoplin.\n\n")
+UNITS = ("quartermaster-radio.socket", "quartermaster-radio.service")
 # The AppStore installs with plain dpkg when Depends are met, so anything left in Recommends would never arrive.
 # rtl-sdr brings rtl_adsb for aircraft, the stick's udev rules and the TV driver blacklist, and starts no service.
 # usb-modeswitch turns adapters that first show a driver disc into Wi-Fi adapters. The firmware packages are the ones
@@ -51,6 +55,16 @@ def build(out):
         (applications / (pkg + ".desktop")).write_text(
             "[Desktop Entry]\nName=%s\nExec=/%s/bin/%s\nTerminal=false\nSysplause=true\n"
             "Icon=share/images/%s.png\nType=Application\n" % (manifest["app_name"], PREFIX, manifest["bin_name"], pkg))
+        helper = stage / "usr/lib" / pkg / "radiod.py"
+        helper.parent.mkdir(parents=True)
+        shutil.copy2(HERE / "packaging" / "radiod.py", helper)
+        units = stage / "usr/lib/systemd/system"
+        units.mkdir(parents=True)
+        for unit in UNITS:
+            shutil.copy2(HERE / "packaging" / unit, units / unit)
+        rules = stage / "usr/lib/udev/rules.d" / ("70-%s.rules" % pkg)
+        rules.parent.mkdir(parents=True)
+        shutil.copy2(HERE / "packaging" / "70-quartermaster.rules", rules)
         tmpfiles = stage / "usr/lib/tmpfiles.d" / (pkg + ".conf")
         tmpfiles.parent.mkdir(parents=True)
         shutil.copy2(HERE / "packaging" / "quartermaster.tmpfiles", tmpfiles)
@@ -68,8 +82,9 @@ def build(out):
             "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
             "Description: %s\n Wi-Fi and Bluetooth wardriver for the M5Stack CardputerZero.\n"
             % (pkg, version, MAINTAINER, size, DEPENDS, manifest["description"]))
-        shutil.copy2(HERE / "packaging" / "postinst", control / "postinst")
-        (control / "postinst").chmod(0o755)
+        for script in ("postinst", "prerm"):
+            shutil.copy2(HERE / "packaging" / script, control / script)
+            (control / script).chmod(0o755)
         for path in stage.rglob("*"):
             if path.is_dir():
                 path.chmod(0o755)

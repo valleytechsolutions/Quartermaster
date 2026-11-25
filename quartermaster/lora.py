@@ -36,7 +36,7 @@ COMMANDS = frozenset({0x02, 0x08, 0x0D, 0x11, 0x12, 0x13, 0x14, 0x1D, 0x1E, 0x80
 POLL = 0.02
 BAND_MHZ = (868.0, 923.0)
 DWELL_SECONDS = 30.0
-MESHTASTIC_SYNC, MESHCORE_SYNC = 0x2B, 0x12
+MESHTASTIC_SYNC, MESHCORE_SYNC, LORAWAN_SYNC = 0x2B, 0x12, 0x34
 
 CHECKING, FOUND, ABSENT, MISSING, DENIED, BUSY_ELSEWHERE, OFF = (
     "checking", "found", "absent", "missing", "denied", "busy", "off")
@@ -59,7 +59,7 @@ class Profile:
 
     @property
     def name(self):
-        return ("Meshtastic " if self.protocol == "meshtastic" else "MeshCore ") + self.label
+        return {"meshtastic": "Meshtastic ", "meshcore": "MeshCore ", "lorawan": "LoRaWAN "}[self.protocol] + self.label
 
     @property
     def short(self):
@@ -79,6 +79,8 @@ REGION_NAMES = {"US": "US 915", "EU_868": "EU 868", "ANZ": "AU 915", "NZ": "NZ 9
 # MeshCore's default public settings per region, the first of LORA Tunnel's list: (MHz, kHz, SF, CR).
 MESHCORE = {"US": (910.525, 62.5, 7, 5), "EU_868": (869.618, 62.5, 8, 8), "ANZ": (915.800, 250, 10, 5),
             "NZ": (917.375, 62.5, 7, 5), "BR_902": (923.125, 62.5, 8, 8)}
+# One LoRaWAN uplink channel per region at SF7, the busiest data rate, as SquachWatch lists first: MHz.
+LORAWAN = {"US": 903.9, "EU_868": 868.1, "ANZ": 916.8, "NZ": 916.8, "KR": 922.1, "BR_902": 916.8}
 EU = ("GB", "DE", "FR", "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "GR", "HU", "IS", "IE", "IT", "LV",
       "LI", "LT", "LU", "MT", "NL", "NO", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "CH")
 COUNTRY_REGION = dict({country: "EU_868" for country in EU}, US="US", CA="US", MX="US", AU="ANZ", NZ="NZ",
@@ -107,12 +109,19 @@ def meshcore(region):
                    32 if sf <= 8 else 16)
 
 
-def plan(country):
-    """What the cap listens on in a country, in turn: Meshtastic LongFast, then MeshCore. Empty without a band."""
+def lorawan(region):
+    return Profile("lorawan", "uplinks", int(round(LORAWAN[region] * 1e6)), 125000, 7, 5, LORAWAN_SYNC, 8)
+
+
+def plan(country, lorawan_too=False):
+    """What the cap listens on in a country, in turn: Meshtastic LongFast, then MeshCore, then LoRaWAN uplinks when
+    lorawan_too. Empty without a band."""
     region = COUNTRY_REGION.get(country)
     if region is None:
         return []
     found = [meshtastic(region)] + ([meshcore(region)] if region in MESHCORE else [])
+    if lorawan_too and region in LORAWAN:
+        found.append(lorawan(region))
     return [profile for profile in found if profile.fits()]
 
 

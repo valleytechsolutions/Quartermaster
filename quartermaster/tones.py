@@ -1,7 +1,6 @@
 """Alert tones: a small library of synthesized sounds, played one at a time with aplay off every scan thread.
 
-The RTTTL parser, the Dragon Detector melodies and the tone queue rules come from Dragon Detector (MIT, Valleytech
-Custom Solutions).
+The tone queue rules come from Dragon Detector (MIT, Valleytech Custom Solutions).
 """
 
 import importlib.util
@@ -18,142 +17,9 @@ import wave
 
 RATE = 22050
 VOLUMES = {"high": 0.7, "medium": 0.4, "low": 0.2}
-TEXT_MAX, NOTES_MAX, TOTAL_MS = 512, 96, 15000
 REPEAT_SECONDS, EXPIRE_SECONDS = 4.0, 10.0
 PREEMPT, PREVIEW = 95, 1000
 RETRY_SECONDS = (2.0, 10.0, 60.0)
-_OCTAVE4 = (262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494)
-_SEMITONE = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11, "p": -1}
-
-MELODIES = (
-    ("dd_wifi", "Dragon Wi-Fi", "Wifi:d=16,o=5,b=180:c,e"),
-    ("dd_ble", "Dragon BLE", "BLE:d=16,o=5,b=180:d,f"),
-    ("dd_flock", "Dragon Flock", "Flock:d=16,o=6,b=180:c,g,c7,8g"),
-    ("dd_axon", "Dragon body cam", "Axon:d=16,o=5,b=180:c,e,g,c6,g,e,8c6"),
-    ("dd_glasses", "Dragon glasses", "Glasses:d=16,o=6,b=180:e,8g"),
-    ("dd_pineapple", "Dragon Pineapple", "Pineapple:d=16,o=5,b=180:g,g,p,c6"),
-    ("dd_pwnagotchi", "Dragon Pwnagotchi", "Pwn:d=16,o=5,b=180:d,f,a,f"),
-    ("dd_nyanbox", "Dragon Nyanbox", "Nyan:d=16,o=6,b=180:g,e,c,g"),
-    ("dd_halehound", "Dragon HaleHound", "Hale:d=16,o=5,b=180:a,f,d,8a"),
-    ("dd_findmy", "Dragon Find My", "FindMy:d=16,o=6,b=180:c,p,e,p,c"),
-    ("dd_serial", "Dragon serial", "Serial:d=16,o=5,b=180:c#,g#,c#"),
-    ("dd_flipper", "Dragon Flipper", "Flipper:d=16,o=6,b=180:c,f#,c7,f#"),
-    ("dd_biscuit", "Dragon Biscuit", "Biscuit:d=16,o=5,b=180:e,b,e6,b"),
-    ("dd_smarttag", "Dragon SmartTag", "SmartTag:d=16,o=6,b=180:d,p,f#,a"),
-    ("dd_raven", "Dragon Raven", "Raven:d=16,o=5,b=180:g,c6,e6,8c6"),
-    ("dd_findhub", "Dragon Find Hub", "Google:d=16,o=6,b=180:e,g,d,g"),
-    ("dd_tile", "Dragon Tile", "Tile:d=16,o=6,b=180:f,a,8f"),
-    ("dd_ring", "Dragon Ring", "Ring:d=16,o=6,b=180:g,8c,8e"),
-    ("dd_camera", "Dragon camera", "Camera:d=16,o=5,b=180:f,c6,f,8c6"),
-    ("dd_alpr", "Dragon ALPR", "ALPR:d=16,o=6,b=180:d,a,d7,8a"),
-    ("dd_drone", "Dragon drone", "Drone:d=16,o=6,b=180:c,p,g,p,c7"),
-    ("dd_ibeacon", "Dragon iBeacon", "Beacon:d=16,o=5,b=180:b,e6,b"),
-    ("dd_disconnect", "Dragon disconnect", "Disconnect:d=16,o=5,b=180:a,a,p,d#,d#"),
-    ("dd_conflict", "Dragon SSID clash", "Conflict:d=16,o=5,b=180:c,f#,c,f#"),
-    ("dd_burst", "Dragon BLE burst", "Burst:d=32,o=6,b=180:c,d,e,f,g"),
-    ("dd_fox", "Dragon fox", "Fox:d=16,o=6,b=180:g,e,8c"),
-)
-
-
-def _number(text, at):
-    start, value = at, 0
-    while at < len(text) and "0" <= text[at] <= "9":
-        value = value * 10 + ord(text[at]) - 48
-        at += 1
-        if value > 10000:
-            return None, at
-    return (value if at != start else None), at
-
-
-def parse_rtttl(text):
-    """[(hz, ms)] for an RTTTL melody, [] for the empty string, None when it is not valid."""
-    if not isinstance(text, str) or len(text) > TEXT_MAX:
-        return None
-    if not text:
-        return []
-    if any(not 32 <= ord(ch) <= 126 for ch in text):
-        return None
-    colon = text.find(":")
-    if colon < 1 or colon > 32:
-        return None
-    at, d, o, b, seen = colon + 1, 4, 6, 120, set()
-    while at < len(text) and text[at] != ":":
-        key = text[at]
-        if at + 1 >= len(text) or text[at + 1] != "=":
-            return None
-        value, at = _number(text, at + 2)
-        if value is None or key not in "dob" or key in seen:
-            return None
-        seen.add(key)
-        if key == "d":
-            if value not in (1, 2, 4, 8, 16, 32):
-                return None
-            d = value
-        elif key == "o":
-            if not 4 <= value <= 7:
-                return None
-            o = value
-        else:
-            if not 25 <= value <= 900:
-                return None
-            b = value
-        if at < len(text) and text[at] == ",":
-            at += 1
-            if at < len(text) and text[at] == ":":
-                return None
-        elif at >= len(text) or text[at] != ":":
-            return None
-    if at >= len(text) or text[at] != ":" or at + 1 >= len(text):
-        return None
-    at += 1
-    notes, total = [], 0
-    while at < len(text):
-        if len(notes) >= NOTES_MAX:
-            return None
-        duration, octave = d, o
-        if "0" <= text[at] <= "9":
-            duration, at = _number(text, at)
-            if duration not in (1, 2, 4, 8, 16, 32):
-                return None
-        if at >= len(text):
-            return None
-        semitone = _SEMITONE.get(text[at].lower())
-        if semitone is None:
-            return None
-        at += 1
-        if at < len(text) and text[at] == "#":
-            if semitone < 0 or semitone in (4, 11):
-                return None
-            semitone += 1
-            at += 1
-        dotted = False
-        if at < len(text) and text[at] == ".":
-            dotted = True
-            at += 1
-        if at < len(text) and "0" <= text[at] <= "9":
-            octave = ord(text[at]) - 48
-            at += 1
-            if not 4 <= octave <= 7:
-                return None
-        if at < len(text) and text[at] == ".":
-            if dotted:
-                return None
-            dotted = True
-            at += 1
-        ms = 240000 // b // duration
-        if dotted:
-            ms += ms // 2
-        if not ms or total + ms > TOTAL_MS:
-            return None
-        notes.append((0 if semitone < 0 else _OCTAVE4[semitone] << (octave - 4), ms))
-        total += ms
-        if at < len(text):
-            if text[at] != ",":
-                return None
-            at += 1
-            if at >= len(text):
-                return None
-    return notes or None
 
 
 def _seg(f0, f1, ms, kind="sine", level=1.0, curve="lin"):
@@ -162,14 +28,6 @@ def _seg(f0, f1, ms, kind="sine", level=1.0, curve="lin"):
 
 def _rest(ms):
     return (0, 0, ms, "sine", 0.0, "lin")
-
-
-def _melody(text):
-    parts = []
-    for hz, ms in parse_rtttl(text):
-        sound = ms * 9 // 10
-        parts += [_seg(hz, hz, sound, level=0.9) if hz else _rest(sound), _rest(ms - sound)]
-    return parts
 
 
 TONES = {
@@ -181,10 +39,9 @@ TONES = {
     "ping": ("Ping", [_seg(2093, 2093, 180, "glass"), _seg(2637, 2637, 320, "glass")]),
     "blip": ("Blip", [_seg(880, 880, 50, level=0.55), _rest(35), _seg(1320, 1320, 70, level=0.55)]),
 }
-TONES.update((key, (name, _melody(text))) for key, name, text in MELODIES)
 TONES["silent"] = ("Silent", [])
 TONES["beep"] = ("Recon beep", [_seg(1760, 1760, 90, level=0.4), _rest(40), _seg(2349, 2349, 120, level=0.4)])
-ORDER = ("siren", "yelp", "chirp", "shutter", "ping", "blip") + tuple(key for key, _, _ in MELODIES) + ("silent",)
+ORDER = ("siren", "yelp", "chirp", "shutter", "ping", "blip", "silent")
 
 
 def name(tone):
