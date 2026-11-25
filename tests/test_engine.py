@@ -920,6 +920,8 @@ def test_a_long_noisy_drive_keeps_only_the_closest_and_furthest_row_of_each_devi
         clock[0] += 1
         if sweep % 100 == 99:
             drive._tidy()
+    # Sweeps advance the fake wall clock, not the writer's real-time checkpoint.
+    drive.writer.sync(force=True)
     journal = wigle.journal_path(drive.log_path)
     assert journal.exists() and not drive.log_path.exists() and drive.status()["rows"] > 0
     assert len(drive.tracker.devices) < 45 == drive.status()["wifi"] + drive.status()["ble"]

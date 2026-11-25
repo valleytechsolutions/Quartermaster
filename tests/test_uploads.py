@@ -222,6 +222,30 @@ def test_only_sites_with_keys_are_used(site, tmp_path):
     assert up.marks(log.name) == {"wigle": "", "wdgwars": "done", "wardrift": ""}
 
 
+def test_missing_auto_upload_setting_uses_upstream_default(tmp_path):
+    up = uploads.Uploader(tmp_path, {}, accounts_path=tmp_path / "accounts.json")
+    assert up.status()["auto"] is True
+
+    calls = []
+
+    class Wake:
+        waits = 0
+
+        def wait(self, delay):
+            self.waits += 1
+            if self.waits == 2:
+                up._stop.set()
+            return self.waits == 1
+
+        def clear(self):
+            pass
+
+    up._wake = Wake()
+    up.run_pass = lambda: calls.append(True)
+    up._loop()
+    assert calls == [True]
+
+
 def test_accounts_file_is_private_and_takes_the_encoded_wigle_string(tmp_path):
     path = tmp_path / "keys" / "accounts.json"
     encoded = base64.b64encode(b"AIDabcdef0123456789:0123456789abcdef").decode()

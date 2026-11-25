@@ -195,7 +195,7 @@ def test_a_stick_held_by_another_program_is_said_and_tried_again_later(tmp_path,
     rx._tick()
     rx.readsb.processes[2].exit("Found 1 device(s):\nusb_open error -3\nPlease fix the device permissions\n")
     rx._tick()
-    assert rx.state == adsb.DENIED and rx.status()["detail"] == "No permission yet. Restart the Cardputer once."
+    assert rx.state == adsb.DENIED and rx.status()["detail"] == "No permission to access the SDR device."
 
 
 def test_the_closest_and_furthest_position_of_each_aircraft_are_kept(tmp_path):
@@ -433,7 +433,7 @@ def gone(pid):
     try:
         with open("/proc/%d/stat" % pid) as stat:
             return stat.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
 
 
@@ -445,6 +445,7 @@ def test_a_real_readsb_stand_in_is_read_runs_niced_and_pinned_and_its_whole_grou
     (tmp_path / "logs").mkdir()
     rx = adsb.Receiver(tmp_path / "logs", Gps(FIX), which=lambda name: str(script) if name == "readsb" else None,
                        dongles=lambda: [{}], feeds=(), out=tmp_path / "run", poll=0.05)
+    expected_nice = min(19, os.getpriority(os.PRIO_PROCESS, 0) + 10)
     rx.start(time.time())
     try:
         deadline = time.monotonic() + 10
@@ -452,8 +453,7 @@ def test_a_real_readsb_stand_in_is_read_runs_niced_and_pinned_and_its_whole_grou
             time.sleep(0.02)
         assert rx.count == 1 and rx.state == adsb.RUNNING
         pid = rx.proc.pid
-        with open("/proc/%d/stat" % pid) as stat:
-            assert int(stat.read().rsplit(")", 1)[1].split()[16]) == 10
+        assert os.getpriority(os.PRIO_PROCESS, pid) == expected_nice
         if (os.cpu_count() or 1) >= 4:
             assert os.sched_getaffinity(pid) == {os.cpu_count() - 1}
         assert os.getpgid(pid) == pid
@@ -901,13 +901,13 @@ def test_without_a_receiver_fix_rtl_adsb_positions_come_from_even_and_odd_pairs(
     ("No supported devices found.\n", adsb.NO_DONGLE, "Not plugged in"),
     ("Found 1 device(s):\n  0:  Realtek, RTL2838UHIDIR, SN: 00000001\n\nUsing device 0: Generic RTL2832U OEM\n"
      "usb_open error -3\nPlease fix the device permissions, e.g. by installing the udev rules file rtl-sdr.rules\n"
-     "Failed to open rtlsdr device #0.\n", adsb.DENIED, "No permission yet. Restart the Cardputer once."),
+         "Failed to open rtlsdr device #0.\n", adsb.DENIED, "No permission to access the SDR device."),
     ("Found 1 device(s):\nusb_claim_interface error -6\nFailed to open rtlsdr device #0.\n", adsb.BUSY,
      "In use by another program"),
     ("\nKernel driver is active, or device is claimed by second instance of librtlsdr.\nIn the first case, please "
      "either detach or blacklist the kernel module\n(dvb_usb_rtl28xxu), or enable automatic detaching at compile "
      "time.\n\nusb_claim_interface error -6\nFailed to open rtlsdr device #0.\n", adsb.DRIVER,
-     "Restart the Cardputer once to use it"),
+         "The kernel driver is using the SDR device."),
     ("Found 1 device(s):\nNo supported tuner found\nFailed to open rtlsdr device #0.\n", adsb.FAILED,
      "It stopped. Trying again soon."),
 ])
@@ -1089,13 +1089,18 @@ def test_a_real_rtl_adsb_stand_in_is_heard_runs_niced_and_pinned_and_its_whole_g
     (tmp_path / "logs").mkdir()
     rx = adsb.Receiver(tmp_path / "logs", Gps(FIX), which=lambda name: str(script) if name == "rtl_adsb" else None,
                        dongles=lambda: [{}], feeds=(), out=tmp_path / "run", poll=0.05)
+    expected_nice = min(19, os.getpriority(os.PRIO_PROCESS, 0) + 10)
     rx.start(time.time())
     try:
-        assert wait_until(lambda: rx.count == 1 and (tmp_path / "run" / "child").exists(), 10)
+        def heard_aircraft():
+            plane = rx.sky.planes.get("a1b2c3")
+            return rx.count == 1 and (tmp_path / "run" / "child").exists() and plane is not None and \
+                plane.near is not None
+
+        assert wait_until(heard_aircraft, 10)
         assert rx.state == adsb.RUNNING and rx.sky.planes["a1b2c3"].near is not None
         pid = rx.proc.pid
-        with open("/proc/%d/stat" % pid) as stat:
-            assert int(stat.read().rsplit(")", 1)[1].split()[16]) == 10
+        assert os.getpriority(os.PRIO_PROCESS, pid) == expected_nice
         if (os.cpu_count() or 1) >= 4:
             assert os.sched_getaffinity(pid) == {os.cpu_count() - 1}
         assert os.getpgid(pid) == pid

@@ -62,7 +62,7 @@ OFF, NO_DONGLE, NO_TOOLS, BUSY, RUNNING, SYSTEM, FAILED, READY, DENIED, DRIVER =
 WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_TOOLS: "rtl-sdr is missing. Reinstall Quartermaster",
          BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the aircraft program that already runs",
          FAILED: "It stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
-         DENIED: "No permission yet. Restart the Cardputer once.", DRIVER: "Restart the Cardputer once to use it"}
+         DENIED: "No permission to access the SDR device.", DRIVER: "The kernel driver is using the SDR device."}
 
 _HEX = re.compile(r"[0-9a-f]{6}")
 _NAME = re.compile(r"quartermaster_\d{8}-\d{6}(-\d+)?\.aircraft\.json\.gz")
@@ -715,7 +715,7 @@ class Receiver:
     def _time(self, fix):
         """UTC: the GPS's when it has it, else the system clock moved by what the GPS last said of it.
 
-        The CardputerZero has no battery clock, so the system clock may be days off. Aircraft heard before the GPS
+        The system clock may be inaccurate before GPS supplies its time. Aircraft heard before the GPS
         first gives the time are moved to it then, and their file is named again."""
         if not fix.get("utc"):
             return self.epoch(fix) if self._offset is None else self.clock() + self._offset
