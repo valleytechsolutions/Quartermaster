@@ -64,8 +64,10 @@ SECTIONS = [
     ]),
     ("GPS", [
         ("gps_source", "GPS source", [("auto", "Auto"), ("gpsd", "gpsd"), ("/dev/ttyUSB0", "USB (ttyUSB0)"),
-                                      ("/dev/ttyACM0", "USB (ttyACM0)"), ("/dev/ttyS0", "Cap / Grove"),
-                                      ("off", "Off")], "Auto finds a USB, Cap LoRa or Grove GPS by itself."),
+                                      ("/dev/ttyACM0", "USB (ttyACM0)"),
+                                      ("/dev/serial0", "GPIO UART (BCM 14/15; header pins 8/10)"),
+                                      ("/dev/ttyS0", "UART (ttyS0)"), ("off", "Off")],
+         "Auto finds a USB or enabled primary UART GPS. Use 3.3 V UART signaling."),
         ("gps_max_hdop", "GPS accuracy needed", [(0, "Any fix"), (10, "Fair"), (5, "Good"), (2, "Best")],
          "Rows wait until the fix is at least this good."),
         ("gps_power", "Cap and Grove power", [(True, "When needed"), (False, "Leave off")],
@@ -73,7 +75,7 @@ SECTIONS = [
     ]),
     ("UPLOADS", [
         ("auto_upload", "Send logs", [(True, "Automatic"), (False, "Only when asked")],
-         "Automatic sends finished logs whenever the Cardputer is online."),
+         "Automatic sends finished logs whenever the Linux host is online."),
     ]),
     ("DRIVE ALERTS", [
         ("drive_alerts", "Alerts while wardriving", ON_OFF,

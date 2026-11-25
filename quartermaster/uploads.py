@@ -25,7 +25,7 @@ ENDPOINTS = {"wigle": "https://api.wigle.net", "wdgwars": "https://wdgwars.pl", 
 SERVICES = tuple(ENDPOINTS)
 AIRCRAFT_SERVICES = ("wdgwars", "wardrift")
 WARDRIFT_MAX_BYTES = 10 * 1024 * 1024
-USER_AGENT = "Quartermaster/%s (CardputerZero)" % __version__
+USER_AGENT = "Quartermaster/%s (Raspberry Pi Zero 2 W)" % __version__
 # Wardrift's mesh route turns away anything that does not look like a browser.
 BROWSER_AGENT = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 "
                  "Safari/537.36 Quartermaster/%s" % __version__)

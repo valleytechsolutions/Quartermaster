@@ -124,7 +124,7 @@ def test_menu_opens_every_screen_and_quits(tmp_path, drawn):
 
 
 def test_wardrive_saves_uploads_and_deletes(tmp_path, drawn):
-    app = make_app(tmp_path, keys=KEYS, log_rows="track")
+    app = make_app(tmp_path, keys=KEYS, log_rows="track", auto_upload=True)
     press(app, "W")
     assert app.wardriving and isinstance(app.screen, screens.Wardrive)
     text = screen_text(app, drawn)
@@ -290,7 +290,7 @@ def test_quitting_a_wardrive_that_is_going_well_saves_it_and_closes(tmp_path, dr
 
 
 def test_the_end_screen_puts_the_reason_first_and_is_as_ever_without_one(tmp_path, monkeypatch, later):
-    app = make_app(tmp_path / "saved", keys=KEYS)
+    app = make_app(tmp_path / "saved", keys=KEYS, auto_upload=True)
     press(app, "W", "ENTER", "ENTER")
     lines = placed(app, monkeypatch)
     assert lines["Wi-Fi networks"] == (screens.TOP, gfx.MUTED) and lines["Saved as"][0] == screens.TOP + 85
@@ -1770,7 +1770,7 @@ def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_doe
 
 
 def test_a_wardrive_that_saved_only_aircraft_says_where_they_go(tmp_path, drawn):
-    app = sky_app(tmp_path, fix=NO_FIX, adsb=True, keys=KEYS)
+    app = sky_app(tmp_path, fix=NO_FIX, adsb=True, keys=KEYS, auto_upload=True)
     press(app, "W")
     hear(app, plane("a1b2c3", 25.2, -77.7))
     press(app, "ENTER", "ENTER")

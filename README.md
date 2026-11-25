@@ -8,64 +8,69 @@
 <h1 align="center">Quartermaster</h1>
 
 <p align="center">
-  <b>The wardriver for the M5Stack CardputerZero.</b><br>
-  Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
-  Clean WiGLE logs. Automatic uploads. Drive Alerts. Recon.
+  <b>Headless Linux wardriving for Raspberry Pi Zero 2 W.</b><br>
+  Collect Wi-Fi and Bluetooth observations with USB or onboard radios.<br>
+  Save GPS-tagged logs in Quartermaster's existing formats.
 </p>
 
 <p align="center">
-  <a href="https://github.com/valleytechsolutions/Quartermaster/releases/latest"><img src="https://img.shields.io/github/v/release/valleytechsolutions/Quartermaster?color=f5b301&label=release" alt="Latest release"></a>
   <a href="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml"><img src="https://github.com/valleytechsolutions/Quartermaster/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-f5b301" alt="GPL-3.0 license"></a>
-  <a href="#install"><img src="https://img.shields.io/badge/AppStore-share%20code%20WARD-f5b301" alt="On the CardputerZero AppStore: share code WARD"></a>
-</p>
-
-<p align="center">
-  <img src="docs/screens/boot.gif" width="320" alt="Boot animation: a black and gold ship drops three sails">
-  <img src="docs/screens/wardrive-mesh.png" width="320" alt="Live wardrive: 412 Wi-Fi networks, 187 Bluetooth devices, 23 aircraft and 9 mesh nodes">
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
-  <a href="#what-it-does">What it does</a> ·
-  <a href="#your-first-wardrive">First wardrive</a> ·
-  <a href="#nodes">Nodes</a> ·
-  <a href="#aircraft">Aircraft</a> ·
-  <a href="#mesh-nodes">Mesh nodes</a> ·
-  <a href="#settings">Settings</a>
+  <a href="#logs">Logs</a> ·
+  <a href="#build-it-yourself">Development</a>
 </p>
 
-Plug in your radios and a GPS, press one key, and drive. Quartermaster finds your hardware by itself and scans on every radio at the same time. It counts each device once and writes logs in exactly the format WiGLE expects. When the Cardputer is back online, the logs go to WiGLE, WDGWars and Wardrift on their own.
+This fork's MVP is a headless Linux wardrive with a live terminal diagnostics screen: collect Wi-Fi and Bluetooth observations, get GNSS from USB, gpsd, or the Waveshare SX1262 XXXM LoRaWAN/GNSS HAT, and save compatible logs under `~/quartermaster`. HDMI is used only as a text terminal; no Cardputer display or audio support is included. The HAT's GNSS uses the Pi primary UART; its SX1262 receive transport uses the Waveshare example's SPI/GPIO mapping. Validate GNSS routing and radio operation on the target Pi before relying on HAT collection. Nodes and the broader Recon workflow are later work.
 
 ## Install
 
-### From the CardputerZero AppStore
-
-<p align="center">
-  <img src="packaging/icon.png" width="88" alt="The Quartermaster app icon: look for it in the AppStore">
-</p>
-
-Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Cardputer and search for **Quartermaster**, or enter the share code **WARD**.
-
-Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
-
-### With one command
-
-New versions reach GitHub first, and the AppStore after its review. To get the newest one now, open a terminal on the CardputerZero, or connect to it with SSH, and paste this:
+Install Raspberry Pi OS's D-Bus Python binding, then create a venv that can see that system module and install Quartermaster:
 
 ```sh
-wget -qO /tmp/quartermaster.deb https://github.com/valleytechsolutions/Quartermaster/releases/latest/download/quartermaster.deb && sudo apt install -y /tmp/quartermaster.deb
+sudo apt install python3-dbus
+python3 -m venv --system-site-packages .venv
+. .venv/bin/activate
+python -m pip install '.[pi-hat]'
+quartermaster
 ```
 
-The same command updates it. To remove it: `sudo apt remove quartermaster`. Your logs and settings stay where they are.
+By default, `quartermaster` returns after starting collection in the background. Use `quartermaster --status` to check it, `quartermaster --stop` to stop and finalize it, or `quartermaster --dashboard` for a foreground session; Ctrl-C stops and finalizes that run. Logs are stored under `~/quartermaster` and diagnostics under `~/quartermaster/background.log`.
 
-### After you install
+Copy completed logs to a mounted USB drive or other destination with `quartermaster --export /media/$USER/USB/quartermaster`. It copies files under `logs/` and `recon/`, preserving the directory layout and file formats, and skips hidden journals and temporary files. Export destinations must be outside `~/quartermaster`.
 
-Restart the Cardputer once after the first install, then open **Quartermaster** from the launcher. The restart lets Quartermaster reach an RTL-SDR stick and the Cap LoRa-1262.
+Stop collection before exporting or manually uploading; both commands refuse to run while a wardrive is active, avoiding partial files.
 
-**Settings > Check for updates** tells you when a newer version is out. It only asks the AppStore and GitHub, and never downloads anything.
+The app itself runs as your normal user; `sudo` above is only for installing the OS-provided D-Bus binding. The venv must use `--system-site-packages` so BLE can import `dbus`. The `pi-hat` extra installs `gpiod` and `spidev`; enable SPI and grant the runtime user access to `/dev/spidev0.0` and `/dev/gpiochip0`. Wi-Fi scanning also requires supported kernel drivers and `iw`; Bluetooth requires the host's BlueZ service. GPS rows are only logged with a fresh valid fix.
 
-## What it does
+Upload behavior follows the upstream default: automatic uploads are enabled when valid service keys are configured. Run `quartermaster --configure-uploads` to enter keys; secret fields are not echoed and are saved to `~/.config/quartermaster/accounts.json` with private permissions. Use `quartermaster --set auto_upload false` to opt out, or `quartermaster --upload` to send finished logs on demand. Inspect settings with `quartermaster --show-config`; `quartermaster --set KEY VALUE` accepts only supported values. The Pi dashboard, detached worker, and automatic upload option share the same saved configuration.
+
+`quartermaster --upload-status` shows the finished-log queue without sending anything. `quartermaster --probe` reports Wi-Fi adapters, GPS candidates, RTL-SDR and decoder availability, Bluetooth/D-Bus/BlueZ status, and whether the HAT SPI device is present.
+
+### Optional user service
+
+To start wardriving at login and keep the diagnostics snapshots in the user journal, install the package in the venv path used by the unit and enable it from the repository root:
+
+```sh
+mkdir -p ~/.local/opt/quartermaster
+python3 -m venv --system-site-packages ~/.local/opt/quartermaster/venv
+~/.local/opt/quartermaster/venv/bin/pip install '.[pi-hat]'
+mkdir -p ~/.config/systemd/user
+cp systemd/quartermaster.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now quartermaster.service
+```
+
+Enabling the service starts collection now and at each user login. Stop it with `systemctl --user stop quartermaster`; that sends SIGINT so active logs are finalized. Check it with `systemctl --user status quartermaster` and follow diagnostics with `journalctl --user -u quartermaster -f`. The service runs as your user, not root. Configure that user's SPI/GPIO and radio permissions through Raspberry Pi OS; after changing group membership, log out and back in. To keep the user service running after logout and start it at boot without a login, an administrator can enable lingering for the account.
+
+## Upstream Feature Reference
+
+The following inherited sections describe features and interfaces from the Cardputer application. They are retained as implementation reference only; nodes, Recon, Drive Alerts, display controls, and automatic uploads are not currently part of the Pi headless MVP. The headless runner now has a receive path for the Waveshare LoRa HAT and writes the existing compatible mesh format; validate it on target hardware.
+
+## What the upstream application does
 
 **Radios**
 
@@ -482,7 +487,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.3,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.3,model=Pi Zero 2 W,release=...,device=Quartermaster,display=headless,board=Raspberry Pi Zero 2 W,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.
@@ -535,16 +540,23 @@ Without a Dragon Detector, a Flock camera alerts when it shows its own Wi-Fi net
 ## Build it yourself
 
 ```sh
-git clone https://github.com/valleytechsolutions/Quartermaster
-cd Quartermaster
-python3 -m pip install pillow numpy pyserial pytest
-python3 -m pytest tests
-python3 tools/build_deb.py
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install '.[pi-hat]'
+quartermaster
 ```
 
-The package lands in `build/`. That last step needs `dpkg-deb`, so run it on Debian, Ubuntu or the Cardputer itself. `python3 tools/render_screens.py` draws every screen with sample data, which is how the pictures on this page are made.
+Quartermaster is installed as a standard Python package, independent of the Linux distribution's package manager. `quartermaster` starts in the background; `quartermaster --status` checks it, `quartermaster --stop` stops/finalizes it, and `quartermaster --dashboard` runs in the foreground. Configure credentials with `quartermaster --configure-uploads` and upload finished logs with `quartermaster --upload`. Uploads are opt-in and off for fresh configurations. Wi-Fi and Bluetooth collection use Linux radio services and drivers, and GPS can use a USB serial receiver, gpsd, or the Pi's primary UART. Logs go under `~/quartermaster` by default. Install `.[performance]` as well for optional NumPy acceleration.
 
-On the Cardputer, `/usr/share/APPLaunch/bin/quartermaster --probe` lists the adapters and GPS ports it can see, and whether the Cap LoRa-1262 answers.
+For the HAT's GNSS, enable the Raspberry Pi primary UART and disable its login shell. The UART pins are physical pin 8 (BCM GPIO14 / TXD) and pin 10 (BCM GPIO15 / RXD); the HAT's GNSS output should be readable from `/dev/serial0`. Use 3.3 V UART signaling. Auto discovery checks this port.
+
+For the US SX1262 HAT, use the 868/915 MHz hardware variant and the `US` software region. The attached Waveshare receiver example maps SPI bus 0 / CE0, RESET BCM GPIO18 (physical pin 12), BUSY GPIO20 (pin 38), DIO1/IRQ GPIO16 (pin 36), and TXEN GPIO6 (pin 31); RXEN is unused. Standard SPI0 uses MOSI physical pin 19 (BCM GPIO10), MISO pin 21 (BCM GPIO9), and SCLK pin 23 (BCM GPIO11). Waveshare's text says SX1262 DIO2 controls the RF switch. The implementation is receive-only and drives TXEN high for receive. GNSS routing and radio operation still require validation on the actual HAT and Pi.
+
+`python3 -m pytest -q tests` runs the tests. `python3 tools/render_screens.py --out build/screenshots` renders the legacy UI screens. CI builds and smoke-tests a universal Python wheel; installing that wheel does not install Linux radio drivers or system services.
+
+For a GPS connected to the Raspberry Pi Zero 2 W UART, use the 40-pin header's physical pin 8 (BCM GPIO14 / TXD) and pin 10 (BCM GPIO15 / RXD), plus ground such as pin 6. Connect the receiver's TX to Pi RX and receiver RX to Pi TX; use 3.3 V UART signaling only. Enable the serial port hardware in Raspberry Pi OS, disable the login shell on that port, and grant the app user access to the serial device. The receiver can then be selected as `/dev/serial0` or found by Auto.
+
+See the [Pi porting guide](docs/raspberry-pi-zero-2w.md) for compatibility contracts, hardware notes, and remaining work. Later sections describe features inherited from the Cardputer project; those features are not all enabled in the headless Pi MVP.
 
 ## Credits
 

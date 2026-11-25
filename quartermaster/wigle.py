@@ -28,9 +28,9 @@ SYNC_SECONDS = 5.0
 
 
 def pre_header(os_version=""):
-    return ["WigleWifi-1.6", "appRelease=%s %s" % (APP_NAME, __version__), "model=CardputerZero",
-            "release=%s" % (os_version or "unknown"), "device=%s" % APP_NAME, "display=320x170",
-            "board=M5Stack CardputerZero", "brand=Valleytech Solutions", "star=Sol", "body=3", "subBody=0"]
+    return ["WigleWifi-1.6", "appRelease=%s %s" % (APP_NAME, __version__), "model=Pi Zero 2 W",
+            "release=%s" % (os_version or "unknown"), "device=%s" % APP_NAME, "display=headless",
+            "board=Raspberry Pi Zero 2 W", "brand=Valleytech Solutions", "star=Sol", "body=3", "subBody=0"]
 
 
 def _text(value):

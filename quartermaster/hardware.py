@@ -349,13 +349,13 @@ def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
         found.append({"path": path, "kind": "usb", "usb_id": usb_id,
                       "label": known or product or "USB serial", "likely": looks_gps})
     found.sort(key=lambda item: not item["likely"])
-    # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's first UART.
-    # The second one carries Bluetooth and must never be read.
+    # On a Pi Zero 2 W, serial0 is the primary UART on GPIO14/15; serial1 carries Bluetooth.
     bluetooth = _target(Path(dev) / "serial1")
     for name in ("serial0", "ttyS0"):
         port = _target(Path(dev) / name)
         if port is not None and port != bluetooth:
-            found.append({"path": str(port), "kind": "uart", "usb_id": "", "label": "Cap / Grove UART", "likely": True})
+            found.append({"path": str(port), "kind": "uart", "usb_id": "",
+                          "label": "Pi GPIO UART (BCM 14/15, header pins 8/10)", "likely": True})
             break
     for path in extra:
         if path and all(c["path"] != path for c in found):
