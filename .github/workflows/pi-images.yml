@@ -105,7 +105,8 @@ jobs:
         run: |
           test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"
           echo "DEB=build/pi/quartermaster-pi_${VERSION}_all.deb" >> "$GITHUB_ENV"
-          echo "IMAGE=quartermaster-pi-${VERSION}-${HAT}.img.xz" >> "$GITHUB_ENV"
+          image=$(python3 tools/imager_os_list.py --image-name "$HAT" "$VERSION")
+          echo "IMAGE=$image.img.xz" >> "$GITHUB_ENV"
       - name: Build the image
         run: |
           sudo tools/build_image.sh --hat "$HAT" --deb "$DEB" --out build/images

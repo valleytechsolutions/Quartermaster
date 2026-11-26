@@ -9,7 +9,7 @@
 # The image logs in as pi with the password pi, has SSH on and is named quartermaster. Each device makes its own
 # SSH host keys on its first start. A user set in Raspberry Pi Imager replaces the default login.
 # Wi-Fi and Bluetooth start switched on. No Wi-Fi country is set: the worldwide rules apply until the user sets one.
-# Writes quartermaster-pi-<version>-<hat>.img.xz, its Imager metadata (.json) and SHA256SUMS to the out directory.
+# Writes quartermaster-pi-<version>-waveshare-<HAT name>.img.xz, its Imager metadata (.json) and SHA256SUMS to --out.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -58,7 +58,7 @@ done
 [ "$(dpkg-deb -f "$deb" Package)" = quartermaster-pi ] || die "$deb is not the quartermaster-pi package"
 version=$(dpkg-deb -f "$deb" Version)
 [[ $version =~ ^[0-9A-Za-z.+~-]+$ ]] || die "unexpected package version '$version'"
-name=quartermaster-pi-$version-$hat
+name=$(python3 "$here/tools/imager_os_list.py" --image-name "$hat" "$version")
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start a Quartermaster SD card image in an emulated Raspberry Pi 3 and check its first start over SSH.
 #
-#   tools/boot_image.sh --image build/images/quartermaster-pi-<version>-<hat>.img.xz
+#   tools/boot_image.sh --image build/images/quartermaster-pi-<version>-waveshare-<HAT name>.img.xz
 #
 # Options: --imager (first set the card up the way Raspberry Pi Imager does: its own user, password, name and
 # Wi-Fi country), --hat <the HAT the card must be set for>, --work <dir> (default: a temporary folder),

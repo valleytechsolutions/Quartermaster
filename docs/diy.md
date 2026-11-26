@@ -14,7 +14,7 @@ Use a Raspberry Pi, either of Raspyjack's joystick HATs, and a GPS to build a ha
 
 ### Which HAT do you have?
 
-| 1.44″ LCD HAT | 1.3″ IPS LCD HAT |
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
 | --- | --- |
 | [![Front of the 1.44-inch Waveshare LCD HAT, with the joystick to the left of the display and three buttons to the right](https://www.waveshare.com/media/catalog/product/1/_/1.44inch-lcd-hat-1.jpg)](https://www.waveshare.com/1.44inch-lcd-hat.htm) | [![Front of the 1.3-inch Waveshare IPS LCD HAT, with three buttons to the left of the display and the joystick to the right](https://www.waveshare.com/media/catalog/product/1/_/1.3inch-lcd-hat-1.jpg)](https://www.waveshare.com/1.3inch-lcd-hat.htm) |
 | **128×128 · ST7735S** · `st7735-128` (default) | **240×240 · ST7789** · `st7789-240` |
@@ -37,8 +37,8 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 
 | Your HAT | Image to choose |
 | --- | --- |
-| 1.44″ HAT (128×128) | Quartermaster 1.2.9 for the Waveshare 1.44-inch LCD HAT (128x128) |
-| 1.3″ HAT (240×240) | Quartermaster 1.2.9 for the Waveshare 1.3-inch LCD HAT (240x240) |
+| 1.44″ HAT (128×128) | Quartermaster 1.2.9 for the Waveshare 1.44inch LCD HAT (128×128) |
+| 1.3″ HAT (240×240) | Quartermaster 1.2.9 for the Waveshare 1.3inch LCD HAT (240×240) |
 
 5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
 6. Imager shows its set-up pages one after another. Go through them with **Next**. You can leave a page empty, except **Localisation**: there **Next** works only after you choose a city. We recommend filling in two pages.
@@ -67,7 +67,7 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 - **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the last line to `display=st7735-128` for the 1.44″ HAT or `display=st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi. Windows may also show another drive from the card and offer to format it. Click **Cancel**, because formatting it erases Quartermaster.
 - **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on Imager's **Localisation** page in step 6, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
-- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) also has the two image files under **Assets**: `quartermaster-pi-1.2.9-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.9-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with balenaEtcher. Neither needs the file unpacked. Some other tools, such as Win32 Disk Imager, need it unpacked first. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
+- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) also has the two image files under **Assets**, each named after its HAT: `quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.9-waveshare-1.3inch-lcd-hat.img.xz`. Write one with **Use custom** in Imager or with balenaEtcher. Neither needs the file unpacked. Some other tools, such as Win32 Disk Imager, need it unpacked first. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. The images of the newest Pi release are rebuilt every month with the latest Raspberry Pi OS updates.
 - **Updating.** To update only Quartermaster, log in and run the commands of step 3 under [Assemble and install manually](#assemble-and-install-manually), then restart the Pi with `sudo reboot`. Skip steps 4 and 5 there: the image has already done them. You can also flash the newest image. Flashing erases the card, so copy your saved drives to your computer first. After flashing, the Pi has new SSH keys and your computer may refuse to connect. Run `ssh-keygen -R quartermaster.local` on the computer once, then connect again.
 - To start faster, the image does not check for system updates in the background. Run `sudo apt update && sudo apt full-upgrade` when you want them.

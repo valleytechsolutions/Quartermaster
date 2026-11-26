@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -828,7 +829,10 @@ def test_release_assets_are_only_swapped_after_every_upload_succeeded(tmp_path, 
 
 
 def meta(hat, version="1.2.8", **extra):
-    name = "quartermaster-pi-%s-%s" % (version, hat)
+    if hat in imager_os_list.HATS:
+        name = imager_os_list.image_name(hat, version)
+    else:
+        name = "quartermaster-pi-%s-%s" % (version, hat)
     found = dict(name=name, file=name + ".img.xz", version=version, hat=hat, init_format="cloudinit-rpi",
                  extract_size=4 << 30, extract_sha256=SHA, image_download_size=700 << 20,
                  image_download_sha256="cd" * 32, release_date="2026-11-26", base_image="raspios.img.xz")
@@ -841,8 +845,12 @@ def test_the_imager_list_points_at_the_release_assets():
     assert list(listing) == ["os_list"]
     first, second = listing["os_list"]
     assert first["url"] == ("https://github.com/owner/repo/releases/download/pi-v1.2.8/"
-                            "quartermaster-pi-1.2.8-st7735-128.img.xz")
-    assert "1.44-inch" in first["name"] and "1.3-inch" in second["name"]
+                            "quartermaster-pi-1.2.8-waveshare-1.44inch-lcd-hat.img.xz")
+    assert second["url"] == ("https://github.com/owner/repo/releases/download/pi-v1.2.8/"
+                             "quartermaster-pi-1.2.8-waveshare-1.3inch-lcd-hat.img.xz")
+    assert first["name"] == "Quartermaster 1.2.8 for the Waveshare 1.44inch LCD HAT (128\u00d7128)"
+    assert second["name"] == "Quartermaster 1.2.8 for the Waveshare 1.3inch LCD HAT (240\u00d7240)"
+    assert "ST7735S" in first["description"] and "ST7789" in second["description"]
     for item in (first, second):
         assert set(item) >= {"name", "description", "icon", "url", "extract_size", "extract_sha256",
                              "image_download_size", "image_download_sha256", "release_date", "init_format"}
@@ -857,6 +865,8 @@ def test_the_imager_list_points_at_the_release_assets():
     (meta("hdmi"), "unknown HAT"),
     (meta("st7735-128", extract_sha256="xyz"), "extract_sha256"),
     (meta("st7735-128", image_download_size=0), "image_download_size"),
+    (meta("st7735-128", file="quartermaster-pi-1.2.8-st7735-128.img.xz"), "not named after the Waveshare 1.44inch"),
+    (meta("st7789-240", file=meta("st7735-128")["file"]), "not named after the Waveshare 1.3inch"),
 ])
 def test_the_imager_list_refuses_metadata_that_does_not_match(bad, message):
     with pytest.raises(ValueError, match=message):
@@ -880,6 +890,42 @@ def test_the_imager_list_refuses_duplicates_and_writes_json(tmp_path, capsys):
         with pytest.raises(SystemExit):
             imager_os_list.main(["--repo", "o/r", "--tag", "pi-v1.2.8", *wrong])
     capsys.readouterr()
+
+
+def test_each_image_is_named_after_its_waveshare_hat(tmp_path, capsys):
+    names = [imager_os_list.image_name(hat, "1.2.9") for hat in boot_config.PROFILES]
+    assert names == ["quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat", "quartermaster-pi-1.2.9-waveshare-1.3inch-lcd-hat"]
+    for hat, version in (("hdmi", "1.2.9"), ("st7735-128", ""), ("st7735-128", "1.2.9 x"), ("st7735-128", "../1")):
+        with pytest.raises(ValueError):
+            imager_os_list.image_name(hat, version)
+    assert imager_os_list.main(["--image-name", "st7789-240", "1.2.9"]) == 0
+    assert capsys.readouterr().out == names[1] + "\n"
+    for wrong in (["--image-name", "hdmi", "1.2.9"], ["--image-name", "st7735-128", "1.2.9", "--manifest"],
+                  ["--image-name", "st7735-128", "1.2.9", "--repo", "o/r", "--tag", "pi-v1.2.9"], ["--manifest"]):
+        with pytest.raises(SystemExit):
+            imager_os_list.main(wrong)
+    capsys.readouterr()
+    script = SCRIPT.read_text()
+    assert 'name=$(python3 "$here/tools/imager_os_list.py" --image-name "$hat" "$version")' in script
+    assert "quartermaster-pi-$version" not in script
+    yaml = pytest.importorskip("yaml")
+    steps = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())["jobs"]["image"]["steps"]
+    named = next(step["run"] for step in steps if step.get("name") == "Name the package and the image")
+    (tmp_path / "tools").symlink_to(ROOT / "tools")
+    (tmp_path / "build" / "pi").mkdir(parents=True)
+    (tmp_path / "build" / "pi" / "quartermaster-pi_9.9.9_all.deb").write_bytes(b"")
+    for hat in (*boot_config.PROFILES, "hdmi"):
+        found = tmp_path / ("env-" + hat)
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", named], cwd=tmp_path,
+                                env={"PATH": os.environ["PATH"], "HAT": hat, "VERSION": "9.9.9", "GITHUB_ENV": str(found)},
+                                capture_output=True, text=True)
+        written = found.read_text().splitlines() if found.exists() else []
+        if hat in imager_os_list.HATS:
+            assert result.returncode == 0, result.stderr
+            assert written == ["DEB=build/pi/quartermaster-pi_9.9.9_all.deb",
+                               "IMAGE=%s.img.xz" % imager_os_list.image_name(hat, "9.9.9")]
+        else:
+            assert result.returncode != 0 and not any(line.startswith("IMAGE=") for line in written)
 
 
 def imager_shows(manifest, fetched, device):
@@ -1080,6 +1126,8 @@ def test_a_pi_release_is_only_made_or_reused_for_the_commit_that_was_tested(
     else:
         assert len(made) == 1 and " %s" % created_with in made[0] and "--prerelease --latest=false" in made[0]
         assert (head in made[0]) == (created_with == "--target")
+        for hat in boot_config.PROFILES:
+            assert "`%s.img.xz`" % imager_os_list.image_name(hat, "9.9.9") in calls.read_text(), hat
 
 
 def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
@@ -1108,8 +1156,17 @@ def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
                  "install the newest Raspberry Pi Imager", "give Imager a 2.4 GHz Wi-Fi network",
                  "While this is the newest Pi release, they are rebuilt every month",
                  "user \\`pi\\` with password \\`pi\\`", "Change the password with \\`passwd\\`",
-                 "blob/$TAG/docs/diy.md"):
+                 "blob/$TAG/docs/diy.md", "Each image is named after its HAT."):
         assert text in notes, text
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    table = notes.index("| Your HAT | Its image |")
+    assert table < notes.index("**To flash a ready SD card:**")
+    for hat, (label, pixels, chip) in imager_os_list.HATS.items():
+        row = next(line for line in notes.splitlines() if "**Waveshare %s**" % label in line)
+        photo = "https://www.waveshare.com/media/catalog/product/1/_/%s-1.jpg" % label.lower().replace(" ", "-")
+        assert "<img src='%s'" % photo in row and photo in guide, hat
+        assert "<sub>%s screen, %s</sub>" % (pixels, chip) in row, hat
+        assert "\\`%s.img.xz\\` |" % imager_os_list.image_name(hat, "0.0.0").replace("0.0.0", "$VERSION") in row, hat
     assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish
     assert publish.index("already exists on another commit") < publish.index('gh release view "$TAG"')
     assert "pyyaml" in steps[names.index("Test the app and build the Pi package")]["run"].split()
@@ -1133,8 +1190,9 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
                  "Use the newest version.", "Click **Quartermaster %s**" % version, "**Skip customisation**",
                  "**Localisation**: choose your capital city", "**Use custom file**", "**Apply & Restart**",
                  "shows no set-up pages for a file chosen this way", "`sudo nmtui`",
-                 "quartermaster-pi-%s-st7735-128.img.xz" % version, "quartermaster-pi-%s-st7789-240.img.xz" % version,
-                 "Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
+                 "`%s.img.xz`" % imager_os_list.image_name("st7735-128", version),
+                 "`%s.img.xz`" % imager_os_list.image_name("st7789-240", version),
+                 "each named after its HAT", "Use custom", "quartermaster.txt",
                  "quartermaster@%s.service" % SERVICE_USER, "`/var/lib/quartermaster/quartermaster/`", "Wi-Fi country",
                  "can only join a 2.4 GHz network", "type the 2.4 GHz name", "Click **Cancel**",
                  "Some other tools, such as Win32 Disk Imager, need it unpacked first",
@@ -1148,6 +1206,8 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     for hat in imager_os_list.HATS:
         listed = imager_os_list.entry(meta(hat, version), "owner/repo", "pi-v" + version)["name"]
         assert "| %s |" % listed in section, listed
+    assert not re.search(r"st77\d\d-\d+\.img", guide)
+    assert "| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |" in guide
 
 
 def test_every_pi_release_link_in_the_guide_and_the_readme_is_for_this_version():

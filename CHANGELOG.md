@@ -14,6 +14,7 @@
 - New: stop a wardrive without saving it. The stop question has a third choice, **Stop, don't save**. It asks once more, then removes that wardrive's log, summary, aircraft, mesh and alert files from the device, and nothing more of it is uploaded. A part of a long drive that an upload site already has stays on that site, and the question and the notice then say so. Earlier wardrives are not touched. "Stop + save" stays the choice that is selected. A Pi screen shows one choice at a time, with what that choice does.
 - New: at 5 % battery, off the charger, a running wardrive is saved in full at once and says "Battery 5%. Wardrive saved. Still recording." It keeps recording and keeps saving every few seconds, so a battery that gives out costs a few seconds at most. A charger that stays in ends the extra saving. At 3 % it still saves, stops and closes as before.
 - Raspberry Pi images: the login can now also read the Recon and Drive Alert logs in `~/quartermaster/recon` and the aircraft captures in `~/quartermaster/aircraft`, as it already could the saved drives.
+- Raspberry Pi images: each image is now named after its Waveshare HAT, for example `quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat.img.xz`, and so is its choice in Raspberry Pi Imager. The release page shows a photo of each HAT next to its image.
 - DIY guide: a Zero W, Zero 2 W or 3B joins only 2.4 GHz Wi-Fi, so give Imager your 2.4 GHz network. The guide also says where to type the commands on Windows.
 
 ## 1.2.8
