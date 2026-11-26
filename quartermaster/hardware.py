@@ -331,7 +331,7 @@ def by_id_links(by_id=BY_ID):
     return {_real(os.path.join(str(by_id), name)): os.path.join(str(by_id), name) for name in names}
 
 
-def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
+def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=(), *, cardputer=True):
     """Serial ports that may carry NMEA, most likely first: USB receivers, then the cap and Grove UART.
 
     A Quartermaster Node is never one: neither the ESP32-C5's own port nor a bridge a node answered on."""
@@ -350,14 +350,15 @@ def gps_candidates(sys_tty=SYS_TTY, dev=Path("/dev"), extra=()):
         found.append({"path": path, "kind": "usb", "usb_id": usb_id,
                       "label": known or product or "USB serial", "likely": looks_gps})
     found.sort(key=lambda item: not item["likely"])
-    # The Cap LoRa-1262's GPS and a Grove GPS unit both arrive on the Pi's first UART.
-    # The second one carries Bluetooth and must never be read.
-    bluetooth = _target(Path(dev) / "serial1")
-    for name in ("serial0", "ttyS0"):
-        port = _target(Path(dev) / name)
-        if port is not None and port != bluetooth:
-            found.append({"path": str(port), "kind": "uart", "usb_id": "", "label": "Cap / Grove UART", "likely": True})
-            break
+    # The Cardputer's first UART carries its Cap / Grove GPS. On a DIY Pi it may be the console.
+    if cardputer:
+        bluetooth = _target(Path(dev) / "serial1")
+        for name in ("serial0", "ttyS0"):
+            port = _target(Path(dev) / name)
+            if port is not None and port != bluetooth:
+                found.append({"path": str(port), "kind": "uart", "usb_id": "",
+                              "label": "Cap / Grove UART", "likely": True})
+                break
     for path in extra:
         if path and all(c["path"] != path for c in found):
             found.insert(0, {"path": path, "kind": "custom", "usb_id": "", "label": "Custom port", "likely": True})

@@ -162,8 +162,9 @@ def _record(device):
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
                  nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
-                 player=None, deep=deepscan.DeepScan):
+                 player=None, deep=deepscan.DeepScan, *, display_profile="cardputer"):
         self.cfg = dict(cfg)
+        self.display_profile = display_profile
         self.deep_class, self.deep = deep, None
         self.alerts, self.player = alerts, player
         self.watch = None
@@ -639,13 +640,12 @@ class Wardrive:
                     self.writer.close()
                     self.writer = None
                 if self.writer is None:
+                    path = wigle.new_log_path(self.logs, epoch, self._taken)
+                    destination = wigle.journal_path(path) if self.extremes else path
+                    self.writer = wigle.WigleWriter(destination, hardware.os_release(),
+                                                    display_profile=self.display_profile)
                     if self.extremes:
-                        path = wigle.new_log_path(self.logs, epoch, self._taken)
-                        self.writer = wigle.WigleWriter(wigle.journal_path(path), hardware.os_release())
                         self._taken.add(path.name)
-                    else:
-                        path = wigle.new_log_path(self.logs, epoch)
-                        self.writer = wigle.WigleWriter(path, hardware.os_release())
                     self.log_paths.append(path)
                     _settle(self.logs)
                 self.writer.write_row(row)

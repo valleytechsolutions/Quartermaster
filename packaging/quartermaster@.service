@@ -1,0 +1,12 @@
+[Unit]
+Description=Quartermaster Waveshare handheld for %I
+After=NetworkManager.service bluetooth.service
+
+[Service]
+User=%I
+ExecStart=/usr/bin/quartermaster
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

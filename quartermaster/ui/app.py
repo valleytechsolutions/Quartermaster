@@ -54,8 +54,9 @@ def serial_ports(sys_tty=hardware.SYS_TTY, dev=Path("/dev"), by_id=hardware.BY_I
 class HardwareWatch:
     """Keeps the battery level and the lists of adapters, Bluetooth radios and GPS ports fresh off the screen thread."""
 
-    def __init__(self, interval=5.0):
+    def __init__(self, interval=5.0, gps_ports=None):
         self.interval = interval
+        self._gps_ports = gps_ports
         self.adapters, self.bluetooth, self.gps_ports, self.stalled = [], [], [], []
         self.serial_ports = []
         self.sdr, self.decoder, self.sky_use = [], "", ""
@@ -74,7 +75,7 @@ class HardwareWatch:
         try:
             self.adapters = hardware.wifi_adapters()
             self.bluetooth = hardware.bluetooth_adapters()
-            self.gps_ports = hardware.gps_candidates()
+            self.gps_ports = (self._gps_ports or hardware.gps_candidates)()
             self.serial_ports = serial_ports()
             self.sdr, self.decoder = hardware.rtl_sdr_dongles(), adsb.find_decoder()
             self.sky_use = adsb.in_use() if self.sdr else ""
@@ -209,6 +210,10 @@ class App:
                  uploader=None, hw=None, accounts_path=None, config_path=None, tester=uploads.test,
                  setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check, cap=None):
         self.display, self.keyboard, self.gps, self.cfg = display, keyboard, gps, cfg
+        self.square = None
+        if getattr(display, "profile", None) in ("st7735-128", "st7789-240"):
+            from .square import SquareUI
+            self.square = SquareUI(display.width)
         self.root = root
         self.logs_dir = root / "logs"
         self.accounts_path = accounts_path
@@ -221,7 +226,8 @@ class App:
         self.country_asked = False
         self.player = tones.Player()
         self.wardrive_factory = wardrive or (lambda c, g: Wardrive(c, g, root=root, nodes=self.nodes, cap=self.cap,
-                                                                   player=self.player))
+                                                                   player=self.player,
+                                                                   display_profile=getattr(display, "profile", "cardputer")))
         self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes, sound=AlertSound(self.player))
         self.flasher_class = flasher_class
         self.flash_job = None
@@ -326,7 +332,8 @@ class App:
         if name == "Wardrive":
             return self.start_wardrive()
         factory = {"Recon": recon_screens.Recon, "Logs": screens.Logs, "Uploads": screens.Uploads,
-                   "Hardware": screens.Hardware, "Settings": screens.Settings, "Keys": screens.Keys,
+                   "Hardware": screens.Hardware, "Settings": lambda: screens.Settings(diy=bool(self.square)),
+                   "Keys": screens.Keys,
                    "About": screens.About}
         self.home()
         self.push(factory[name]())
@@ -382,6 +389,10 @@ class App:
 
     def busy(self, text):
         """Show a notice right away, before a call that takes a few seconds."""
+        if self.square:
+            self.display.show(self.square.notice(text))
+            self._deaf = True
+            return
         picture = self.compose()
         c = Canvas()
         c.image.paste(picture, (0, 0))
@@ -649,7 +660,7 @@ class App:
 
     def ask_country(self):
         """The LoRa band depends on the country, so with the cap found and no country chosen yet, ask once."""
-        if self.country_asked or self.cfg.get("country_set") or not self.cap.found or \
+        if self.square or self.country_asked or self.cfg.get("country_set") or not self.cap.found or \
                 self.cfg.get("lora", "auto") is False:
             return False
         self.country_asked = True
@@ -726,7 +737,8 @@ class App:
 
     def upload_now(self, name=None):
         if not accounts.ready(self.accounts()):
-            return self.toast("Add a key first: press K on the menu", AMBER, 4)
+            return self.toast("Open Keys to add an upload key" if self.square else "Add a key first: press K on the menu",
+                              AMBER, 4)
         if not self.upload_status()["files"]:
             return self.toast("There are no finished logs to send yet", AMBER)
         self.uploader.send_again(name)
@@ -751,22 +763,25 @@ class App:
         self.toast("Log deleted")
 
     def compose(self):
-        c = Canvas()
         top = self.stack[-1]
         modal = isinstance(top, screens.Modal)
         under = next(s for s in reversed(self.stack) if not isinstance(s, screens.Modal))
-        if under.chrome:
-            self.status_bar(c, under)
-        under.render(c, self)
+        if not self.square:
+            c = Canvas()
+            if under.chrome:
+                self.status_bar(c, under)
+            under.render(c, self)
         shown = self.banners(under, modal)
-        if "recon" in shown:
-            recon_screens.alert_banner(c, self, under)
-        if "drive" in shown:
-            recon_screens.drive_alert_banner(c, self, under)
         if shown:
             self._banners, self._banners_gone, self._banners_on = shown, None, top
         elif self._banners and self._banners_gone is None:
             self._banners_gone = time.monotonic()
+        if self.square:
+            return self.square.render(self, shown)
+        if "recon" in shown:
+            recon_screens.alert_banner(c, self, under)
+        if "drive" in shown:
+            recon_screens.drive_alert_banner(c, self, under)
         banner = bool(shown) and recon_screens.banner_y(self, under) == recon_screens.BANNER_TOP
         if modal:
             c.image.paste(self._shade, (0, 0), self._shade)
@@ -972,7 +987,7 @@ class App:
         if self.cfg.get("auto_start"):
             self.start_wardrive(ask=False)
         elif not accounts.ready(self.accounts()):
-            self.toast("Press K to add your upload keys", GOLD, 5)
+            self.toast("Open Keys to add upload keys" if self.square else "Press K to add your upload keys", GOLD, 5)
 
     def step(self, timeout=0.05):
         while self._calls:
@@ -995,7 +1010,7 @@ class App:
             elif (self.screen, key.name) != self._pressed or \
                     (key.name not in REPEATING and not (self.screen.text_mode and key.char)):
                 continue
-            if not self.banner_key(key):
+            if not (self.square and self.square.handle(key, self)) and not self.banner_key(key):
                 self.screen.handle(key, self)
             self.dirty = True
             if self._deaf or not self.running:

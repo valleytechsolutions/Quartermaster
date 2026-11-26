@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    if [ -f /usr/lib/systemd/system/quartermaster@.service ]; then
+        systemctl stop 'quartermaster@*.service' || true
+        systemctl disable quartermaster@.service || true
+    fi
     systemctl disable --now quartermaster-radio.socket quartermaster-radio.service || true
 fi
 exit 0

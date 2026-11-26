@@ -9,6 +9,7 @@ from . import __version__
 
 REGISTRY = "https://cardputerzero.github.io/generated/registry.json"
 RELEASES = "https://api.github.com/repos/valleytechsolutions/Quartermaster/releases/latest"
+PI_RELEASES = "https://api.github.com/repos/valleytechsolutions/Quartermaster/releases?per_page=100"
 PACKAGE = "quartermaster"
 SHARE_CODE = "WARD"
 TITLE = "Quartermaster"
@@ -107,3 +108,30 @@ def check(current=__version__, opener=fetch):
             return OFFLINE, None, OFFLINE_TEXT
         return UNKNOWN, None, UNKNOWN_TEXT
     return LATEST, plain(current), "You have the latest version (%s)." % plain(current)
+
+
+def check_pi(current=__version__, opener=fetch):
+    """Find the newest published pi-v tag with its version-matched Pi installer."""
+    def pi_version(releases):
+        versions = []
+        for release in releases if isinstance(releases, list) else ():
+            if not isinstance(release, dict) or release.get("draft"):
+                continue
+            tag = release.get("tag_name")
+            if not isinstance(tag, str) or not re.fullmatch(r"pi-v\d+(?:\.\d+)+", tag):
+                continue
+            version = tag[4:]
+            filename = "quartermaster-pi_%s_all.deb" % version
+            assets = release.get("assets")
+            if isinstance(assets, list) and any(isinstance(a, dict) and a.get("name") == filename for a in assets):
+                versions.append(version)
+        return max(versions, key=version_key, default=None)
+
+    reached, released = _ask(opener, PI_RELEASES, current, pi_version)
+    if not reached:
+        return OFFLINE, None, OFFLINE_TEXT
+    if released is None:
+        return UNKNOWN, None, "Could not find a Raspberry Pi release with an installer."
+    if newer(released, current):
+        return GITHUB, released, "%s is ready. Install the Pi package from GitHub." % released
+    return LATEST, plain(current), "Your Pi version (%s) is up to date." % plain(current)

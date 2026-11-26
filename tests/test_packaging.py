@@ -1,10 +1,12 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -13,8 +15,6 @@ try:
     from tests.vendor import install_path_policy
 except ImportError:
     install_path_policy = None
-
-needs_policy = pytest.mark.skipif(install_path_policy is None, reason="the store's install_path_policy.py is not in tests/vendor")
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging"
@@ -115,15 +115,19 @@ def build(out):
     return build_deb.build(out)
 
 
-@needs_policy
 def test_the_package_passes_the_store_checks(tmp_path):
     if not shutil.which("dpkg-deb"):
         pytest.skip("dpkg-deb is needed to build the package")
-    deb = build(tmp_path)
-    assert install_path_policy.rejected_paths(str(deb), "quartermaster") == []
+    deb = os.environ.get("QUARTERMASTER_STORE_DEB") or build(tmp_path)
+    if install_path_policy is not None:
+        assert install_path_policy.rejected_paths(str(deb), "quartermaster") == []
     tar = subprocess.run(["dpkg-deb", "--fsys-tarfile", str(deb)], capture_output=True, check=True).stdout
     with tarfile.open(fileobj=io.BytesIO(tar)) as members:
         files = {m.name.lstrip("./"): m for m in members.getmembers() if not m.isdir()}
+        assert "usr/share/APPLaunch/bin/quartermaster" in files
+        assert "usr/share/APPLaunch/applications/quartermaster.desktop" in files
+        assert not any(name.endswith(("/hat.py", "/square.py", "/quartermaster@.service")) for name in files)
+        assert "etc/quartermaster/display" not in files and "usr/bin/quartermaster" not in files
         for name, member in files.items():
             assert not member.mode & 0o6000, name
             assert not (member.ischr() or member.isblk()), name
@@ -146,3 +150,9 @@ def test_the_package_passes_the_store_checks(tmp_path):
     fields = subprocess.run(["dpkg-deb", "-f", str(deb), "Version", "Architecture"], capture_output=True,
                             text=True, check=True).stdout
     assert "Version: 1.2.5" in fields and "Architecture: all" in fields
+    depends = subprocess.check_output(["dpkg-deb", "-f", str(deb), "Depends"], text=True)
+    assert not any(pkg in depends for pkg in ("luma.lcd", "gpiozero", "rpi-lgpio", "rpi.gpio"))
+    unpacked = tmp_path / "unpacked"
+    subprocess.run(["dpkg-deb", "-x", str(deb), str(unpacked)], check=True)
+    app_dir = unpacked / "usr/share/APPLaunch/apps/quartermaster"
+    subprocess.run([sys.executable, "-c", "from quartermaster.ui.app import App"], cwd=app_dir, check=True)

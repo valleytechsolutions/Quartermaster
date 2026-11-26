@@ -8,7 +8,7 @@
 <h1 align="center">Quartermaster</h1>
 
 <p align="center">
-  <b>The wardriver for the M5Stack CardputerZero.</b><br>
+  <b>The wardriver for the M5Stack CardputerZero and DIY Raspberry Pi handhelds.</b><br>
   Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
   Clean WiGLE logs. Automatic uploads. Drive Alerts. Recon.
 </p>
@@ -27,6 +27,7 @@
 
 <p align="center">
   <a href="#install">Install</a> ·
+  <a href="https://github.com/valleytechsolutions/Quartermaster/wiki">User guide</a> ·
   <a href="#what-it-does">What it does</a> ·
   <a href="#your-first-wardrive">First wardrive</a> ·
   <a href="#nodes">Nodes</a> ·
@@ -39,6 +40,13 @@ Plug in your radios and a GPS, press one key, and drive. Quartermaster finds you
 
 ## Install
 
+### Build a Raspberry Pi handheld
+
+A Raspberry Pi with a 40-pin header can run Quartermaster with either of Raspyjack's Waveshare LCD HATs.
+Choose the 1.44″ 128×128 ST7735S or the 1.3″ 240×240 ST7789. Both have a five-way joystick and three buttons.
+The Pi package includes a native square dashboard, a joystick keyboard and an optional start-at-boot service.
+Follow the [DIY build guide](docs/diy.md) for the parts, Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer and checksum](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.5).
+
 ### From the CardputerZero AppStore
 
 <p align="center">
@@ -48,6 +56,8 @@ Plug in your radios and a GPS, press one key, and drive. Quartermaster finds you
 Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Cardputer and search for **Quartermaster**, or enter the share code **WARD**.
 
 Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
+
+For a fresh or replacement SD card, follow the [CardputerZero flashing and installation guide](https://github.com/valleytechsolutions/Quartermaster/wiki/CardputerZero-installation).
 
 ### With one command
 
