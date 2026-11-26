@@ -1,5 +1,6 @@
 import contextlib
 from pathlib import Path
+import shutil
 import time
 
 import pytest
@@ -457,7 +458,7 @@ def test_the_wait_before_closing_starts_again_when_the_level_comes_back_up(tmp_p
     later(10)
     assert discharge(app, 4) == ""
     later(10)
-    assert discharge(app, 3) == ""
+    assert discharge(app, 3) == "Battery 3%. Wardrive saved. Still recording."
     later(14)
     assert discharge(app, 3) == "" and app.wardriving
     later(1.5)
@@ -560,7 +561,7 @@ def test_the_wait_before_closing_counts_only_an_empty_battery_off_the_charger(tm
     later(10)
     assert discharge(level, 4, charging=True) == ""
     later(10)
-    assert discharge(level, 3) == "" and level.wardriving
+    assert discharge(level, 3) == "Battery 3%. Wardrive saved. Still recording." and level.wardriving
     late = make_app(tmp_path / "late", keys=KEYS)
     press(late, "W")
     assert discharge(late, 2) == "Battery at 2%. Plug in soon."
@@ -611,3 +612,159 @@ def test_the_closing_notice_stays_for_ten_seconds_after_a_slow_save(tmp_path, la
     assert discharge(earlier, 3) == "Battery at 3%. Plug in soon."
     later(15.5)
     assert discharge(earlier, 3) == "Battery almost empty. Closing now."
+
+
+def drained(app, level, charging=False):
+    """The battery is at a low level now. What is said of the level itself is not what these tests are about."""
+    said = discharge(app, level, charging)
+    return "" if said.startswith("Battery at ") else said
+
+
+def recovered_rows(tmp_path, app):
+    """The rows a power cut right now would leave, once the next start has finished the log."""
+    from quartermaster import engine
+    from tests.test_engine import rows_of
+    copy = tmp_path / "cut" / "logs"
+    shutil.rmtree(copy, ignore_errors=True)
+    shutil.copytree(app.logs_dir, copy)
+    engine._recover(copy, None)
+    return [row for path in copy.glob("quartermaster_*.wigle.csv") for row in rows_of(path)]
+
+
+def test_at_five_percent_a_running_wardrive_is_saved_in_full_once_and_keeps_recording(tmp_path, later):
+    from tests.fakes import ADAPTERS, networks
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    drive = app.drive
+    assert drained(app, 6) == ""
+    later(60)
+    assert drained(app, 6) == "" and not drive.low_battery
+    assert drained(app, 5) == ""
+    later(14)
+    assert drained(app, 5) == "" and not drive.low_battery and len(recovered_rows(tmp_path, app)) < 412
+    later(1.5)
+    assert drained(app, 5) == "Battery 5%. Wardrive saved. Still recording." and app.toast_color == GREEN
+    assert app.wardriving and drive.low_battery and isinstance(app.screen, screens.Wardrive) and app.running
+    assert len(list(app.logs_dir.glob("*.summary.csv"))) == 1 and not list(app.logs_dir.glob("*.wigle.csv"))
+    saved = recovered_rows(tmp_path, app)
+    assert len({row[0] for row in saved}) == drive.status()["wifi"] == 412
+    later(120)
+    assert [drained(app, level) for level in (5, 4, 5)] == [""] * 3 and app.wardriving
+    drive._wifi_sink(networks(3, seed=99), ADAPTERS[0])
+    drive._keep_saving()
+    assert len({row[0] for row in recovered_rows(tmp_path, app)}) == drive.status()["wifi"] > 412
+    app.stop_wardrive()
+    assert len({row[0] for row in rows_of_logs(app)}) == drive.status()["wifi"]
+    press(app, "ESC", "W")
+    assert app.drive is not drive and app.toast_text == "Battery 5%. Wardrive saved. Still recording."
+    assert app.drive.low_battery and drained(app, 5) == ""
+
+
+def rows_of_logs(app):
+    from tests.test_engine import rows_of
+    return [row for path in app.logs_dir.glob("quartermaster_*.wigle.csv") for row in rows_of(path)]
+
+
+def test_the_save_at_five_percent_waits_like_the_close_does(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert drained(app, 5, charging=True) == ""
+    later(60)
+    assert drained(app, 5, charging=True) == "" and not app.drive.low_battery
+    assert drained(app, 5) == ""
+    later(10)
+    assert drained(app, 5, charging=True) == ""
+    later(6)
+    assert drained(app, 5) == "Battery 5%. Wardrive saved. Still recording."
+    held = make_app(tmp_path / "held", keys=KEYS)
+    press(held, "W")
+    assert drained(held, 4) == ""
+    later(10)
+    assert drained(held, 4, charging=True) == ""
+    later(16)
+    assert drained(held, 4, charging=True) == "" and drained(held, 4) == ""
+    later(14)
+    assert drained(held, 4) == "" and not held.drive.low_battery
+    later(1.5)
+    assert drained(held, 4) == "Battery 4%. Wardrive saved. Still recording."
+    up = make_app(tmp_path / "up", keys=KEYS)
+    press(up, "W")
+    assert drained(up, 5) == ""
+    later(10)
+    assert drained(up, 6) == ""
+    later(10)
+    assert drained(up, 5) == "" and not up.drive.low_battery
+
+
+def test_a_charger_that_holds_ends_the_extra_saving_and_it_starts_again_without_a_word(tmp_path, later, drawn):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    drive = app.drive
+    assert drained(app, 5) == ""
+    later(16)
+    del drawn[:]
+    assert drained(app, 5) == "Battery 5%. Wardrive saved. Still recording." and drive.low_battery
+    assert "Saving the wardrive…" in drawn
+    assert drained(app, 5, charging=True) == "" and drive.low_battery
+    later(14)
+    assert drained(app, 5, charging=True) == "" and drive.low_battery
+    later(1.5)
+    assert drained(app, 6, charging=True) == "" and not drive.low_battery
+    assert drained(app, 5) == "" and not drive.low_battery
+    later(16)
+    del drawn[:]
+    saves, checkpoint = [], drive.checkpoint
+    drive.checkpoint = lambda keep=False: saves.append(keep) or checkpoint(keep)
+    assert drained(app, 5) == "" and drive.low_battery and saves == [True] and "Saving the wardrive…" not in drawn
+    assert drained(app, 5) == "" and saves == [True]
+    assert drained(app, 20, charging=True) == ""
+    later(16)
+    assert drained(app, 20, charging=True) == "" and not drive.low_battery
+    assert drained(app, 5) == ""
+    later(16)
+    assert drained(app, 5) == "Battery 5%. Wardrive saved. Still recording." and drive.low_battery
+    assert saves == [True, True]
+
+
+def test_at_five_percent_nothing_is_saved_without_a_wardrive_and_a_drive_without_rows_says_so(tmp_path, later):
+    idle = make_app(tmp_path, keys=KEYS)
+    assert drained(idle, 5) == ""
+    later(30)
+    assert drained(idle, 5) == "" and list(idle.logs_dir.iterdir()) == []
+    waiting = make_app(tmp_path / "waiting", keys=KEYS, fix=NO_FIX)
+    press(waiting, "W")
+    assert drained(waiting, 5) == ""
+    later(16)
+    assert drained(waiting, 5) == "Battery 5%. Nothing to save yet. Still recording."
+    assert waiting.toast_color == AMBER and waiting.drive.low_battery and waiting.wardriving
+
+
+def test_a_save_at_five_percent_that_fails_is_said_and_the_wardrive_goes_on(tmp_path, later, monkeypatch, noted):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert drained(app, 5) == ""
+
+    def broken(keep=False):
+        raise RuntimeError("no")
+    monkeypatch.setattr(app.drive, "checkpoint", broken)
+    later(16)
+    assert drained(app, 5) == "Battery 5%. The wardrive could not be saved just now." and app.toast_color == RED
+    assert app.wardriving and "Saving the wardrive on a low battery" in noted.read_text()
+    assert drained(app, 5) == ""
+    refused = make_app(tmp_path / "refused", keys=KEYS)
+    press(refused, "W")
+    assert drained(refused, 5) == ""
+    refused.drive.error = refused.drive.failed = "Cannot write the log: No space left on device"
+    later(16)
+    assert drained(refused, 5) == "Battery 5%. Cannot write the log: No space left on device"
+
+
+def test_the_save_at_five_percent_comes_before_the_close_at_three(tmp_path, later):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    assert drained(app, 5) == ""
+    later(16)
+    assert drained(app, 5) == "Battery 5%. Wardrive saved. Still recording."
+    assert drained(app, 3) == ""
+    later(16)
+    assert discharge(app, 3) == "Battery almost empty. Wardrive saved. Closing now." and not app.wardriving

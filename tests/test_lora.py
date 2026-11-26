@@ -8,6 +8,7 @@ import hmac
 import importlib.util
 import inspect
 import json
+from pathlib import Path
 import random
 import struct
 import sys
@@ -846,3 +847,33 @@ def test_mesh_listening_costs_little(tmp_path):
     for i in range(2000):
         listener._heard(header[:4] + struct.pack("<I", i + 1) + header[8:], -90, 2, True)
     assert time.process_time() - started < 2.0 and listener.count == 2000
+
+
+def test_a_checkpoint_writes_the_mesh_journal_at_once_and_a_wardrive_thrown_away_leaves_none(tmp_path, monkeypatch):
+    logs, settled, settle = folder(tmp_path), [], mesh.adsb.settle
+    listener = mesh.Listener(logs, Gps(FIX), None, [])
+    listener.prepare(NOW)
+    monkeypatch.setattr(mesh.adsb, "settle", lambda where: settled.append(where) or settle(where))
+    listener.checkpoint()
+    assert not listener.journal.exists() and settled == []
+    listener.mesh = heard_store()
+    listener.checkpoint()
+    assert len(json.loads(listener.journal.read_text())["nodes"]) == 3 and settled == [logs]
+    assert listener.discard() is True
+    assert listener.count == 0 and list(logs.iterdir()) == [] and listener.finish() is None
+    assert list(logs.iterdir()) == []
+
+
+def test_a_mesh_journal_that_cannot_be_removed_is_told_when_the_wardrive_is_thrown_away(tmp_path, monkeypatch):
+    listener = mesh.Listener(folder(tmp_path), Gps(FIX), None, [])
+    listener.prepare(NOW)
+    listener.mesh = heard_store()
+    listener.checkpoint()
+    unlink = Path.unlink
+
+    def refuse(path, missing_ok=False):
+        if path == listener.journal:
+            raise OSError(errno.EROFS, "Read-only file system")
+        unlink(path, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", refuse)
+    assert listener.discard() is False and listener.journal.exists() and listener.count == 0

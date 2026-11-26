@@ -49,7 +49,7 @@ The list at the bottom shows the newest devices heard. For Wi-Fi each row shows 
 
 | Key | What it does |
 | --- | --- |
-| **OK** or **S** | Stop the wardrive. It asks first. Press **OK** again to stop and save. |
+| **OK** or **S** | Stop the wardrive. It asks first. Press **OK** again to stop and save. Or choose **Stop, don't save**. |
 | **Tab** (or **Z** / **C**) | Show Wi-Fi and Bluetooth, only Wi-Fi, or only Bluetooth |
 | **A** | The alerts of this wardrive (when Drive Alerts are on) |
 | **Q** | No alert tones or banners for 10 minutes. Press again to end it |
@@ -61,6 +61,26 @@ While the wardrive waits for a GPS fix, **OK** shows "Stop" instead of "Stop + s
 Settings in the Scanning, Deep scan, Logging and GPS sections cannot be changed during a wardrive. Settings says "Stop the wardrive to change this setting." All other settings, such as Drive Alerts, change at once.
 
 Recon and a wardrive never run together. If you start one while the other runs, Quartermaster asks first and stops the other.
+
+## Stopping without saving
+
+For a test drive you do not want to keep, the stop question has three choices: **Cancel**, **Stop + save** and **Stop, don't save**. "Stop + save" is the one selected, so pressing **OK** twice always saves.
+
+1. Press **OK** on the wardrive screen.
+2. Press **C** (or move right) to **Stop, don't save**, then **OK**.
+3. It asks "Throw away this wardrive?" and says how many networks will be lost. Choose **Throw away** and press **OK**.
+
+That wardrive's log, summary, aircraft, mesh and alert files are removed from the device, and nothing more of it is uploaded. Files from earlier wardrives are not touched. This cannot be undone.
+
+On a very long drive the log is split into parts of 8 MB, and a finished part may be uploaded while you still drive. Such a part stays on the upload site. The question then says "Parts already uploaded stay on the upload sites", and the notice after it says "Uploaded parts stay on the sites."
+
+If a file could not be removed, the notice says "Some files of this wardrive could not be removed". What stays can come back as a log the next time Quartermaster starts. Delete it then on the Logs screen.
+
+On a Raspberry Pi screen the question shows one choice at a time, with what that choice does. Move the stick right for **Stop, don't save** and left for **Cancel**.
+
+## Low battery
+
+At 5 % battery, off the charger, a running wardrive is saved in full at once and keeps recording. See [Battery](first-start.md#battery).
 
 ## When you stop
 

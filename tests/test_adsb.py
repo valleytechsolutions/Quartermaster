@@ -1,8 +1,10 @@
 import csv
+import errno
 import gzip
 import io
 import json
 import os
+from pathlib import Path
 import shutil
 import signal
 import subprocess
@@ -878,6 +880,19 @@ def test_frames_from_rtl_adsb_become_aircraft_with_their_closest_and_furthest_po
     assert a.near[6] == NOW + 400 and a.far[6] == NOW + 200 and a.last == NOW + 400
 
 
+def test_an_aircraft_that_stands_still_is_kept_with_a_speed_of_zero_and_no_track(rtl):
+    clock = Clock()
+    rx = rtl(clock=clock)
+    rx._tick()
+    hear(rx, plane("a1b2c3", *MID, gs=0.0, track=None))
+    rx._tick()
+    standing = rx.sky.planes["a1b2c3"]
+    assert standing.near[4:6] == (0.0, None)
+    entry = standing.entry(clock.now)
+    assert entry["gs"] == 0.0 and "track" not in entry
+    assert standing.summary_row()[12:14] == [0.0, ""]
+
+
 def test_the_aircraft_file_from_rtl_adsb_has_the_same_shape_as_from_readsb(rtl, tmp_path):
     clock = Clock()
     rx = rtl(clock=clock)
@@ -1120,3 +1135,38 @@ def test_a_real_rtl_adsb_stand_in_is_heard_runs_niced_and_pinned_and_its_whole_g
         rx.stop()
     assert wait_gone(pid, child, seconds=3)
     assert rx.finish().name.endswith(".aircraft.json.gz")
+
+
+def test_a_checkpoint_writes_the_journal_at_once_and_a_wardrive_thrown_away_leaves_none(tmp_path, monkeypatch):
+    clock, settled, settle = Clock(), [], adsb.settle
+    rx = receiver(tmp_path, clock)
+    monkeypatch.setattr(adsb, "settle", lambda folder: settled.append(folder) or settle(folder))
+    rx.checkpoint()
+    assert not rx.journal.exists() and settled == []
+    flight(rx, clock)
+    assert not rx.journal.exists()
+    del settled[:]
+    rx.checkpoint()
+    saved = json.loads(rx.journal.read_text())
+    assert saved["name"] == "quartermaster_20261118-110640.aircraft.json.gz" and len(saved["aircraft"]) == 4
+    assert settled == [tmp_path / "logs"]
+    rx.stop()
+    assert rx.discard() is True
+    assert len(rx.sky) == 0 and list((tmp_path / "logs").iterdir()) == []
+    assert rx.finish() is None and list((tmp_path / "logs").iterdir()) == []
+
+
+def test_a_journal_that_cannot_be_removed_is_told_when_the_wardrive_is_thrown_away(tmp_path, monkeypatch):
+    clock = Clock()
+    rx = receiver(tmp_path, clock)
+    flight(rx, clock)
+    rx.checkpoint()
+    rx.stop()
+    unlink = Path.unlink
+
+    def refuse(path, missing_ok=False):
+        if path == rx.journal:
+            raise OSError(errno.EROFS, "Read-only file system")
+        unlink(path, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", refuse)
+    assert rx.discard() is False and rx.journal.exists() and len(rx.sky) == 0

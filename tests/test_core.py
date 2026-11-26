@@ -177,6 +177,20 @@ def test_gps_keeps_fix_and_hdop():
     assert not gps.snapshot(now=200)["valid"]
 
 
+def test_gps_remembers_the_time_it_told_after_the_fix_is_lost():
+    gps = GPS()
+    assert gps.told() is None
+    gps.update({"class": "TPV", "mode": 3, "lat": 25.07, "lon": -77.34}, now=90)
+    assert gps.told() is None and gps.snapshot(now=91)["valid"]
+    gps.update({"class": "TPV", "mode": 3, "lat": 25.07, "lon": -77.34, "time": "2026-03-04T05:06:07.000Z"}, now=100)
+    assert gps.snapshot(now=101)["utc"] == "2026-03-04T05:06:07.000Z"
+    gps.update({"class": "TPV", "mode": 1, "time": "2026-03-04T05:06:09.000Z"}, now=102)
+    assert "utc" not in gps.snapshot(now=103) and "utc" not in gps.snapshot(now=5000)
+    assert gps.told() == ("2026-03-04T05:06:07.000Z", 100)
+    gps.update({"class": "TPV", "mode": 2, "lat": 25.08, "lon": -77.35, "time": "2026-03-04T06:00:00.000Z"}, now=3333)
+    assert gps.told() == ("2026-03-04T06:00:00.000Z", 3333)
+
+
 def test_gps_candidates_orders_usb_first(tmp_path):
     tty, dev = tmp_path / "tty", tmp_path / "dev"
     usb = tmp_path / "usb1"

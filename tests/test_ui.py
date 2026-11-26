@@ -1810,7 +1810,7 @@ def test_the_aircraft_card_is_amber_when_the_stick_cannot_listen_and_says_who_ho
         assert cards[name]["color"] == cards[name]["edge"] == cards[name]["detail_color"] == gfx.AMBER
     assert cards["busy"]["detail"] == "In use by another program"
     assert (cards["system"]["detail"], cards["system"]["detail_color"], cards["system"]["right"]) == \
-        ("Uses the aircraft program that already runs", gfx.GREEN, "")
+        ("Uses the aircraft program that already runs", gfx.GREEN, "A: viewer")
 
 
 def test_the_aircraft_count_is_amber_when_not_listening_and_left_out_when_it_does_not_fit(tmp_path, monkeypatch):
@@ -2173,3 +2173,136 @@ def test_the_about_screen_thanks_the_people_who_helped(tmp_path, monkeypatch):
         assert name in screens.THANKS.replace("\u00a0", " ")
     assert any("Hacker\u00a0Gadgets" in line for line in lines)
     assert all(found[line][0] + 9 < screens.CONTENT_BOTTOM - 37 for line in lines)
+
+
+def all_files(folder):
+    return {str(path.relative_to(folder)): path.read_bytes() for path in folder.rglob("*")
+            if path.is_file() and path.name not in ("config.json", "uploads.json", ".uploads.json")}
+
+
+def test_the_stop_dialog_can_throw_the_wardrive_away_after_asking_once(tmp_path, drawn):
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    app.stop_wardrive()
+    app.uploader.run_pass()
+    earlier, sent = all_files(tmp_path), list(app.sent)
+    assert len(list(app.logs_dir.glob("*.wigle.csv"))) == 1 and len(sent) == 3
+    kicked = []
+    app.uploader.kick = lambda manual=False: kicked.append(manual)
+    press(app, "ESC", "W", "ENTER")
+    text = screen_text(app, drawn)
+    assert "Stop the wardrive?" in text and "Stop + save" in text and "Stop, don't save" in text and "Cancel" in text
+    assert app.screen.choice == 1 and app.screen.labels == ("Cancel", "Stop + save", "Stop, don't save")
+    assert "The log is saved and sent to your upload sites." in text and "thrown away" not in text
+    assert len(all_files(tmp_path)) > len(earlier)
+    name = app.drive.log_path.name
+    app.uploader.ledger.record(name, "wigle", uploads.Outcome(uploads.RETRY, "No connection"), NOW)
+    press(app, "RIGHT")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "The wardrive stops and is thrown away. You are asked once more first." in text
+    assert "The log is saved" not in text and app.screen.detail.startswith("The log is saved")
+    press(app, "LEFT")
+    assert "The log is saved and sent to your upload sites." in screen_text(app, drawn)
+    press(app, "RIGHT", "ENTER")
+    assert isinstance(app.screen, screens.Confirm) and app.screen.title == "Throw away this wardrive?"
+    assert app.screen.detail == "412 networks will be lost. Nothing is saved or uploaded."
+    assert app.screen.choice == 0 and app.screen.danger and app.screen.extra is None and app.wardriving
+    press(app, "ENTER")
+    assert isinstance(app.screen, screens.Wardrive) and app.wardriving and len(all_files(tmp_path)) > len(earlier)
+    press(app, "ENTER", "RIGHT", "ENTER", "ESC")
+    assert isinstance(app.screen, screens.Wardrive) and app.wardriving
+    press(app, "ENTER", "RIGHT", "ENTER", "RIGHT", "ENTER")
+    assert not app.wardriving and isinstance(app.screen, screens.Home) and len(app.stack) == 1
+    assert app.toast_text == "Wardrive thrown away. Nothing was saved." and kicked == []
+    assert all_files(tmp_path) == earlier and name not in app.uploader.ledger.data
+    app.uploader.run_pass()
+    assert app.sent == sent and "1 saved" in screen_text(app, drawn)
+    assert len(app.log_files(refresh=True)) == 1
+
+
+def test_a_wardrive_whose_first_parts_a_site_already_has_says_so_when_it_is_thrown_away(tmp_path, monkeypatch):
+    from quartermaster import engine
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 20000)
+    app = make_app(tmp_path, keys=KEYS)
+    before = all_files(tmp_path)
+    press(app, "W")
+    app.drive._parts.join()
+    parts = [path.name for path in app.drive.log_paths]
+    assert len(parts) >= 2 and not app.sent_early(parts)
+    press(app, "ENTER", "RIGHT", "ENTER")
+    assert app.screen.detail == "412 networks will be lost. Nothing is saved or uploaded."
+    press(app, "ESC")
+    app.uploader.run_pass()
+    assert {name for _, name in app.sent} == set(parts[:-1]) and app.sent_early(parts)
+    press(app, "ENTER", "RIGHT", "ENTER")
+    assert app.screen.title == "Throw away this wardrive?" and app.screen.danger and app.screen.choice == 0
+    assert app.screen.detail == ("412 networks will be removed from this device. Parts already uploaded stay on "
+                                 "the upload sites.")
+    press(app, "RIGHT", "ENTER")
+    assert not app.wardriving and all_files(tmp_path) == before and app.uploader.ledger.data == {}
+    assert app.toast_text == "Wardrive thrown away. Uploaded parts stay on the sites." and app.toast_color == gfx.GOLD
+    canvas = gfx.Canvas()
+    assert canvas.text_width(app.toast_text, gfx.font("bold", 10)) <= gfx.W - 32
+
+
+def test_a_part_a_site_is_being_sent_right_now_counts_as_one_it_has(tmp_path, monkeypatch):
+    from quartermaster import engine
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 20000)
+    app = make_app(tmp_path, keys=KEYS)
+    press(app, "W")
+    app.drive._parts.join()
+    first = app.drive.log_paths[0].name
+    app.uploader.current = ("quartermaster_20250101-000000.wigle.csv", "wigle")
+    assert not app.sent_early([first])
+    app.uploader.current = (first, "wigle")
+    press(app, "ENTER", "RIGHT", "ENTER")
+    assert "Parts already uploaded stay on the upload sites." in app.screen.detail
+    press(app, "RIGHT", "ENTER")
+    assert app.toast_text == "Wardrive thrown away. Uploaded parts stay on the sites." and not app.wardriving
+    app.uploader.current = None
+
+
+def test_a_wardrive_that_could_not_write_for_a_while_is_thrown_away_without_that_error(tmp_path, drawn):
+    app = make_app(tmp_path)
+    press(app, "W")
+    with app.drive._lock:
+        app.drive._refused(OSError(28, "No space left on device"))
+    press(app, "ENTER")
+    assert app.screen.detail == "The wardrive stops. Cannot write the log: No space left on device."
+    press(app, "RIGHT", "ENTER", "RIGHT", "ENTER")
+    assert not app.wardriving and all_files(tmp_path) == {}
+    assert app.toast_text == "Wardrive thrown away. Nothing was saved." and app.toast_color == gfx.GOLD
+
+
+def test_the_safe_choice_stays_the_one_chosen_and_y_still_saves(tmp_path, drawn):
+    app = make_app(tmp_path)
+    press(app, "W", "ENTER", "ENTER")
+    assert isinstance(app.screen, screens.Summary) and len(list(app.logs_dir.glob("*.wigle.csv"))) == 1
+    press(app, "W", "ENTER", "Y")
+    assert isinstance(app.screen, screens.Summary) and len(list(app.logs_dir.glob("*.wigle.csv"))) == 2
+    press(app, "W", "ENTER", "LEFT", "ENTER")
+    assert app.wardriving and isinstance(app.screen, screens.Wardrive)
+    press(app, "ENTER", "N")
+    assert app.wardriving
+    app.stop_wardrive()
+
+
+def test_a_wardrive_still_waiting_for_gps_can_be_thrown_away(tmp_path, drawn):
+    app = make_app(tmp_path, fix=NO_FIX)
+    press(app, "W", "ENTER")
+    assert app.screen.labels == ("Cancel", "Stop", "Stop, don't save")
+    press(app, "RIGHT", "ENTER")
+    assert app.screen.detail == "0 networks will be lost. Nothing is saved or uploaded."
+    press(app, "RIGHT", "ENTER")
+    assert not app.wardriving and isinstance(app.screen, screens.Home) and all_files(tmp_path) == {}
+
+
+def test_throwing_a_wardrive_away_counts_bluetooth_too_and_says_what_could_not_be_removed(tmp_path, monkeypatch):
+    app = make_app(tmp_path)
+    press(app, "W")
+    app.drive._ble_sink([{"address": "AA:BB:CC:00:00:01", "rssi": -60, "name": "Tag", "address_type": 0}], {})
+    press(app, "ENTER", "RIGHT", "ENTER")
+    assert app.screen.detail == "412 networks and 1 Bluetooth device will be lost. Nothing is saved or uploaded."
+    monkeypatch.setattr(app.drive, "_throw_away", lambda: setattr(app.drive, "failed", "Some files stay"))
+    press(app, "RIGHT", "ENTER")
+    assert app.toast_text == "Some files stay" and app.toast_color == gfx.RED and not app.wardriving

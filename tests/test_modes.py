@@ -204,6 +204,21 @@ def test_ground_speed_made_from_the_spec_round_trips():
         assert (plane.track - track + 180) % 360 - 180 == pytest.approx(0, abs=0.5)
 
 
+def test_a_ground_speed_of_zero_has_no_direction_and_due_north_keeps_its_own():
+    decoder = modes.Decoder()
+    feed(decoder, adsb_frame(0x111111, velocity_me(300, 0.0)))
+    plane = decoder.planes[0x111111]
+    assert (plane.gs, plane.track) == (300.0, 0.0) and plane.report(101.0)["track"] == 0.0
+    feed(decoder, adsb_frame(0x111111, velocity_me(0, 0.0, rate=-64)))
+    assert (plane.gs, plane.track, plane.baro_rate) == (0.0, None, -64)
+    report = plane.report(101.0)
+    assert report["gs"] == 0.0 and "track" not in report
+    feed(decoder, adsb_frame(0x111111, velocity_me(12, 270.0)))
+    assert (plane.gs, plane.track) == (12.0, 270.0)
+    feed(decoder, adsb_frame(0x222222, velocity_me(0, 0.0)))
+    assert (decoder.planes[0x222222].gs, decoder.planes[0x222222].track) == (0.0, None)
+
+
 def test_gillham_altitudes_cover_the_whole_range_and_each_step_changes_one_bit():
     codes = {}
     for code in range(1 << 13):
@@ -346,3 +361,67 @@ def test_an_aircraft_that_moves_on_stays_placed():
         if index >= 2:
             plane = decoder.planes[icao]
             assert plane.placed and plane.lat == pytest.approx(lat, abs=1e-4)
+
+
+EASYJET = "8D406B902015A678D4D220AA4BDA"
+LUX_EVEN = "8D40058B58C901375147EFD09357"
+LUX_ODD = "8D40058B58C904A87F402D3B8C59"
+IDENTITY_REPLY = "2A00516D492B80"
+ALTITUDE_REPLY = "A02014B400000000000000F9D514"
+
+
+def fields(frame):
+    me = int.from_bytes(bytes.fromhex(frame)[4:11], "big")
+    return (me >> 34) & 1, (me >> 17) & 0x1FFFF, me & 0x1FFFF, (me >> 36) & 0xFFF
+
+
+def test_a_second_known_identification_and_position_pair_decode_to_their_published_values():
+    assert all(modes.syndrome(bytes.fromhex(frame)) == 0 for frame in (EASYJET, LUX_EVEN, LUX_ODD))
+    decoder = modes.Decoder()
+    feed(decoder, EASYJET)
+    assert decoder.planes[0x406B90].flight == "EZY85MH " and decoder.planes[0x406B90].category == "A0"
+    even, odd = fields(LUX_EVEN), fields(LUX_ODD)
+    assert (even[0], odd[0]) == (0, 1) and modes.ac12_feet(even[3]) == 39000
+    lat, lon = modes.cpr_global(even[1:3], odd[1:3], True)
+    assert (round(lat, 5), round(lon, 5)) == (49.81755, 6.08442)
+    lat, lon = modes.cpr_local(even[1], even[2], 0, 49.0, 6.0)
+    assert (round(lat, 5), round(lon, 5)) == (49.8241, 6.06785)
+    lat, lon = modes.cpr_local(odd[1], odd[2], 1, 49.0, 6.0)
+    assert (round(lat, 5), round(lon, 5)) == (49.81755, 6.08442)
+    feed(decoder, LUX_EVEN, LUX_ODD, LUX_ODD)
+    plane = decoder.planes[0x40058B]
+    assert plane.placed and (round(plane.lat, 5), round(plane.lon, 5), plane.alt_baro) == (49.81755, 6.08442, 39000)
+
+
+def test_known_identity_and_altitude_replies_decode_to_their_published_values():
+    identity, altitude = bytes.fromhex(IDENTITY_REPLY), bytes.fromhex(ALTITUDE_REPLY)
+    assert modes.squawk((identity[2] << 8 | identity[3]) & 0x1FFF) == "0356"
+    assert modes.ac13_feet((altitude[2] << 8 | altitude[3]) & 0x1FFF) == 32300
+    decoder = modes.Decoder()
+    for address, frame in ((modes.syndrome(identity), IDENTITY_REPLY), (modes.syndrome(altitude), ALTITUDE_REPLY)):
+        feed(decoder, adsb_frame(address, ident_me("TEST")), frame, frame)
+    assert decoder.planes[modes.syndrome(identity)].squawk == "0356"
+    assert decoder.planes[modes.syndrome(altitude)].alt_baro == 32300
+
+
+def test_a_velocity_frame_says_how_far_the_gnss_height_is_from_the_barometric_one():
+    decoder = modes.Decoder()
+    feed(decoder, GROUND_SPEED, AIRSPEED)
+    assert decoder.planes[0x485020].geom_delta == 550 and decoder.planes[0xA05F21].geom_delta is None
+    below = adsb_frame(0x485020, velocity_me(300, 90.0) | 1 << 7 | 5)
+    feed(decoder, below)
+    assert decoder.planes[0x485020].geom_delta == -100
+    assert "alt_geom" not in decoder.planes[0x485020].report(102.0)
+
+
+def test_an_emergency_status_carries_the_squawk_and_other_subtypes_do_not():
+    decoder = modes.Decoder()
+    status = 28 << 51 | 1 << 48 | 1 << 45 | id13("7700") << 32
+    feed(decoder, adsb_frame(0xABCDEF, status))
+    plane = decoder.planes[0xABCDEF]
+    assert plane.squawk == "7700" and plane.emergency == 1
+    feed(decoder, adsb_frame(0xABCDEF, 28 << 51 | 2 << 48 | id13("1234") << 32),
+         adsb_frame(0xABCDEF, 28 << 51 | 1 << 48))
+    assert plane.squawk == "7700" and plane.emergency == 0
+    feed(decoder, adsb_frame(0xABCDEF, 28 << 51 | 1 << 48 | id13("4521") << 32))
+    assert plane.squawk == "4521"

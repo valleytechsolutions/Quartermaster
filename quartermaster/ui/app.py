@@ -9,7 +9,7 @@ import time
 from PIL import Image
 
 from .. import accounts, adsb, config, drive_watch, faults, flasher, hardware, lora, mesh, power, powerguard, tones
-from .. import updates_check
+from .. import skyview, updates_check
 from .. import engine, uploads, wigle
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
@@ -23,6 +23,8 @@ from .keys import navigation
 STALL_SECONDS = 10
 FAULT_LIMIT, FAULT_WINDOW = 3, 10.0
 LOW, VERY_LOW, EMPTY = 20, 10, 3
+# From here down a running wardrive is put on disk in full, and it keeps doing so until it ends or a charger holds.
+SAVE_LEVEL = 5
 EMPTY_SECONDS, CLOSING_SECONDS = 15, 10
 BATTERY_SILENCE = 60
 BANNER_GRACE = 1.0
@@ -212,7 +214,8 @@ class FlashJob:
 class App:
     def __init__(self, display, keyboard, gps, cfg, root=DEFAULT_ROOT, splash=True, wardrive=None, recon=None,
                  uploader=None, hw=None, accounts_path=None, config_path=None, tester=uploads.test,
-                 setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check, cap=None):
+                 setup=SetupServer, nodes=None, flasher_class=flasher.Flasher, updates=updates_check.check, cap=None,
+                 viewer=None):
         self.display, self.keyboard, self.gps, self.cfg = display, keyboard, gps, cfg
         self.square = None
         if getattr(display, "profile", None) in ("st7735-128", "st7789-240"):
@@ -233,6 +236,9 @@ class App:
                                                                    player=self.player,
                                                                    display_profile=getattr(display, "profile", "cardputer")))
         self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes, sound=AlertSound(self.player))
+        self.viewer_factory = viewer or (lambda: skyview.Viewer(
+            root, gps, drive=lambda: self.drive if self.wardriving else None))
+        self.sky = None
         self.flasher_class = flasher_class
         self.flash_job = None
         self.updates = updates
@@ -260,6 +266,7 @@ class App:
         self._shade = Image.new("RGBA", (W, H), (0, 0, 0, 170))
         self._faults = []
         self._battery_step, self._empty_since, self._charger_since, self._closing = None, None, None, None
+        self._low_since, self._low_charger, self._low_saved = None, None, None
         self._pressed = None
         self.recon_hidden = None
         self._banners, self._banners_gone, self._banners_on = (), None, None
@@ -630,12 +637,34 @@ class App:
         return self.setup_class(self.logs_dir, self.cfg, self.accounts_path, on_keys=changed, on_ignore=ignored,
                                 on_upload=lambda: self.call_soon(self.upload_now), marks=self.uploader.marks)
 
+    def sky_open(self):
+        """The aircraft viewer's session, started when its screen opens."""
+        if self.sky is None:
+            self.sky = self.viewer_factory()
+            self.sky.start()
+        return self.sky
+
+    def sky_close(self):
+        """End the viewer's session with its screen. A capture still running is saved, and the stick is let go."""
+        viewer, self.sky = self.sky, None
+        if viewer is None:
+            return
+        try:
+            name = viewer.stop()
+        except Exception:
+            faults.note("Closing the aircraft viewer")
+            return
+        if name:
+            self.toast("Capture saved in quartermaster/aircraft", GREEN, 5)
+
     def start_wardrive(self, ask=True):
         if self.wardriving:
             if not isinstance(self.screen, screens.Wardrive):
                 self.home()
                 self.push(screens.Wardrive(self))
             return True
+        if self.sky is not None:
+            self.home()
         if self.recon_running:
             self.confirm("Stop Recon first?", "Recon and a wardrive never run together. Recon stops and the "
                          "wardrive starts.", "Start wardrive", self._swap_to_wardrive, default=1)
@@ -682,10 +711,52 @@ class App:
         self.start_wardrive()
 
     def ask_stop_wardrive(self):
-        self.confirm("Stop the wardrive?", self.ending("The log is saved and sent to your upload sites.",
-                                                       "The wardrive stops."),
-                     "Stop" if self.drive.waiting else "Stop + save",
-                     self.stop_wardrive, default=1)
+        self.push(screens.Confirm("Stop the wardrive?",
+                                  self.ending("The log is saved and sent to your upload sites.",
+                                              "The wardrive stops."),
+                                  "Stop" if self.drive.waiting else "Stop + save", self.stop_wardrive, default=1,
+                                  extra=("Stop, don't save", self.ask_discard_wardrive,
+                                         "The wardrive stops and is thrown away. You are asked once more first.")))
+
+    def sent_early(self, names):
+        """Whether an upload site already has a part of a log, or is being sent one now. On a long drive finished
+        parts are sent while it still runs, and what a site has stays there."""
+        names, state, sending = set(names), self.uploader.ledger.state, self.uploader.current
+        return bool(sending and sending[0] in names) or any(
+            state(name, site) in (uploads.DONE, uploads.DUPLICATE) for name in names for site in uploads.SERVICES)
+
+    def ask_discard_wardrive(self):
+        if not self.wardriving:
+            return
+        found = self.drive.tracker.summary()
+        lost = screens.plural(found["wifi"], "network")
+        if found["ble"]:
+            lost += " and %s" % screens.plural(found["ble"], "Bluetooth device")
+        if self.sent_early(path.name for path in self.drive.log_paths):
+            detail = "%s will be removed from this device. Parts already uploaded stay on the upload sites."
+        else:
+            detail = "%s will be lost. Nothing is saved or uploaded."
+        self.confirm("Throw away this wardrive?", detail % lost, "Throw away", self.discard_wardrive, danger=True)
+
+    def discard_wardrive(self):
+        """Stop the wardrive and remove everything it wrote. Nothing more of it is uploaded, and the toast says
+        what happened: files that could not be removed, or parts an upload site already had."""
+        if not self.wardriving:
+            return
+        self.busy("Stopping the wardrive…")
+        drive = self.drive
+        drive.discard()
+        sent = self.sent_early(drive.removed)
+        for name in drive.removed:
+            self.uploader.ledger.forget(name)
+        self.stale()
+        self.home()
+        if drive.failed:
+            self.toast(drive.failed, RED, 5)
+        elif sent:
+            self.toast("Wardrive thrown away. Uploaded parts stay on the sites.", GOLD, 5)
+        else:
+            self.toast("Wardrive thrown away. Nothing was saved.", GOLD, 5)
 
     def stop_wardrive(self, show=True, upload=True):
         if not self.wardriving:
@@ -976,6 +1047,54 @@ class App:
             self._battery_step = step
             self.toast("Battery at %d%%. Plug in %s." % (level, "soon" if step == VERY_LOW else "to keep going"),
                        RED if step == VERY_LOW else AMBER, 5)
+        self.watch_low(level, charging, now)
+
+    def watch_low(self, level, charging, now):
+        """At SAVE_LEVEL or less and off the charger for EMPTY_SECONDS, a running wardrive is put on disk in full
+        and told to keep doing so, so that a battery that then gives out takes nothing with it. One reading of a
+        charger does not end the wait, as for the close. A charger that has held that long ends the extra saving,
+        which starts again when the charger goes. Each wardrive is told once, until the battery is back at LOW."""
+        if level >= LOW:
+            self._low_saved = None
+        if level > SAVE_LEVEL:
+            self._low_since = None
+        if charging:
+            if self._low_charger is None:
+                self._low_charger = now
+            elif now - self._low_charger >= EMPTY_SECONDS:
+                self._low_since = None
+                if self.wardriving:
+                    self.drive.low_battery = False
+            return
+        self._low_charger = None
+        if level > SAVE_LEVEL:
+            return
+        if self._low_since is None:
+            self._low_since = now
+        elif now - self._low_since >= EMPTY_SECONDS and self.wardriving and not self.drive.low_battery:
+            self.save_low(level)
+
+    def save_low(self, level):
+        drive = self.drive
+        told, self._low_saved = self._low_saved is drive, drive
+        if not told:
+            self.busy("Saving the wardrive…")
+        try:
+            saved = drive.checkpoint(keep=True)
+        except Exception:
+            drive.low_battery = True
+            faults.note("Saving the wardrive on a low battery")
+            if not told:
+                self.toast("Battery %d%%. The wardrive could not be saved just now." % level, RED, 6)
+            return
+        if told:
+            return
+        if saved:
+            self.toast("Battery %d%%. Wardrive saved. Still recording." % level, GREEN, 6)
+        elif drive.failed or drive.error:
+            self.toast("Battery %d%%. %s" % (level, drive.failed or drive.error), RED, 6)
+        else:
+            self.toast("Battery %d%%. Nothing to save yet. Still recording." % level, AMBER, 6)
 
     def close_soon(self):
         """Save, say so, and after a moment leave the screen to the system."""

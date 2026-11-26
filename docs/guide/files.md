@@ -14,6 +14,8 @@ Everything Quartermaster writes is in the `quartermaster` folder in your home fo
 | `logs/quartermaster_<date>-<time>.aircraft.csv` | One line per aircraft, for you. |
 | `logs/quartermaster_<date>-<time>.mesh.json.gz` | The Meshtastic and MeshCore nodes of the wardrive, for WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.mesh.csv` | One line per mesh node, for you. |
+| `aircraft/quartermaster_<date>-<time>.track.csv` | A capture from the [aircraft viewer](aircraft-and-lora.md#aircraft-viewer): one line per position heard. Never uploaded. |
+| `aircraft/quartermaster_<date>-<time>.frames.avr` | The raw Mode S frames of that capture. Never uploaded. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
 | `recon/drive_<date>-<time>.jsonl` | What Drive Alerts found during a wardrive, alerted or not. Never uploaded. |
 | `uploads.json` | Which site already has which file. |
@@ -44,3 +46,5 @@ Every row needs a fresh GPS fix and a set clock, so WiGLE accepts every row.
 ## Deleting a log
 
 On the Logs screen, open the log and press **D**. Its summary file is deleted with it.
+
+To end a wardrive and keep none of it, choose **Stop, don't save** when you stop it. See [Wardriving](wardrive.md#stopping-without-saving).

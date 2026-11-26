@@ -235,7 +235,8 @@ class Tracker:
 
     def log_rows(self, device):
         """Rows the device has in the log, or will have once the open part is finished."""
-        return device.rows + (len(device.part.chosen()) if device.part is not None else 0)
+        part = device.part
+        return device.rows + (len(part.chosen()) if part is not None else 0)
 
     def reset_part(self):
         """The open part of the log has ended. Returns the rows it was to keep."""

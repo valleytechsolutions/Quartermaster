@@ -29,16 +29,16 @@ The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For
 Each Raspberry Pi release has two ready SD card images, one for each HAT. They boot straight into Quartermaster. You do not need to type any commands.
 
 1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer. Use version 2 or newer.
-2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.8/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
+2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.9/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
 
    If opening the file does not start Imager, open Imager yourself. Click **App Options**, then **Edit** beside **Content Repository**. Choose **Use custom file**, pick the file you downloaded and click **Apply & Restart**.
 3. Choose your Pi model and click **Next**.
-4. Click **Quartermaster 1.2.8**, choose the image for your HAT and click **Next**. Imager downloads the image for you.
+4. Click **Quartermaster 1.2.9**, choose the image for your HAT and click **Next**. Imager downloads the image for you.
 
 | Your HAT | Image to choose |
 | --- | --- |
-| 1.44″ HAT (128×128) | Quartermaster 1.2.8 for the Waveshare 1.44-inch LCD HAT (128x128) |
-| 1.3″ HAT (240×240) | Quartermaster 1.2.8 for the Waveshare 1.3-inch LCD HAT (240x240) |
+| 1.44″ HAT (128×128) | Quartermaster 1.2.9 for the Waveshare 1.44-inch LCD HAT (128x128) |
+| 1.3″ HAT (240×240) | Quartermaster 1.2.9 for the Waveshare 1.3-inch LCD HAT (240x240) |
 
 5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
 6. Imager shows its set-up pages one after another. Go through them with **Next**. You can leave a page empty, except **Localisation**: there **Next** works only after you choose a city. We recommend filling in two pages.
@@ -66,7 +66,7 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 - **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the last line to `display=st7735-128` for the 1.44″ HAT or `display=st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
 - **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on Imager's **Localisation** page in step 6, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
-- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.8) also has the two image files under **Assets**: `quartermaster-pi-1.2.8-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.8-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with any other SD card tool. You do not need to unzip it. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
+- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) also has the two image files under **Assets**: `quartermaster-pi-1.2.9-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.9-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with any other SD card tool. You do not need to unzip it. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates.
 - **Updating.** To update only Quartermaster, log in and run the commands of step 3 under [Assemble and install manually](#assemble-and-install-manually), then restart the Pi with `sudo reboot`. Skip steps 4 and 5 there: the image has already done them. You can also flash the newest image. Flashing erases the card, so copy your saved drives to your computer first. After flashing, the Pi has new SSH keys and your computer may refuse to connect. Run `ssh-keygen -R quartermaster.local` on the computer once, then connect again.
 - To start faster, the image does not check for system updates in the background. Run `sudo apt update && sudo apt full-upgrade` when you want them.
@@ -79,17 +79,17 @@ Use the steps below instead if you want to install Quartermaster on a card you a
 
 1. With the Pi powered off, align pin 1 and seat the HAT on the GPIO header. Plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
 2. For a new build, write Raspberry Pi OS Lite (Trixie) to the microSD. Zero 2 W, 3B, 3B+ and 4B can use 32-bit or 64-bit. The original Zero W needs 32-bit. RaspyJack's DIY guide uses the 32-bit edition. In Raspberry Pi Imager configure a username, network and SSH. If your existing build runs Raspberry Pi OS Bookworm with the standard Raspberry Pi repositories, you can install on that card starting at step 3.
-3. Boot the Pi and connect over SSH. Download the installer and checksum from the [Quartermaster Pi 1.2.8 release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.8). Run these commands in a new directory on the Pi.
+3. Boot the Pi and connect over SSH. Download the installer and checksum from the [Quartermaster Pi 1.2.9 release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9). Run these commands in a new directory on the Pi.
 
 ```sh
-release=https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.8
-wget "$release/quartermaster-pi_1.2.8_all.deb" "$release/SHA256SUMS"
+release=https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.9
+wget "$release/quartermaster-pi_1.2.9_all.deb" "$release/SHA256SUMS"
 sudo apt update
 sudo raspi-config nonint do_spi 0
-sha256sum --check SHA256SUMS && sudo apt install ./quartermaster-pi_1.2.8_all.deb
+sha256sum --check SHA256SUMS && sudo apt install ./quartermaster-pi_1.2.9_all.deb
 ```
 
-Check that the checksum command reports `OK` before installing. To build the same version from source, check out `pi-v1.2.8` and run `python3 tools/build_deb.py --target pi` on Raspberry Pi OS or Debian Trixie. The Pi package is written to `build/`. Use that path for the install command.
+Check that the checksum command reports `OK` before installing. To build the same version from source, check out `pi-v1.2.9` and run `python3 tools/build_deb.py --target pi` on Raspberry Pi OS or Debian Trixie. The Pi package is written to `build/`. Use that path for the install command.
 
 4. The installed display setting defaults to the 1.44″ HAT. For the **1.3″ HAT**, select its profile before rebooting.
 
@@ -114,7 +114,7 @@ The Pi now opens Quartermaster on the HAT. To launch it manually instead, leave 
 
 1. Move the joystick through the menu. Click the stick or press **K1** to select. **K2** goes back. **K3** opens the actions for the current screen. It opens an on-screen keyboard inside a text field.
 2. Open **Hardware**. Check that your GPS has a fix and that the expected Wi-Fi adapters and bands appear. A GPS may need a clear view of the sky.
-3. Choose **Wardrive**. The square dashboard shows GPS and radio counts. Press **OK**, choose **Stop + save**, and confirm. Open **Logs** to see the saved drive. Logs live under `~/quartermaster/logs/` for the user running the app.
+3. Choose **Wardrive**. The square dashboard shows GPS and radio counts. Press **OK** to stop. The question shows one choice at a time, with what it does: **Stop + save** comes first, so **OK** again saves the drive. Move right for **Stop, don't save**, which asks once more and then keeps nothing of that drive, or left for **Cancel**. Open **Logs** to see the saved drive. Logs live under `~/quartermaster/logs/` for the user running the app.
 4. Open **Keys** for phone setup or use a USB keyboard for longer text. On detailed screens, choose **K3 → Pan details** and move the stick to read across the original layout. Press **K2** to return to normal navigation.
 
 ## Checking a build

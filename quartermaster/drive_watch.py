@@ -273,6 +273,7 @@ class DriveWatch:
         self.devices = OrderedDict()
         self.counts = {}
         self.log_path = None
+        self.log_start = None
         self.errors = 0
         self.no_speaker = self.speaker_said = False
         self._cache = {}
@@ -967,6 +968,7 @@ class DriveWatch:
                         return
                     fd = os.open(str(self.log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                     self._log = os.fdopen(fd, "a", encoding="utf-8")
+                    self.log_start = os.fstat(fd).st_size
                 self._log.write(json.dumps(record, ensure_ascii=True, allow_nan=False, default=_plain) + "\n")
                 self._log.flush()
                 if time.monotonic() - self._synced >= wigle.SYNC_SECONDS:

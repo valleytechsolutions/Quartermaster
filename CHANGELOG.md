@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.9
+
+- New: an aircraft viewer. On the Hardware screen, press **A** on the RTL-SDR card (K3 > Aircraft on a Pi screen). It is there when a stick is plugged in and can listen. When it cannot, the card says why.
+- It lists every aircraft heard, the nearest first: callsign or ICAO code, height, speed, distance and direction from your GPS position, and how long ago it was last heard. Tab changes the order to the latest first.
+- OK on an aircraft shows all it sent: ICAO code, callsign, squawk, category, barometric and GNSS height, ground speed, heading, vertical rate, position and message count. What an aircraft did not send is shown as "Unknown". OK again shows its route: the track it flew while it was heard, on a small map with north up, you in the middle and two range rings.
+- Origin and destination are not sent by aircraft, so they are not shown.
+- **S** saves a capture to `quartermaster/aircraft`: a CSV with every position, and the raw Mode S frames as AVR lines with timestamps, which dump1090 and readsb read. **L** lists the captures and **D** deletes one.
+- A capture is timed by the GPS. The time the GPS gave is kept when its fix is lost. A capture begun before the GPS told the time is moved to that time once it does. With no GPS time and a clock that was never set, a capture does not start and says why.
+- The viewer never takes the stick from a wardrive. During a wardrive it reads the same frames the wardrive hears. Without one it starts `rtl_adsb` itself and stops it when you leave.
+- Decoding now also reads the squawk from emergency status messages and the difference between GNSS and barometric height.
+- Fixed: an aircraft that stands still (0 kt) was given a heading of 0°. It has no direction, so its heading is now "Unknown" in the viewer and left out of the aircraft file of a wardrive.
+- New: stop a wardrive without saving it. The stop question has a third choice, **Stop, don't save**. It asks once more, then removes that wardrive's log, summary, aircraft, mesh and alert files from the device, and nothing more of it is uploaded. A part of a long drive that an upload site already has stays on that site, and the question and the notice then say so. Earlier wardrives are not touched. "Stop + save" stays the choice that is selected. A Pi screen shows one choice at a time, with what that choice does.
+- New: at 5 % battery, off the charger, a running wardrive is saved in full at once and says "Battery 5%. Wardrive saved. Still recording." It keeps recording and keeps saving every few seconds, so a battery that gives out costs a few seconds at most. A charger that stays in ends the extra saving. At 3 % it still saves, stops and closes as before.
+
 ## 1.2.8
 
 - New: Quartermaster also runs on a Raspberry Pi with either Waveshare joystick screen that Raspyjack uses, the 1.44 inch and the 1.3 inch. It has its own package, quartermaster-pi, and a build guide in docs/diy.md.

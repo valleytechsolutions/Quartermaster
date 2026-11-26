@@ -93,11 +93,14 @@ def cards(monkeypatch, room, error=None, then=0):
 class Gps:
     mode, power = "auto", True
 
-    def __init__(self, fix=FIX):
-        self.fix = fix
+    def __init__(self, fix=FIX, said=None):
+        self.fix, self.said = fix, said
 
     def snapshot(self):
         return dict(self.fix)
+
+    def told(self):
+        return self.said
 
 
 class Display:

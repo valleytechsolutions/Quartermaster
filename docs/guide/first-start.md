@@ -87,4 +87,8 @@ Next: [The wardrive screen and keys](wardrive.md).
 
 ## Battery
 
-The battery level is at the top of every screen. You get a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely. If you plug in a charger in time, it stays open.
+The battery level is at the top of every screen. You get a notice at 20 % and at 10 %.
+
+At 5 %, off the charger for 15 seconds, a running wardrive is saved in full at once. It says "Battery 5%. Wardrive saved. Still recording." The wardrive keeps running and keeps saving every few seconds from then on, so a battery that gives out costs a few seconds at most. The next time Quartermaster opens, it finishes that log. Once a charger has been in for 15 seconds, the extra saving ends.
+
+When the battery is almost empty (3 %), a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely. If you plug in a charger in time, it stays open.

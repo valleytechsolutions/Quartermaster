@@ -24,6 +24,10 @@ EXTREME_IDLE_SECONDS = 120
 AIR_RANGE_M = 50.0
 FIX_HISTORY = 40
 UPKEEP_SECONDS = 4.0
+# On a low battery everything heard is put on disk this often, on top of the rows that go there every few seconds.
+# A save that takes long is made less often, so that saving takes no more than 1/LOW_BATTERY_SHARE of the time.
+LOW_BATTERY_SECONDS = 20.0
+LOW_BATTERY_SHARE = 20
 # Devices kept in memory: about 1 KB each with full tracks and 1.3 KB with closest + furthest. The CardputerZero
 # leaves about 350 MB to programs.
 MAX_TRACKED = 100_000
@@ -53,8 +57,8 @@ def _utc(epoch):
 
 def _summary_row(d, tracker):
     best, worst, rows = d.best, d.worst, tracker.log_rows(d)
-    if d.ends is not None:
-        chosen = d.ends.chosen()
+    chosen = d.ends.chosen() if d.ends is not None else None
+    if chosen:
         best, worst = chosen[0], chosen[-1]
     return [d.mac.lower(), d.kind, wigle._text(d.name), d.security, d.channel or "", d.frequency or "", d.band,
             _utc(d.first_seen), _utc(d.last_seen), d.sightings, rows, *_extreme(best), *_extreme(worst)]
@@ -196,6 +200,14 @@ class Wardrive:
                                self.cfg.get("rssi_step", 4), accuracy=wigle.accuracy_m, extremes=self.extremes)
         self.writer = None
         self.log_paths = []
+        self._made = []
+        self._summaries = set()
+        self._saving = threading.Lock()
+        self.low_battery = False
+        self._saved_at = self._save_took = 0.0
+        self._watches = []
+        self.discarded = False
+        self.removed = []
         self._taken = set()
         self._aside = None
         self.rows = 0
@@ -429,6 +441,7 @@ class Wardrive:
             watch = self.alerts(self.cfg, self.gps, self.root, player=self.player, clock=self.clock)
             watch.start(gps_epoch(self.gps.snapshot(), self.clock()))
             self.watch = watch
+            self._watches.append(watch)
             if self.nodes is not None:
                 self.nodes.dragon_sink = watch.offer_external
         except Exception:
@@ -533,18 +546,56 @@ class Wardrive:
                 self._follow_sky()
                 self._follow_mesh()
                 if ticks % 15 == 0:
-                    self._tidy()
+                    with self._saving:
+                        self._tidy()
+                if self.low_battery:
+                    self._keep_saving()
             except Exception:
                 faults.note("Wardrive upkeep")
 
-    def _sync(self):
+    def _sync(self, force=False):
         """Rows wait in memory for the next one. Where nothing new is heard, that row may never come."""
         with self._lock:
             try:
                 if self.writer is not None:
-                    self.writer.sync()
+                    self.writer.sync(force=force)
             except OSError as exc:
                 self._refused(exc)
+
+    def checkpoint(self, keep=False):
+        """Put everything heard so far on disk now: the strongest and weakest sighting of every device, every row
+        that waits, the summary, and the aircraft and mesh nodes. After it a power cut loses nothing: the next start
+        finishes the log from what is on disk. With keep, the drive goes on doing this every LOW_BATTERY_SECONDS.
+        Returns whether there is a log on disk. A wardrive that is stopping saves everything itself."""
+        if self.state != "running" or self._stop.is_set():
+            return False
+        if keep:
+            self.low_battery = True
+        with self._saving:
+            if self._stop.is_set():
+                return False
+            began = self._saved_at = time.monotonic()
+            self._flush_extremes()
+            self._sync(force=True)
+            _settle(self.logs)
+            try:
+                self._write_summary(final=False)
+            except Exception:
+                faults.note("Saving the summary")
+            for side, what in ((self.aircraft, "aircraft"), (self.mesh, "mesh")):
+                try:
+                    if side is not None and hasattr(side, "checkpoint"):
+                        side.checkpoint()
+                except Exception:
+                    faults.note("Saving the %s journal" % what)
+            self._save_took = time.monotonic() - began
+        return self.log_path is not None and not self.error
+
+    def _keep_saving(self):
+        if time.monotonic() - self._saved_at >= max(LOW_BATTERY_SECONDS, LOW_BATTERY_SHARE * self._save_took):
+            self.checkpoint()
+        else:
+            self._sync(force=True)
 
     def _refused(self, exc):
         """The log took no more. Its file is given up, the next row starts a new one, and the summary will say so.
@@ -675,7 +726,14 @@ class Wardrive:
             return [a for a in adapters if a["interface"] in mode]
         return adapters
 
-    def stop(self):
+    def discard(self):
+        """Stop and keep nothing of this wardrive. See stop()."""
+        self.stop(save=False)
+
+    def stop(self, save=True):
+        """End the wardrive and finish its files. With save off they are removed instead: every part of its log,
+        its journal, its summary, its aircraft, mesh and alert files. Files of earlier wardrives are not touched:
+        an alert file an earlier wardrive began is cut back to where this one found it."""
         if self.state != "running":
             return
         self._stop.set()
@@ -694,6 +752,8 @@ class Wardrive:
                 faults.note("Stopping Deep scan")
         for thread in self._threads:
             thread.join(timeout=5)
+        with self._saving:
+            pass
         if self.aircraft is not None:
             self.aircraft.stop()
         if self.mesh is not None:
@@ -703,25 +763,67 @@ class Wardrive:
         if self.watch is not None:
             self._unhook(self.watch)
             self.watch.stop()
-        self._flush_extremes()
+        if save:
+            self._flush_extremes()
         self._parts_done()
         with self._lock:
             try:
                 if self.writer is not None:
                     writer = self.writer
-                    self.writer.close()
+                    if save:
+                        self.writer.close()
+                    else:
+                        writer._let_go()
                     self.writer = None
-                    if self.extremes:
+                    if self.extremes and save:
                         self._finish(writer)
             except OSError as exc:
                 self._refused(exc)
             self._stopped = time.monotonic()
             self.state = "stopped"
         radios.release("wardrive")
-        self._write_summary()
-        self._write_aircraft()
-        self._write_mesh()
+        if save:
+            with self._saving:
+                self._write_summary()
+            self._write_aircraft()
+            self._write_mesh()
+        else:
+            self._throw_away()
         _writing.discard(os.path.realpath(str(self.logs)))
+
+    def _throw_away(self):
+        """Remove everything this wardrive put on disk. Only names this wardrive made are touched. What could not
+        be written earlier no longer matters: failed then says only whether something could not be removed."""
+        doomed, left, self.removed = [], False, [path.name for path in self._made]
+        for path in self._made:
+            summary = _summary_path(path)
+            doomed += [path, wigle.journal_path(path), path.with_name("." + path.name + ".tmp"), summary,
+                       summary.with_name("." + summary.name), summary.with_name("." + summary.name + ".part")]
+        if self._aside is not None:
+            doomed.append(self._aside)
+        doomed += list(self._summaries)
+        for side in (self.aircraft, self.mesh):
+            if side is not None and hasattr(side, "discard"):
+                try:
+                    left = side.discard() is False or left
+                except Exception:
+                    left = True
+                    faults.note("Removing a wardrive")
+        for watch in self._watches:
+            alerts, earlier = getattr(watch, "log_path", None), getattr(watch, "log_start", None)
+            if alerts is not None and earlier:
+                left = wigle.cut(alerts, earlier) is False or left
+            elif alerts is not None and earlier == 0:
+                doomed.append(alerts)
+        for path in doomed:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                left = True
+        _settle(self.logs)
+        self.log_paths, self.rows, self.discarded = [], 0, True
+        self.error = ""
+        self.failed = "Some files of this wardrive could not be removed" if left else ""
 
     def _write_aircraft(self):
         if self.aircraft is None:
@@ -754,6 +856,7 @@ class Wardrive:
                                                     display_profile=self.display_profile)
                     if self.extremes:
                         self._taken.add(path.name)
+                    self._made.append(path)
                     self.log_paths.append(path)
                     _settle(self.logs)
                 self.writer.write_row(row)
@@ -993,10 +1096,12 @@ class Wardrive:
         except OSError as exc:
             self.failed = self.failed or "Cannot write the summary: %s" % (exc.strerror or exc)
 
-    def _write_summary(self):
-        """A spreadsheet next to the log: one line per device with its strongest and weakest sighting."""
+    def _write_summary(self, final=True):
+        """A spreadsheet next to the log: one line per device with its strongest and weakest sighting. Before the
+        stop it is a copy of what is known so far, and the lines set aside for the stop are kept."""
         log = self.log_path
         if log is None:
+            self._old_summaries(None)
             return
         path = _summary_path(log)
         tmp, aside = path.with_name("." + path.name), self._aside or path.with_name("." + path.name + ".part")
@@ -1013,14 +1118,30 @@ class Wardrive:
                 out.flush()
                 wigle.fsync(out.fileno())
             os.replace(tmp, path)
+            if not final:
+                self._summaries.add(path)
         except (OSError, ValueError) as exc:
-            self.failed = self.failed or "Cannot write the summary: %s" % (getattr(exc, "strerror", None) or exc)
-        for hidden in (tmp, aside):
+            if final:
+                self.failed = self.failed or "Cannot write the summary: %s" % (getattr(exc, "strerror", None) or exc)
+            else:
+                faults.note("Saving the summary")
+        for hidden in (tmp, aside) if final else (tmp,):
             try:
                 hidden.unlink(missing_ok=True)
             except OSError:
                 pass
+        if final:
+            self._old_summaries(path)
         _settle(path.parent)
+
+    def _old_summaries(self, kept):
+        """A summary saved early under the name of a part that held no rows in the end goes with that part."""
+        for path in self._summaries - {kept}:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._summaries.clear()
 
 
 def deauth_words(burst):

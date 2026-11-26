@@ -627,6 +627,8 @@ class Hardware(Screen):
         self.top = 0
 
     def hints(self, app):
+        if sky_ready(app)[0]:
+            return [("A", "Aircraft"), ("F/X", "Scroll"), ("Esc", "Back")]
         return [("F/X", "Scroll"), ("Esc", "Back")]
 
     def cards(self, app):
@@ -856,12 +858,16 @@ class Hardware(Screen):
         else:
             state = getattr(app.hw, "sky_use", "") or adsb.READY
         card["detail"] = adsb.WORDS[state]
+        view = ("K3: Aircraft" if app.square else "A: viewer") if sky_ready(app)[0] else ""
         if state in (adsb.RUNNING, adsb.SYSTEM):
-            card.update(detail_color=GREEN, right="%d aircraft" % live["aircraft"] if live is not None else "")
+            count = "%d aircraft" % live["aircraft"] if live is not None else ""
+            card.update(detail_color=GREEN, right=" · ".join(part for part in (count, view) if part))
         elif state == adsb.OFF:
-            card.update(color=FAINT, detail_color=FAINT)
+            card.update(color=FAINT, detail_color=FAINT, right=view)
         elif state != adsb.READY:
             card.update(color=AMBER, edge=AMBER, detail_color=AMBER)
+        else:
+            card["right"] = view
         return card
 
     @staticmethod
@@ -960,7 +966,36 @@ class Hardware(Screen):
         if key.name in ("UP", "DOWN"):
             self.top = max(0, self.top + (1 if key == "DOWN" else -1))
             return True
+        if key == "A" and not key.repeat:
+            ready, why = sky_ready(app)
+            if ready:
+                from .sky_screens import AircraftList
+                app.push(AircraftList(app))
+            else:
+                app.toast(why, AMBER, 4)
+            return True
         return super().handle(key, app)
+
+
+def sky_ready(app):
+    """Whether the aircraft viewer can show anything now, and why not: an RTL-SDR stick must be plugged in and
+    rtl_adsb installed. During a wardrive the viewer reads what the wardrive hears, so the wardrive must listen."""
+    if app.wardriving:
+        live = app.drive.aircraft
+        if live is None:
+            return False, "This wardrive does not listen for aircraft"
+        state = live.status()["state"]
+        return state in (adsb.RUNNING, adsb.SYSTEM), adsb.WORDS.get(state, "")
+    use = getattr(app.hw, "sky_use", "")
+    if use == adsb.SYSTEM:
+        return True, ""
+    if not getattr(app.hw, "sdr", []):
+        return False, "No RTL-SDR stick is plugged in"
+    if use == adsb.BUSY:
+        return False, adsb.WORDS[adsb.BUSY]
+    if "rtl_adsb" not in os.path.basename(getattr(app.hw, "decoder", "") or ""):
+        return False, adsb.WORDS[adsb.NO_TOOLS]
+    return True, ""
 
 
 def upload_mark(c, x, y, mark):
@@ -2153,11 +2188,12 @@ class Tips(Details):
             ("Tab", "In a text box: lists every symbol"),
             ("Space", "Start or stop a wardrive from the menu"),
         ]
-        battery_help = ("When the battery is almost empty, a running wardrive is saved and Quartermaster closes, "
+        battery_help = ("At 5 % battery a running wardrive is saved in full and keeps recording. "
+                        "When the battery is almost empty, a running wardrive is saved and Quartermaster closes, "
                         "so that the Cardputer can switch off safely.")
         if app.square:
-            battery_help = ("When a system battery gauge reports an almost empty battery, a running wardrive is "
-                            "saved and Quartermaster closes.")
+            battery_help = ("When a system battery gauge reports 5 %, a running wardrive is saved in full and "
+                            "keeps recording. Almost empty, a running wardrive is saved and Quartermaster closes.")
             controls = [("Joystick", "Move through menus. Press the stick or K1 to select."),
                         ("K2", "Go back."),
                         ("K3", "Open actions. Choose Pan details to read a wider screen."),
@@ -2221,37 +2257,55 @@ class Picker(Modal, ListMixin):
 
 
 class Confirm(Modal):
-    def __init__(self, title, detail, action, callback, danger=False, default=0):
+    """A question with Cancel and one action. `extra` adds a third choice, (label, callback, what it does), drawn
+    as the risky one: the stop dialog's "Stop, don't save". While it is the one chosen, the dialog says what it
+    does instead of what the action does: a small screen shows one choice at a time."""
+
+    def __init__(self, title, detail, action, callback, danger=False, default=0, extra=None):
         self.title, self.detail, self.action, self.callback = title, detail, action, callback
         self.danger = danger
         self.choice = default
+        self.extra = extra
+
+    @property
+    def labels(self):
+        return ("Cancel", self.action) + ((self.extra[0],) if self.extra else ())
+
+    @property
+    def words(self):
+        return self.extra[2] if self.extra and self.choice == 2 else self.detail
 
     def hints(self, app):
         return [("Z/C", "Choose"), ("OK", "Confirm"), ("Esc", "Cancel")]
 
     def render(self, c, app):
-        x0, y0, x1, y1 = 36, 32, W - 36, 136
+        labels = self.labels
+        x0, y0, x1, y1 = (36, 32, W - 36, 136) if len(labels) == 2 else (8, 32, W - 8, 136)
         c.rect((x0, y0, x1, y1), fill=SURFACE, outline=LINE, radius=8)
         c.text((x0 + 12, y0 + 9), self.title, font("bold", 12), TEXT, width=x1 - x0 - 24)
-        for i, line in enumerate(c.wrap(self.detail, x1 - x0 - 24, font("ui", 9))[:4]):
+        for i, line in enumerate(c.wrap(self.words, x1 - x0 - 24, font("ui", 9))[:4]):
             c.text((x0 + 12, y0 + 28 + i * 12), line, font("ui", 9), MUTED)
-        width = (x1 - x0 - 30) // 2
-        for i, label in enumerate(("Cancel", self.action)):
+        width = (x1 - x0 - 24 - 6 * (len(labels) - 1)) // len(labels)
+        for i, label in enumerate(labels):
             x = x0 + 12 + i * (width + 6)
             selected = i == self.choice
-            fill = (RED if self.danger and i == 1 else GOLD) if selected else SURFACE_2
+            risky = i == 2 or self.danger and i == 1
+            fill = (RED if risky else GOLD) if selected else SURFACE_2
             c.rect((x, y1 - 25, x + width, y1 - 8), fill=fill, radius=5)
             c.text_center(x + width // 2, y1 - 22, label, font("bold", 10),
-                          (WHITE if self.danger and i == 1 else GOLD_INK) if selected else TEXT)
+                          (WHITE if risky else GOLD_INK) if selected else TEXT)
 
     def handle(self, key, app):
         if key.name in ("LEFT", "RIGHT", "TAB", "UP", "DOWN"):
             if not key.repeat:
-                self.choice = 1 - self.choice
+                step = -1 if key.name in ("LEFT", "UP") else 1
+                self.choice = (self.choice + step) % len(self.labels)
         elif key == "ENTER":
             app.pop()
             if self.choice == 1:
                 self.callback()
+            elif self.choice == 2:
+                self.extra[1]()
         elif key == "Y":
             app.pop()
             self.callback()

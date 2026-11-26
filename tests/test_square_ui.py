@@ -38,16 +38,43 @@ def test_hat_wardrive_actions_and_confirm(app):
     assert app.screen.filter == "wifi"
     press(app, "ENTER")
     assert isinstance(app.screen, screens.Confirm)
-    choice = app.screen.choice
+    assert app.screen.choice == 1 and app.screen.labels == ("Cancel", "Stop + save", "Stop, don't save")
     press(app, "DOWN")
-    assert app.screen.choice == choice
+    assert app.screen.choice == 1
     press(app, "RIGHT")
-    assert app.screen.choice != choice
-    if app.screen.choice == 0:
-        press(app, "LEFT")
-    press(app, "ENTER")
+    assert app.screen.choice == 2
+    press(app, "RIGHT")
+    assert app.screen.choice == 0
+    press(app, "RIGHT", "ENTER")
     assert isinstance(app.screen, screens.Summary)
     assert not app.wardriving
+
+
+def test_hat_throws_a_wardrive_away_with_the_stick_after_asking_once(app, drawn):
+    press(app, "ENTER")
+    assert app.wardriving
+    press(app, "ENTER")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "‹ Stop + save ›" in text and "The log is saved and sent to your upload sites." in text
+    press(app, "RIGHT")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "‹ Stop, don't save ›" in text and app.screen.choice == 2
+    assert "The wardrive stops and is thrown away. You are asked once more first." in text
+    assert "saved" not in text and "upload" not in text
+    press(app, "RIGHT")
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "‹ Cancel ›" in text and "The log is saved and sent to your upload sites." in text
+    press(app, "LEFT", "ENTER")
+    assert app.screen.title == "Throw away this wardrive?" and app.screen.choice == 0 and app.wardriving
+    text = screen_text(app, drawn).replace("\n", " ")
+    assert "Throw away this wardrive?" in text and "412 networks will be lost." in text
+    press(app, "ENTER")
+    assert app.wardriving and isinstance(app.screen, screens.Wardrive)
+    assert list(app.logs_dir.glob(".quartermaster_*.part"))
+    press(app, "ENTER", "RIGHT", "ENTER", "RIGHT", "ENTER")
+    assert not app.wardriving and isinstance(app.screen, screens.Home)
+    assert app.toast_text == "Wardrive thrown away. Nothing was saved."
+    assert [path for path in app.root.rglob("*") if path.is_file() and path.name != "config.json"] == []
 
 
 def test_optional_battery_and_receivers_on_wardrive(app, drawn, monkeypatch):
@@ -119,3 +146,19 @@ def test_hat_masks_keys_while_typing(app, drawn):
     rendered = screen_text(app, drawn)
     assert "secret-token" not in rendered and "••••" in rendered
     assert app.screen.value == "secret-token"
+
+
+def test_the_picture_of_both_hats_in_the_diy_guide_comes_from_the_screenshot_tool(tmp_path, drawn):
+    from PIL import Image
+    from tools import render_screens
+    picture = render_screens.hats(tmp_path / "hats")
+    with Image.open(render_screens.ROOT / "docs" / "screens" / "waveshare-preview.png") as shipped:
+        assert picture.size == shipped.size == (1290, 550)
+    assert drawn.count("‹ Stop + save ›") == 2 and "Stop the wardrive?" in drawn
+    for line, size in enumerate((128, 240)):
+        for column, name in enumerate(render_screens.HAT_TILES):
+            assert "%s %d" % (name, size) in drawn
+            shown = size * (256 // size)
+            tile = picture.crop((column * 258, line * 275, column * 258 + shown, line * 275 + shown))
+            assert len(tile.getcolors(100000)) > 8 and tile.getpixel((2, 2)) != render_screens.HAT_GROUND
+            assert picture.getpixel((column * 258 + 257, line * 275 + 100)) == render_screens.HAT_GROUND

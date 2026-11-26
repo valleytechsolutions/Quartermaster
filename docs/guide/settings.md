@@ -25,7 +25,7 @@ Defaults are shown in **bold**.
 | Bluetooth scan | **On**, Off | Logs Bluetooth LE and classic devices. |
 | Random BLE addresses | **Log**, Skip | Phones change their Bluetooth address often. Skip keeps logs smaller. |
 | Bluetooth check | 0.5 s, **1 s**, 2 s, 5 s | How often Bluetooth results are read. |
-| Aircraft (ADS-B) | **Auto**, On, Off | Logs aircraft with an RTL-SDR stick. Auto listens when one is plugged in. See [Aircraft](aircraft-and-lora.md). |
+| Aircraft (ADS-B) | **Auto**, On, Off | Logs aircraft with an RTL-SDR stick. Auto listens when one is plugged in. See [Aircraft](aircraft-and-lora.md). The [aircraft viewer](aircraft-and-lora.md#aircraft-viewer) on the Hardware screen works with any choice when no wardrive runs. |
 | LoRa mesh | **Auto**, On, Off | Logs Meshtastic and MeshCore nodes with a Cap LoRa-1262. Auto listens when one is found. |
 | Country | **United States**, 43 other countries, or Anywhere else | Where you are. Nodes use the Wi-Fi channels, and the cap the LoRa band, allowed there. |
 

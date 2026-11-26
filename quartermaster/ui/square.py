@@ -6,9 +6,10 @@ import time
 from PIL import Image
 
 from .. import __version__, accounts, qr
-from . import icons, recon_screens, screens
+from . import icons, recon_screens, screens, sky_screens
 from .gfx import (AMBER, BG, CYAN, FOOTER_H, GOLD, GOLD_INK, GREEN, H, LINE, MUTED, RED, STATUS_H,
                   SURFACE, SURFACE_2, TEXT, W, Canvas, clock, font)
+from .gfx import ago as gfx_ago
 from .keys import Key
 
 
@@ -253,11 +254,11 @@ class SquareUI:
     def confirm(self, c, screen):
         y = self.paragraph(c, screen.title, 4, GOLD, face=self.bold)
         y1 = self.bottom - self.row - 3
-        self.paragraph(c, screen.detail, y + 3, end=y1, face=self.small, offset=self.detail_line)
+        self.paragraph(c, screen.words, y + 3, end=y1, face=self.small, offset=self.detail_line)
         face = self.body if c.text_width(screen.action, self.body) <= self.size // 2 - 10 else self.small
-        if c.text_width(screen.action, face) > self.size // 2 - 10:
-            action = screen.action if screen.choice else "Cancel"
-            fill = RED if screen.choice and screen.danger else GOLD
+        if screen.extra or c.text_width(screen.action, face) > self.size // 2 - 10:
+            action = screen.labels[screen.choice]
+            fill = RED if screen.choice == 2 or screen.choice and screen.danger else GOLD
             c.rect((2, y1, self.size - 3, self.bottom - 3), fill=fill, radius=3)
             c.text((5, y1 + 1), "‹ " + action + " ›", self.body, GOLD_INK, width=self.size - 10)
             return
@@ -356,6 +357,86 @@ class SquareUI:
         if card.get("detail"):
             self.paragraph(c, card["detail"], y + 2, card.get("detail_color", MUTED), face=self.small)
 
+    def aircraft(self, c, app, screen):
+        """The aircraft heard: one per row, and what is known of the chosen one below the list."""
+        status, rows = screen.viewer.status(), screen.rows(app)
+        screen.notice(app)
+        capture = status["capture"]
+        line = self.small.size + 3
+        if not rows:
+            title, detail = sky_screens.state_words(status)
+            y = self.paragraph(c, title, self.top + 4, GOLD if status["listening"] else AMBER)
+            self.paragraph(c, detail, y + 2, MUTED, end=self.bottom - line if capture else None, face=self.small)
+            if capture:
+                c.text_right(self.size - 5, self.bottom - line, "REC", self.small, RED)
+            return
+        band = 2 * line + 2
+        self.rows(c, [seen.name for seen, _, _ in rows], screen.index, bottom=self.bottom - band)
+        seen, km, angle = rows[screen.index]
+        y = self.bottom - band
+        c.line((0, y - 1, self.size - 1, y - 1))
+        c.text((5, y), "%s  %s" % (sky_screens.feet(seen.altitude), sky_screens.knots(seen.gs)), self.small, TEXT,
+               width=self.size - 10)
+        y += line
+        c.text((5, y), sky_screens.far(km, angle), self.small, GOLD)
+        age = gfx_ago(screen.viewer.mono() - seen.last)
+        c.text_right(self.size - 5, y, "REC  " + age if capture else age, self.small, RED if capture else MUTED)
+
+    def aircraft_detail(self, c, app, screen):
+        lines = []
+        for label, value, *_ in screen.rows(app):
+            lines.append("%s: %s" % (label, value) if label else str(value))
+        height = self.small.size + 3
+        wrapped = [part for line in lines for part in c.wrap(line, self.size - 10, self.small)]
+        visible = max(1, (self.bottom - self.top - 4) // height)
+        screen.top = max(0, min(screen.top, len(wrapped) - visible))
+        y = self.top + 3
+        for line in wrapped[screen.top:screen.top + visible]:
+            c.text((5, y), line, self.small, TEXT)
+            y += height
+
+    def route(self, c, app, screen):
+        """The track on a map as wide as the screen, with what the rings mean under it. One step down, the
+        positions heard are listed, newest first. Returns the footer."""
+        viewer = screen.viewer
+        seen, here, parts = viewer.find(screen.code), viewer.here(), viewer.parts(screen.code)
+        points = [point for part in parts for point in part]
+        line = self.small.size + 3
+        if screen.top and points:
+            rows = screen.recent(here)
+            visible = max(1, (self.bottom - self.top - 4) // line - 1)
+            screen.top = min(screen.top, max(1, len(rows) - visible + 1))
+            y = self.top + 2
+            c.text((5, y), screens.plural(len(rows), "position"), self.small, GOLD, width=self.size - 10)
+            for age, alt, km in rows[screen.top - 1:screen.top - 1 + visible]:
+                y += line
+                c.text((5, y), gfx_ago(age), self.small, MUTED)
+                c.text_right(self.size * 5 // 8, y, sky_screens.feet(alt), self.small, TEXT)
+                c.text_right(self.size - 5, y, sky_screens.far(km), self.small, GOLD if km is not None else MUTED)
+            return "↕ scroll · K2 back"
+        screen.top = 0
+        box = (2, self.top + 1, self.size - 3, self.bottom - line - 2)
+        outer = sky_screens.draw_route(c, box, parts, here, self.small, seen.heading if seen is not None else None)
+        words = sky_screens.ring_words(outer) if points else "No position heard yet"
+        if points and here is None:
+            words += " · no GPS"
+            if c.text_width(words, self.small) > self.size - 8:
+                words = sky_screens.ring_words(outer, "") + " · no GPS"
+        c.text((4, self.bottom - line - 1), words, self.small, GOLD if points else MUTED, width=self.size - 8)
+        return "↓ positions · K2 back" if points else "K2 back"
+
+    def captures(self, c, app, screen):
+        entries = screen.entries()
+        if not entries:
+            self.paragraph(c, "No captures saved yet", self.top + 6)
+            return
+        screen.clamp(len(entries), screen.VISIBLE)
+        self.rows(c, [screens.when(entry["epoch"]) for entry in entries], screen.index,
+                  bottom=self.bottom - self.row)
+        entry = entries[screen.index]
+        c.text((5, self.bottom - self.row), "%s  %s" % (screens.size_text(entry["size"]), screen.kinds(entry)),
+               self.small, GOLD, width=self.size - 10)
+
     def render(self, app, banners):
         screen = app.screen
         self.sync(screen)
@@ -407,6 +488,17 @@ class SquareUI:
             y = self.paragraph(c, "Version " + __version__, self.top + 3, GOLD)
             self.paragraph(c, "Checking…" if state in ("busy", "") else text, y + 3, face=self.small)
             foot = "OK check · K2 back"
+        elif isinstance(screen, sky_screens.AircraftList):
+            self.aircraft(c, app, screen)
+            foot = "OK details · K3 actions"
+        elif isinstance(screen, sky_screens.AircraftRoute):
+            foot = self.route(c, app, screen)
+        elif isinstance(screen, sky_screens.AircraftDetail):
+            self.aircraft_detail(c, app, screen)
+            foot = "↕ scroll · OK route"
+        elif isinstance(screen, sky_screens.Captures):
+            self.captures(c, app, screen)
+            foot = "K2 back · K3 actions"
         elif isinstance(screen, screens.About):
             y = self.paragraph(c, "Quartermaster " + __version__, self.top + 3, GOLD)
             y = self.paragraph(c, "Raspberry Pi DIY", y + 2)

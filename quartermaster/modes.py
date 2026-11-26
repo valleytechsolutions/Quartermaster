@@ -10,6 +10,9 @@ answer within half a zone of the reference, and an aircraft further off would be
 right. So the first position always comes from a pair. It and any position that does not agree with the one before it
 are only held back until the next one agrees.
 
+An airborne velocity also says how far the GNSS height is from the barometric one, and an emergency status (type 28)
+carries the squawk. A velocity of 0 kt has no direction, so it leaves the track unknown.
+
 DF4, DF5, DF20 and DF21 are only taken when they look right: an altitude close to the last one known, or a squawk or
 altitude that came the same in the reply before. rtl_adsb prints noise too, and a noise frame can carry a known
 address in its parity.
@@ -191,7 +194,7 @@ def distance_km(lat1, lon1, lat2, lon2):
 class Aircraft:
     __slots__ = ("address", "good", "messages", "last", "flight", "category", "alt_baro", "alt_geom", "gs", "track",
                  "baro_rate", "geom_rate", "ias", "tas", "mag_heading", "squawk", "lat", "lon", "pos_time", "placed",
-                 "held", "even", "odd", "alt_time", "alt_seen", "squawk_seen")
+                 "held", "even", "odd", "alt_time", "alt_seen", "squawk_seen", "geom_delta", "emergency")
 
     def __init__(self, address, now):
         self.address, self.good, self.messages, self.last = address, 0, 0, now
@@ -199,7 +202,7 @@ class Aircraft:
         self.alt_baro = self.alt_geom = self.gs = self.track = self.baro_rate = self.geom_rate = None
         self.ias = self.tas = self.mag_heading = None
         self.lat = self.lon = self.pos_time = self.held = self.even = self.odd = None
-        self.alt_time = self.alt_seen = self.squawk_seen = None
+        self.alt_time = self.alt_seen = self.squawk_seen = self.geom_delta = self.emergency = None
         self.placed = False
 
     def report(self, now):
@@ -311,6 +314,11 @@ class Decoder:
             self._position(plane, (me >> 34) & 1, (me >> 17) & 0x1FFFF, me & 0x1FFFF, now)
         elif tc == 19:
             self._velocity(plane, me)
+        elif tc == 28 and (me >> 48) & 7 == 1:
+            plane.emergency = (me >> 45) & 7
+            code = (me >> 32) & 0x1FFF
+            if code:
+                plane.squawk = plane.squawk_seen = squawk(code)
 
     def _velocity(self, plane, me):
         sub = (me >> 48) & 7
@@ -324,7 +332,7 @@ class Decoder:
                 if (me >> 31) & 1:
                     vy = -vy
                 plane.gs = round(math.hypot(vx, vy), 1)
-                plane.track = round(math.degrees(math.atan2(vx, vy)) % 360, 1)
+                plane.track = round(math.degrees(math.atan2(vx, vy)) % 360, 1) if vx or vy else None
         elif sub in (3, 4):
             if (me >> 42) & 1:
                 plane.mag_heading = round(((me >> 32) & 0x3FF) * 360 / 1024.0, 1)
@@ -337,6 +345,9 @@ class Decoder:
                     plane.ias = speed
         else:
             return
+        delta = me & 0x7F
+        if delta:
+            plane.geom_delta = (delta - 1) * 25 * (-1 if (me >> 7) & 1 else 1)
         rate = (me >> 10) & 0x1FF
         if rate:
             rate = (rate - 1) * 64 * (-1 if (me >> 19) & 1 else 1)

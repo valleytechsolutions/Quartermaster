@@ -95,6 +95,14 @@ Deep scan lines (**MON** and **DEEP**) are explained in [Deep scan](deep-scan.md
 
 See the message tables in [Aircraft and LoRa mesh](aircraft-and-lora.md).
 
+- The Hardware screen shows no **A Aircraft** key: the stick cannot listen now. Press **A** anyway and it says why.
+- "This wardrive does not listen for aircraft": **Settings > Aircraft (ADS-B)** is Off, or no stick was found. Stop the wardrive to change the setting.
+- The viewer shows an aircraft with dashes or "Unknown": it has not sent that field yet. Position needs two messages, so it comes a few seconds after the callsign.
+- No distance in the list: there is no GPS fix, or the aircraft sent no position in the last minute.
+- Heading says "Unknown" at 0 kt: an aircraft that stands still has no direction.
+- "The time is not known yet. Wait for a GPS fix.": a capture needs the time. Wait until the GPS has a fix, then press **S** again.
+- "Capture ended: storage is almost full" or "Capture ended: it reached 128 MB": what was captured until then is saved.
+
 ## Wardrive screen messages
 
 | Message | What to do |
@@ -113,6 +121,7 @@ See the message tables in [Aircraft and LoRa mesh](aircraft-and-lora.md).
 | No Bluetooth permission: reboot once after installing | Restart the Cardputer once. |
 | Bluetooth service (bluetoothd) is not running | Restart the Cardputer. |
 | Cannot write the log: ... | Storage is full or broken. Free some space. |
+| Some files of this wardrive could not be removed | A wardrive was thrown away, but storage kept some of its files. They can come back as a log at the next start. Delete it on the Logs screen. |
 
 ## Common problems
 

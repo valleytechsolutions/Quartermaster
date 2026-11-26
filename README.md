@@ -56,7 +56,7 @@ A Raspberry Pi with a 40-pin header can run Quartermaster with either of Raspyja
 Choose the 1.44″ 128×128 ST7735S or the 1.3″ 240×240 ST7789. Both have a five-way joystick and three buttons.
 The Pi package includes a native square dashboard, a joystick keyboard and an optional start-at-boot service.
 The easiest start is a ready SD card image for your HAT: flash it with Raspberry Pi Imager and the Pi boots straight into Quartermaster.
-Follow the [DIY build guide](docs/diy.md) for the parts, the ready images, a manual Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer, the ready images and the checksums](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.8).
+Follow the [DIY build guide](docs/diy.md) for the parts, the ready images, a manual Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer, the ready images and the checksums](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9).
 
 ### From the CardputerZero AppStore
 
@@ -95,7 +95,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 - **No adapter needed.** The built-in 2.4 GHz radio, Bluetooth and a GPS make a full wardriver.
 - **Nodes.** Small ESP32-C5 boards scan Wi-Fi beside your adapters. Quartermaster shares the channels out between them.
 - **Wireless nodes.** One node stays plugged in as a hub. Up to 8 more run on a battery and send what they hear to it by radio.
-- **Aircraft.** Plug in an RTL-SDR stick and the aircraft around you are logged.
+- **Aircraft.** Plug in an RTL-SDR stick and the aircraft around you are logged. The aircraft viewer lists them live, shows the route each one flew and saves captures.
 - **LoRa mesh.** Fit the Cap LoRa-1262 and the Meshtastic and MeshCore nodes around you are logged. It only listens, and never sends.
 - **GPS from anything.** A USB receiver, the Cap LoRa-1262, a Grove GPS unit or gpsd, found by itself.
 
@@ -111,7 +111,7 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 - **Drive Alerts.** While you wardrive, a banner and a tone warn you about Flock cameras, Axon body cams, Meta glasses and any other kind you pick, from what the wardrive already hears. Each kind can have its own tone, such as a siren for body cameras. See [Drive Alerts](#drive-alerts).
 - **Recon.** A separate mode that watches for ALPR and Flock cameras, body cameras, doorbell and security cameras, Meta glasses, trackers such as AirTag, Samsung SmartTag, Google Find Hub tags and Tile, Remote ID drones and more. It grades the evidence, warns you, tells you if a device seems to follow you, and has a signal finder to walk it down.
 - **One job at a time.** Recon and a wardrive never run together, so every radio does one job well. Drive Alerts use no radio of their own.
-- **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
+- **The battery in view.** The level is at the top of every screen, with a notice at 20 % and at 10 %. At 5 % a running wardrive is saved in full and keeps recording. When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely.
 
 <table>
   <tr>
@@ -150,7 +150,7 @@ These still need a press:
 1. Plug in your GPS, and any Wi-Fi adapters you have.
 2. Open Quartermaster and, when the menu shows, press **H**. Every adapter is listed with its bands, and the GPS line turns green when it has a fix.
 3. Press **Esc** to go back to the menu, then **W**. Until the GPS has a fix, the screen says **Waiting for GPS fix**. Once it has one, the three counters show Wi-Fi networks, Bluetooth devices and rows logged.
-4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent.
+4. Press **OK**, and **OK** again to confirm. The wardrive stops, the log is saved and, if you have added keys, sent. To end a test drive and keep nothing, choose **Stop, don't save** instead and confirm once more.
 
 ### Waiting for a GPS fix
 
@@ -385,7 +385,7 @@ The firmware, the boards it runs on and the serial protocol are described in [fi
 
 With an RTL-SDR stick (RTL2832U) on USB, Quartermaster also logs the aircraft around you, for WDGWars and Wardrift. WiGLE does not take aircraft, so they are never sent there.
 
-1. Nothing to install: the radio tools, rtl-sdr, come with Quartermaster. They add no service, so nothing runs until a wardrive.
+1. Nothing to install: the radio tools, rtl-sdr, come with Quartermaster. They add no service, so nothing runs until a wardrive listens or you open the aircraft viewer.
 2. Restart the Cardputer once after the first install. This keeps the TV driver off the stick and gives you access to it.
 3. Plug in the stick. **Settings > Aircraft (ADS-B)** is on **Auto**, so Quartermaster listens whenever the stick is plugged in, also when you plug it in during a wardrive. **On** always listens and says when the stick is missing. **Off** never listens.
 4. Start a wardrive. The Wardrive screen counts the aircraft beside the radios, and the Hardware screen shows the stick.
@@ -395,6 +395,18 @@ During a wardrive Quartermaster starts `rtl_adsb` at a low priority on one CPU, 
 If readsb or dump1090 already runs on the Cardputer, Quartermaster reads what it writes to `/run/readsb`, `/run/adsb`, `/run/dump1090-fa` or `/run/dump1090-mutability` and does not start anything. Without the stick the wardrive goes on as ever, and the Hardware screen says why. If it says there is no permission, or asks you to restart, restart the Cardputer once.
 
 Each aircraft is kept once, with its closest and its furthest position. When the wardrive stops, `quartermaster_<date>-<time>.aircraft.json.gz` (readsb's own aircraft.json format, at the closest position) is written beside the WiGLE log and goes to WDGWars and Wardrift. Wardrift only gives points for aircraft heard in the last 3 days, so keep uploads on.
+
+### Aircraft viewer
+
+On the Hardware screen, press **A** while the RTL-SDR card says it is ready or running. The viewer lists every aircraft the stick hears, with or without a wardrive.
+
+- Each row: callsign (or the ICAO code), height, speed, distance and direction from you, and when it was last heard. The nearest is first. **Tab** puts the latest first.
+- **OK** shows all an aircraft sent. What it did not send says "Unknown". **OK** again shows its route: the positions heard, on a map with north up, you as the cross and two range rings.
+- **S** starts a capture and **S** again ends it. Leaving the viewer ends it too. **L** lists the captures.
+- Origin and destination are not sent by aircraft, so the route is the track heard, not the flight plan.
+- During a wardrive the viewer reads the frames the wardrive already hears. It starts nothing and takes nothing from the wardrive.
+
+A capture is two files in `quartermaster/aircraft`: `.track.csv` with one line per position (time in UTC, ICAO, callsign, latitude, longitude, height in feet, speed in knots, heading, vertical rate in feet per minute, squawk), and `.frames.avr` with every raw Mode S frame as an AVR line: `@`, a 12 digit timestamp, the frame and `;`. The timestamp counts in steps of 1/12,000,000 second from the second in the file name. dump1090 and readsb read this on their raw input port (30001). Times come from the GPS. A capture begun before the GPS told the time is moved to that time once it does.
 
 <table>
   <tr>
@@ -406,6 +418,16 @@ Each aircraft is kept once, with its closest and its furthest position. When the
     <td align="center">Wardrive with aircraft</td>
     <td align="center">The stick on the Hardware screen</td>
     <td align="center">Summary</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screens/aircraft.png" width="270" alt="The aircraft viewer: six aircraft with height, speed, distance and age"></td>
+    <td><img src="docs/screens/aircraft-detail.png" width="270" alt="One aircraft: ICAO code, callsign, squawk, category, height, speed, heading, vertical rate and position"></td>
+    <td><img src="docs/screens/aircraft-route.png" width="270" alt="The route of one aircraft on a map with two range rings, and its positions"></td>
+  </tr>
+  <tr>
+    <td align="center">Aircraft viewer</td>
+    <td align="center">One aircraft</td>
+    <td align="center">Its route</td>
   </tr>
 </table>
 
@@ -559,13 +581,15 @@ Everything is kept in the `quartermaster` folder in your home directory.
 | `logs/quartermaster_<date>-<time>.aircraft.csv` | One line per aircraft: callsign, squawk, first and last seen, signal, and the closest and furthest position with height, speed and time. |
 | `logs/quartermaster_<date>-<time>.mesh.json.gz` | The Meshtastic and MeshCore nodes of the wardrive, each with its closest and furthest sighting, for WDGWars and Wardrift. |
 | `logs/quartermaster_<date>-<time>.mesh.csv` | One line per mesh node: name, role, first and last seen, signal, hops, the closest and furthest sighting with position and time, and the position the node gives out. |
+| `aircraft/quartermaster_<date>-<time>.track.csv` | A capture from the aircraft viewer: one line per position heard. Never uploaded. |
+| `aircraft/quartermaster_<date>-<time>.frames.avr` | The raw Mode S frames of that capture, as AVR lines with timestamps. Never uploaded. |
 | `recon/recon_<date>-<time>.jsonl` | What Recon flagged. |
 | `recon/drive_<date>-<time>.jsonl` | What Drive Alerts found during a wardrive, alerted or not. Never uploaded. |
 
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.8,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.9,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.

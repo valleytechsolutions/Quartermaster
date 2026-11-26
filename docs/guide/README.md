@@ -1,6 +1,6 @@
 # Quartermaster user guide
 
-This guide explains how to use Quartermaster 1.2.8 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
+This guide explains how to use Quartermaster 1.2.9 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
 
 A few words used everywhere in this guide:
 
