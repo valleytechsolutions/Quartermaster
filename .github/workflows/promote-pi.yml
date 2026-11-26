@@ -36,7 +36,9 @@ jobs:
         run: |
           mkdir -p build
           gh release view "$TAG" --json assets --jq '.assets[].name' > build/assets.txt
-          python3 tools/pi_release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$(git rev-parse HEAD)" \
+          git fetch --no-tags --depth=1 origin "refs/tags/$TAG"
+          tagged=$(git rev-parse 'FETCH_HEAD^{commit}')
+          python3 tools/pi_release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$tagged" \
             --assets build/assets.txt > build/notes.md
       - name: Make it a full release
         run: |

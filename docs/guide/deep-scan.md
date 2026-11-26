@@ -109,3 +109,11 @@ Other helper messages:
 | Radio helper failed: ... | Something went wrong. Restart the Cardputer. If it stays, report it with `errors.log` (see [Files and logs](files.md)). |
 | Starts with the next wardrive or Recon. | All is fine. |
 | The radio helper stopped. Scanning normally. | The wardrive goes on with normal scans. |
+
+## On a DIY Raspberry Pi
+
+Deep scan works the same way on a Pi. The Pi package and the ready SD card images have the radio helper.
+
+- The built-in Wi-Fi of a Pi never listens either. Deep scan needs a USB adapter from the list above. On a Zero, plug the adapters into an OTG hub.
+- On a ready image, Quartermaster's own account is already in the **quartermaster-radio** group, so you do not need to restart for it. After a manual install, the package adds your user to the group, and the restart at the end of the [DIY guide](../diy.md#assemble-and-install-manually) makes it apply.
+- Where a message says "Restart the Cardputer once so the new permission applies", restart the Pi with `sudo reboot`. Where it says "Radio helper not installed. Update Quartermaster from the AppStore.", switch the helper on with `sudo systemctl enable --now quartermaster-radio.socket`. If the message stays, reinstall Quartermaster as [Troubleshooting](troubleshooting.md#on-a-diy-raspberry-pi) shows.

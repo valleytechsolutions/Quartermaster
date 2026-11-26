@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from tools import imager_os_list
+from tools import imager_os_list, pi_release_notes
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = ROOT / "packaging" / "image"
@@ -456,7 +456,7 @@ def test_every_folder_of_the_readme_logs_table_opens_to_the_login_on_the_image()
     readme = (ROOT / "README.md").read_text()
     table = readme[readme.index("## Logs\n"):]
     table = table[:table.index("\n\n", table.index("| File |"))]
-    folders = set(re.findall(r"^\| `([a-z]+)/", table, re.M))
+    folders = set(re.findall(r"^\|\s*`([^`/\s]+)/", table, re.M))
     assert folders == set(shell_list(SCRIPT.read_text(), "log_folders"))
 
 
@@ -1050,6 +1050,55 @@ def test_a_practice_run_builds_the_images_from_the_branch_and_publishes_nothing(
         order.index("Build the image")
 
 
+RUNNER_UBUNTU = """Types: deb
+URIs: mirror+file:/etc/apt/apt-mirrors.txt
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: mirror+file:/etc/apt/apt-mirrors.txt
+Suites: noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+"""
+PLAIN_UBUNTU = "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\n"
+
+
+@pytest.mark.parametrize("ubuntu", [RUNNER_UBUNTU, PLAIN_UBUNTU], ids=["runner mirror list", "plain archive"])
+@pytest.mark.parametrize("broken, works", [("microsoft-prod.list", True), ("ubuntu.sources", False)])
+def test_a_broken_package_source_of_the_runner_does_not_stop_the_image_build(tmp_path, ubuntu, broken, works):
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())["jobs"]
+    for job, name in (("image", "Install the image tools"), ("boot", "Install the emulator")):
+        run = next(step["run"] for step in jobs[job]["steps"] if step.get("name") == name)
+        update = run[:run.index("sudo apt-get install -y ")]
+        assert update.startswith("sudo apt-get update || {\n") and update.rstrip().endswith("sudo apt-get update\n}")
+        sources, bin_dir = tmp_path / job / "sources", tmp_path / job / "bin"
+        sources.mkdir(parents=True)
+        bin_dir.mkdir()
+        (sources / "ubuntu.sources").write_text(ubuntu)
+        (sources / "microsoft-prod.list").write_text("deb [arch=amd64] https://packages.microsoft.com/ubuntu/24.04/prod noble main\n")
+        (sources / "github_git-lfs.list").write_text("deb https://packagecloud.io/github/git-lfs/ubuntu/ noble main\n")
+        (bin_dir / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+        (bin_dir / "apt-get").write_text(
+            '#!/bin/sh\necho "$*" >> "$LOG"\n[ "$1" = update ] || exit 0\n'
+            '[ -e "$SOURCES/$BROKEN" ] && exit 100\nexit 0\n')
+        for tool in ("sudo", "apt-get"):
+            (bin_dir / tool).chmod(0o755)
+        log = tmp_path / job / "apt.log"
+        env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), LOG=str(log), SOURCES=str(sources),
+                   BROKEN=broken)
+        script = update.replace("/etc/apt/sources.list.d", str(sources))
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script], env=env,
+                                capture_output=True, text=True)
+        assert log.read_text().splitlines() == ["update", "update"], name
+        assert "::warning::A package source of the runner failed." in result.stdout
+        assert sorted(path.name for path in sources.iterdir()) == ["ubuntu.sources"], name
+        assert (sources / "ubuntu.sources").read_text() == ubuntu
+        assert result.returncode == (0 if works else 100), (name, result.stdout, result.stderr)
+
+
 def test_no_image_is_published_before_it_started_in_an_emulated_pi():
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())["jobs"]
@@ -1086,7 +1135,7 @@ RELEASE_CASES = [
 @pytest.mark.skipif(not all(shutil.which(tool) for tool in ("bash", "git", "jq")), reason="needs bash, git and jq")
 @pytest.mark.parametrize("event, tag_at, released, status, message, created_with", RELEASE_CASES)
 def test_a_pi_release_is_only_made_or_reused_for_the_commit_that_was_tested(
-        tmp_path, event, tag_at, released, status, message, created_with):
+        tmp_path, monkeypatch, event, tag_at, released, status, message, created_with):
     yaml = pytest.importorskip("yaml")
     steps = yaml.safe_load((WORKFLOWS / "release-pi.yml").read_text())["jobs"]["release"]["steps"]
     publish = next(step["run"] for step in steps if step.get("name") == "Publish the Pi prerelease")
@@ -1100,20 +1149,35 @@ def test_a_pi_release_is_only_made_or_reused_for_the_commit_that_was_tested(
     subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
     subprocess.run(["git", "init", "-q", str(work)], check=True)
     git("remote", "add", "origin", str(origin), cwd=work)
-    git("commit", "-q", "--allow-empty", "-m", "first", cwd=work)
+    for path in [*(pi_release_notes.screen(hat, name) for hat, *_ in pi_release_notes.HATS
+                   for name, _ in pi_release_notes.GALLERY), pi_release_notes.PICTURE]:
+        (work / path).parent.mkdir(parents=True, exist_ok=True)
+        (work / path).write_bytes(b"\x89PNG")
+    git("add", "--all", cwd=work)
+    git("commit", "-q", "-m", "first", cwd=work)
     if tag_at == "behind":
         git("push", "-q", "origin", "HEAD:refs/tags/pi-v9.9.9", cwd=work)
     git("commit", "-q", "--allow-empty", "-m", "second", cwd=work)
     if tag_at == "here":
         git("push", "-q", "origin", "HEAD:refs/tags/pi-v9.9.9", cwd=work)
     head = git("rev-parse", "HEAD", cwd=work)
+    (work / "tools").mkdir()
+    shutil.copy(ROOT / "tools" / "pi_release_notes.py", work / "tools")
+    monkeypatch.setattr(pi_release_notes, "ROOT", work)
+    (work / "build" / "pi").mkdir(parents=True)
     tools.mkdir()
-    calls = tmp_path / "calls"
+    (tools / "python").write_text('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable)
+    (tools / "python").chmod(0o755)
+    calls, notes = tmp_path / "calls", tmp_path / "notes.md"
     view = ('{"isPrerelease": true, "isDraft": false, "assets": [{"name": "quartermaster-pi_9.9.9_all.deb"},'
             ' {"name": "SHA256SUMS"}]}')
     (tools / "gh").write_text("#!/bin/sh\necho \"$1 $2 $*\" >> %s\n"
                               "[ \"$1 $2\" != 'release view' ] || { %s; }\n"
-                              % (calls, "echo '%s'" % view if released else "exit 1"))
+                              "[ \"$1 $2\" != 'release create' ] || while [ $# -gt 1 ]; do\n"
+                              "  [ \"$1\" != --notes-file ] || cat \"$2\" > %s\n"
+                              "  shift\n"
+                              "done\n"
+                              % (calls, "echo '%s'" % view if released else "exit 1", notes))
     (tools / "gh").chmod(0o755)
     env = {"PATH": "%s:/usr/bin:/bin" % tools, "HOME": str(tmp_path), "GITHUB_EVENT_NAME": event,
            "TAG": "pi-v9.9.9", "VERSION": "9.9.9", "GITHUB_REPOSITORY": "owner/repo"}
@@ -1122,15 +1186,19 @@ def test_a_pi_release_is_only_made_or_reused_for_the_commit_that_was_tested(
     assert result.returncode == status, result.stdout + result.stderr
     assert message in result.stdout
     if created_with is None:
-        assert not made
+        assert not made and not notes.exists()
     else:
         assert len(made) == 1 and " %s" % created_with in made[0] and "--prerelease --latest=false" in made[0]
         assert (head in made[0]) == (created_with == "--target")
+        assert " --title Quartermaster 9.9.9 DIY for Raspberry Pi --notes-file build/notes.md " in made[0]
+        assert notes.read_text() == pi_release_notes.notes("owner/repo", "pi-v9.9.9", head)
+        assert "/%s/docs/screens/diy/240/aircraft.png' width='200'" % head in notes.read_text()
+        assert "The images are added to this release shortly after it is published." in notes.read_text()
         for hat in boot_config.PROFILES:
-            assert "`%s.img.xz`" % imager_os_list.image_name(hat, "9.9.9") in calls.read_text(), hat
+            assert "`%s.img.xz`" % imager_os_list.image_name(hat, "9.9.9") in notes.read_text(), hat
 
 
-def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
+def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build(monkeypatch):
     yaml = pytest.importorskip("yaml")
     workflow = yaml.safe_load((WORKFLOWS / "release-pi.yml").read_text())
     triggers = workflow[True]
@@ -1151,22 +1219,20 @@ def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
     target = publish.index('tag_option=(--target "$(git rev-parse HEAD)")')
     assert by_hand < target < pushed < publish.index('gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false')
     assert publish.count("--verify-tag") == 1 and publish.count("gh release create") == 1
-    notes = publish[publish.index('--notes "'):]
-    for text in ("download \\`quartermaster.rpi-imager-manifest\\` below and open it",
-                 "install the newest Raspberry Pi Imager", "give Imager a 2.4 GHz Wi-Fi network",
-                 "While this is the newest Pi release, they are rebuilt every month",
-                 "user \\`pi\\` with password \\`pi\\`", "Change the password with \\`passwd\\`",
-                 "blob/$TAG/docs/diy.md", "Each image is named after its HAT."):
-        assert text in notes, text
+    write = 'python tools/pi_release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$(git rev-parse HEAD)"'
+    assert publish.index(write + " \\\n  > build/notes.md\n") < publish.index("gh release create")
+    assert publish.count("pi_release_notes.py") == 1
+    assert "--assets" not in publish and "--notes " not in publish
+    assert '--title "Quartermaster $VERSION DIY for Raspberry Pi" --notes-file build/notes.md \\\n' in publish
+    monkeypatch.setattr(pi_release_notes, "committed", lambda ref: {pi_release_notes.PICTURE})
+    notes = pi_release_notes.notes("owner/repo", "pi-v9.9.9", "0" * 40)
     guide = (ROOT / "docs" / "diy.md").read_text()
-    table = notes.index("| Your HAT | Its image |")
-    assert table < notes.index("**To flash a ready SD card:**")
     for hat, (label, pixels, chip) in imager_os_list.HATS.items():
-        row = next(line for line in notes.splitlines() if "**Waveshare %s**" % label in line)
+        row = next(line for line in notes.splitlines() if "<br>**Waveshare %s**<br>" % label in line)
         photo = "https://www.waveshare.com/media/catalog/product/1/_/%s-1.jpg" % label.lower().replace(" ", "-")
         assert "<img src='%s'" % photo in row and photo in guide, hat
         assert "<sub>%s screen, %s</sub>" % (pixels, chip) in row, hat
-        assert "\\`%s.img.xz\\` |" % imager_os_list.image_name(hat, "0.0.0").replace("0.0.0", "$VERSION") in row, hat
+        assert row.endswith("| `%s.img.xz` |" % imager_os_list.image_name(hat, "9.9.9")), hat
     assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish
     assert publish.index("already exists on another commit") < publish.index('gh release view "$TAG"')
     assert "pyyaml" in steps[names.index("Test the app and build the Pi package")]["run"].split()
@@ -1195,6 +1261,7 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
                  "each named after its HAT", "Use custom", "quartermaster.txt",
                  "quartermaster@%s.service" % SERVICE_USER, "`/var/lib/quartermaster/quartermaster/`", "Wi-Fi country",
                  "can only join a 2.4 GHz network", "type the 2.4 GHz name", "Click **Cancel**",
+                 "it fills in both password boxes too", "clear both password boxes and type its password in each",
                  "Some other tools, such as Win32 Disk Imager, need it unpacked first",
                  "The images of the newest Pi release are rebuilt every month",
                  "built-in `%s` account" % SERVICE_USER,
@@ -1216,7 +1283,7 @@ def test_every_pi_release_link_in_the_guide_and_the_readme_is_for_this_version()
         text = (ROOT / name).read_text()
         assert set(re.findall(r"pi-v\d+\.\d+\.\d+", text)) == {"pi-v" + version}, name
         assert set(re.findall(r"quartermaster-pi[_-](\d+\.\d+\.\d+)", text)) <= {version}, name
-    assert "Quartermaster Pi %s release" % version in (ROOT / "docs" / "diy.md").read_text()
+    assert "release [Quartermaster %s DIY for Raspberry Pi](" % version in (ROOT / "docs" / "diy.md").read_text()
 
 
 def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password():
@@ -1235,3 +1302,228 @@ def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password()
     assert "no password and SSH is off" not in guide
     script = SCRIPT.read_text()
     assert "login_user=pi login_password=pi" in script and "host_name=quartermaster" in script
+
+
+def test_the_diy_guide_says_where_each_command_is_typed_and_copies_every_folder_the_login_reads():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    login = guide[guide.index("### Log in"):guide.index("### Good to know")]
+    for text in ("type `ssh pi@quartermaster.local` on your computer", "What you type there runs on the Pi",
+                 "Only `ssh`, `scp` and `ssh-keygen -R` are typed on your computer", "Type `exit` to leave the Pi",
+                 "which you type on your computer, not on the Pi", "type `exit` first, or open a second Terminal window",
+                 "the folder that the Terminal window is in", "`C:\\Users\\<your name>`",
+                 "type `sudo usermod -aG %s <user>` on the Pi" % SERVICE_USER):
+        assert text in login, text
+    copies = re.findall(r"^scp -r pi@quartermaster\.local:quartermaster/(\S+) \.$", login, re.M)
+    assert copies == shell_list(SCRIPT.read_text(), "log_folders")
+    for line in guide.splitlines():
+        if "`ssh-keygen -R" in line:
+            assert "on your computer" in line, line
+
+
+def test_the_diy_guide_says_what_to_copy_before_a_card_is_written_again():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    good = guide[guide.index("### Good to know"):guide.index("## Assemble and install manually")]
+    flashing = next(line for line in good.splitlines() if line.startswith("- **Flashing the newest image.**"))
+    folders = shell_list(SCRIPT.read_text(), "log_folders")
+    assert len(folders) == 3 and folders[0] == "logs"
+    named = ", ".join("`%s`" % folder for folder in folders[:-1]) + " and `%s`" % folders[-1]
+    assert "Flashing erases the card. Before you flash, copy all three folders, %s, to your computer" % named in flashing
+    mode = settings((IMAGE / "quartermaster-logs.service").read_text())["ExecStart"][0].split()[-3]
+    opened = " ".join("~/quartermaster/" + folder for folder in folders[1:])
+    assert "On a card that was flashed with an image older than 1.2.9" in flashing
+    assert "`sudo chmod -R %s %s` on the Pi" % (mode, opened) in flashing
+    assert "Your settings and upload keys are erased too" in flashing
+    for line in guide.splitlines():
+        if "write the card again" in line:
+            assert "erases the card" in line, line
+    differences = guide[guide.index("## How the DIY version differs"):guide.index("## Troubleshooting")]
+    assert "**Flashing the newest image** under [Good to know](#good-to-know)" in differences
+
+
+@pytest.mark.skipif(not shutil.which("dpkg-deb"), reason="building a Debian package requires dpkg-deb")
+def test_only_a_new_image_opens_recon_and_aircraft_to_the_login_as_the_diy_guide_says(tmp_path):
+    """The rule that lets the login read the folders is set up by the image and is not in the package, so a card
+    flashed with an older image keeps its older rule when the package is updated."""
+    from tools import build_deb
+    script = SCRIPT.read_text()
+    rule = sorted(path.name for path in IMAGE.glob("quartermaster-logs*"))
+    assert rule == ["quartermaster-logs-changed.service", "quartermaster-logs.path", "quartermaster-logs.service"]
+    assert all(unit in script for unit in rule)
+    stage = tmp_path / "unpack"
+    subprocess.run(["dpkg-deb", "--raw-extract", str(build_deb.build(tmp_path, "pi")), str(stage)], check=True)
+    shipped = {path.name for path in stage.rglob("*") if path.is_file()}
+    assert not shipped & {path.name for path in IMAGE.iterdir() if path.is_file()}
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    updating = next(line for line in guide.splitlines() if line.startswith("- **Updating.**"))
+    folders = shell_list(script, "log_folders")
+    assert "The package does not change what the image set up." in updating
+    assert "image older than 1.2.9, your login can still read only `~/quartermaster/%s`" % folders[0] in updating
+    assert "To read %s too, flash the newest image." % " and ".join(
+        "`~/quartermaster/%s`" % folder for folder in folders[1:]) in updating
+
+
+def test_the_diy_guide_names_the_keys_of_a_usb_keyboard_that_follow_the_hat(monkeypatch, tmp_path):
+    from quartermaster.ui import hat, keys, screens
+    from tests.fakes import Display
+    from tests.test_ui import make_app, press
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    controls = guide[guide.index("## Controls"):guide.index("### Where the CardputerZero keys are")]
+    for text in ("**Tab** and the keys for up and down work differently, to match the HAT. **Tab** does what **K3** does.",
+                 "Up and down, on the arrow keys or on **F** and **X**, do what the joystick does: "
+                 "on the menu they move one item at a time",
+                 "There, only left and right change the choice.", "The arrow keys or **F X Z C** move"):
+        assert text in controls, text
+    assert "Three keys" not in controls
+    assert hat.BUTTONS[16] == "TAB"
+    assert keys.ARROWS == {"f": "UP", "x": "DOWN", "z": "LEFT", "c": "RIGHT"}
+    moved = {}
+    for profile in ("cardputer", "st7735-128"):
+        if profile != "cardputer":
+            monkeypatch.setattr(Display, "profile", profile, raising=False)
+            monkeypatch.setattr(Display, "width", 128, raising=False)
+            monkeypatch.setattr(Display, "height", 128, raising=False)
+        (tmp_path / profile).mkdir()
+        app = make_app(tmp_path / profile)
+        steps = []
+        for key in ("DOWN", "X", "F", "UP"):
+            press(app, key)
+            steps.append(app.screen.index)
+        press(app, "ESC")
+        assert isinstance(app.screen, screens.Confirm) and app.screen.choice == 0
+        for key in ("DOWN", "X"):
+            press(app, key)
+            steps.append(app.screen.choice)
+        moved[profile] = steps
+    row = screens.Home.COLUMNS
+    assert moved == {"cardputer": [row, 0, row, 0, 1, 0], "st7735-128": [1, 2, 1, 0, 0, 0]}
+    for key, choice in (("RIGHT", 1), ("Z", 0), ("C", 1)):
+        press(app, key)
+        assert app.screen.choice == choice, key
+    press(app, "TAB")
+    assert app.square.mode == "actions"
+
+
+def test_the_manual_install_downloads_each_version_into_a_folder_of_its_own():
+    """A file that is already there is not replaced by wget, and SHA256SUMS lists only the package of its release.
+    So a download next to the files of an older version would check the old list."""
+    version = json.loads((ROOT / "app-builder.json").read_text())["version"]
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    manual = guide[guide.index("## Assemble and install manually"):guide.index("## Controls")]
+    step = manual[manual.index("\n3. "):manual.index("\n4. ")]
+    start = step.index("```sh\n") + len("```sh\n")
+    block = step[start:step.index("\n```", start)].splitlines()
+    folder = "~/quartermaster-pi-%s" % version
+    assert block[0] == "mkdir -p %s && cd %s" % (folder, folder)
+    assert [line for line in block if line.startswith("wget ")] == [
+        'wget "$release/quartermaster-pi_%s_all.deb" "$release/SHA256SUMS"' % version]
+    assert block[-1] == "sha256sum --check SHA256SUMS && sudo apt install ./quartermaster-pi_%s_all.deb" % version
+    for text in ("Then run these commands on the Pi. The first one makes a folder for this version and moves into it.",
+                 "Each version gets its own folder"):
+        assert text in step, text
+    assert "in a new directory" not in step
+    release = (WORKFLOWS / "release-pi.yml").read_text()
+    assert 'sha256sum "quartermaster-pi_${VERSION}_all.deb" > SHA256SUMS' in release
+
+
+def test_the_diy_guide_warns_about_formatting_before_the_card_is_opened():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    wrong = next(line for line in guide.splitlines() if line.startswith("- **Wrong HAT?**"))
+    assert wrong.index("Put the card in your computer.") < wrong.index("Click **Cancel**")
+    assert wrong.index("Click **Cancel**") < wrong.index("**bootfs**") < wrong.index("put the card back in the Pi")
+    assert wrong.endswith("put the card back in the Pi.")
+    assert (IMAGE / "quartermaster.txt").read_text().splitlines()[-1] == "display=@HAT@"
+
+
+def test_the_diy_guide_says_what_to_type_in_place_of_each_placeholder():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    found = set()
+    for line in guide.splitlines():
+        for command in re.findall(r"`((?:ssh|scp|sudo) [^`]*)`", line):
+            for word in re.findall(r"<[^>]+>", command):
+                assert "in place of `%s`" % word in line, (word, line)
+                found.add(word)
+    assert found == {"<address>", "<your user>", "<user>"}
+    assert "`ssh pi@192.168.1.23`" in guide
+    login = guide[guide.index("### Log in"):guide.index("### Good to know")]
+    assert "If you log in with the Pi's address, type the address in place of `quartermaster.local`." in login
+    forget = [line for line in guide.splitlines() if "`ssh-keygen -R " in line]
+    assert len(forget) == 2
+    for line in forget:
+        assert ("If you connect with another name or with the Pi's address, type that in place of "
+                "`quartermaster.local`, for example `ssh-keygen -R 192.168.1.23`.") in line, line
+
+
+def test_the_diy_guide_names_the_line_under_the_menu_and_what_it_says_during_a_wardrive(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from quartermaster.ui import screens
+    from tests.fakes import Display
+    from tests.test_ui import make_app, placed
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    assert guide.count("line at the bottom") == 1
+    assert "The line at the bottom of each screen shows what they do there." in guide
+    assert guide.count("The line under the list") == 4
+    menu = guide[guide.index("### The menu\n"):guide.index("### Hardware\n")]
+    for text in ("The line under the list tells you about the item you are on.",
+                 "or **BLE only** (Bluetooth only) when there is no Wi-Fi adapter or node.",
+                 "During a wardrive, it says **No fix yet** until the GPS has a fix, and then **REC** and the time."):
+        assert text in menu, text
+    first = guide[guide.index("### Your first wardrive\n"):guide.index("### Stopping a wardrive\n")]
+    assert "the menu then shows **No fix yet** until the GPS has a fix, and then **REC** and the time." in first
+    home = screens.Home()
+    app = SimpleNamespace(wardriving=False, hw=SimpleNamespace(adapters=[]), nodes=SimpleNamespace(in_use=lambda: []))
+    assert home.subtitle("Wardrive", app)[0] == "BLE only"
+    app.hw.adapters = ["wlan0", "wlan1", "wlan2"]
+    assert home.subtitle("Wardrive", app)[0] == "3 radios"
+    app.wardriving, app.drive = True, SimpleNamespace(waiting=True, elapsed=lambda: 65)
+    assert home.subtitle("Wardrive", app)[0] == "No fix yet"
+    app.drive.waiting = False
+    assert home.subtitle("Wardrive", app)[0].startswith("REC ")
+    for size, profile in ((128, "st7735-128"), (240, "st7789-240")):
+        monkeypatch.setattr(Display, "profile", profile, raising=False)
+        monkeypatch.setattr(Display, "width", size, raising=False)
+        monkeypatch.setattr(Display, "height", size, raising=False)
+        (tmp_path / profile).mkdir()
+        hat_app = make_app(tmp_path / profile)
+        shown = placed(hat_app, monkeypatch)
+        line = shown[hat_app.screen.subtitle("Wardrive", hat_app)[0]][0]
+        footer = shown["OK select · K3 actions"][0]
+        assert line < footer == max(y for y, _ in shown.values()), profile
+
+
+def test_after_address_and_pin_the_first_k2_goes_back_to_the_code_as_the_diy_guide_says(monkeypatch, tmp_path):
+    from quartermaster.ui import screens
+    from tests.fakes import Display
+    from tests.test_ui import make_app, press
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    said = "While the address and PIN show, the first **K2** goes back to the QR code, so press **K2** twice."
+    for start in (guide.index("**Phone setup.**"), guide.index("- **Phone / PC setup**")):
+        part = guide[start:guide.index("\n", start)]
+        assert "**Address and PIN**" in part and said in part, part[:40]
+    monkeypatch.setattr(Display, "profile", "st7789-240", raising=False)
+    monkeypatch.setattr(Display, "width", 240, raising=False)
+    monkeypatch.setattr(Display, "height", 240, raising=False)
+    app = make_app(tmp_path)
+    press(app, "K", "ENTER")
+    setup = app.screen
+    assert isinstance(setup, screens.PhoneSetup) and setup.server is not None
+    press(app, "TAB")
+    assert app.square.actions[0] == ("Address and PIN", "address")
+    press(app, "ENTER")
+    assert app.square.mode == "address"
+    press(app, "ESC")
+    assert app.screen is setup and setup.server is not None and app.square.mode == ""
+    press(app, "ESC")
+    assert isinstance(app.screen, screens.Keys) and setup.server is None
+
+
+def test_the_diy_guide_says_a_new_pi_release_is_a_prerelease_until_it_is_tested():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    differences = guide[guide.index("## How the DIY version differs"):guide.index("## Troubleshooting")]
+    row = next(line for line in differences.splitlines() if line.startswith("| Releases on GitHub |"))
+    cardputer, diy = row.split(" | ")[1:3]
+    assert "A new Pi release is marked **Pre-release** until it has been tested." in diy
+    assert "Pre-release" not in cardputer
+    created = (WORKFLOWS / "release-pi.yml").read_text()
+    promoted = (WORKFLOWS / "promote-pi.yml").read_text()
+    assert 'gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false' in created
+    assert "--prerelease=false --latest=false" in promoted

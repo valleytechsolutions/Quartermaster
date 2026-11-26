@@ -43,7 +43,7 @@ What the Hardware screen says about the stick:
 The viewer shows the aircraft the stick hears right now. It works with or without a wardrive.
 
 1. Open **Hardware** (press **H** on the menu).
-2. When the RTL-SDR card says "Ready" or "Running", the bottom line shows **A Aircraft**. Press **A**. On a Raspberry Pi screen, press **K3** and choose **Aircraft**.
+2. When the RTL-SDR card says "Ready" or "Running", the bottom line shows **A Aircraft**. Press **A**. On a DIY Raspberry Pi, see [The aircraft viewer on a Pi](#the-aircraft-viewer-on-a-pi).
 3. When the stick cannot listen, **A** tells you why, with the same messages as the table above.
 
 **The list.** One row per aircraft: its callsign (or its ICAO code in blue when it sent no callsign), height in feet, speed in knots, distance and direction from you, and how long ago it was last heard. The nearest aircraft is first. Aircraft with no known distance follow, the latest first. **Tab** changes the order to the latest first. Distance needs a GPS fix and a position from the aircraft in the last minute. A dash means "not heard".
@@ -51,8 +51,6 @@ The viewer shows the aircraft the stick hears right now. It works with or withou
 **One aircraft.** Press **OK** on a row. You see everything it sent: ICAO code, callsign, squawk, category, barometric and GNSS height, ground speed, heading, vertical rate, position, distance from you, message count, and when it was first and last heard. A field the aircraft did not send says "Unknown". Quartermaster never fills in a guess. An aircraft that stands still has a ground speed of 0 kt and no direction, so its heading says "Unknown". An aircraft heard again after five minutes of silence starts afresh: only what it sends from then on is shown. Signal strength says "Unknown" with `rtl_adsb`, which does not report it.
 
 **The route.** Press **OK** again. The map shows the track the aircraft flew while you heard it. North is up. You are the green cross in the middle, and the two rings are the distances written beside the map, such as "Rings 25 / 50 km". The gold dot is the newest position, with a short line for its heading. The list beside it has the positions, newest first. Where the aircraft was not heard for two minutes, the line has a gap. Without a GPS fix the track is centred instead. The map keeps up to 240 positions of an aircraft, at most one a second. On a long flight they are kept further apart, and the line stays whole. The "Route" line of an aircraft counts every position heard, and a capture has every position heard while it runs.
-
-On a Raspberry Pi screen the map fills the screen. Move the stick down for the positions, and up again for the map. **Save capture**, **Sort** and **Captures** are under **K3** in the list.
 
 Origin and destination are not sent by aircraft. The route is only the part of the flight you heard.
 
@@ -143,3 +141,35 @@ LoRaWAN is used by sensors and meters that report over long distances. Turn on *
 Each message carries a device address, and the start of that address names the network operator, such as The Things Network, Helium or a utility. Quartermaster alerts once per operator, not once per device. The content stays encrypted and is never read. LoRaWAN devices are not mesh nodes, so they are not written to the mesh file and are not uploaded.
 
 Limits: it listens on one channel and one data rate only (903.9 MHz in the US, 868.1 MHz in Europe, 916.8 MHz in Australia, New Zealand and Brazil, 922.1 MHz in South Korea), so networks that use other channels or slower rates may not be heard.
+
+## On a DIY Raspberry Pi
+
+### Aircraft on a Pi
+
+Aircraft work as on the CardputerZero. Plug the RTL-SDR stick into a USB port of the Pi. A Zero has only one USB port for data, so use an OTG hub when the GPS is plugged in too. The `rtl-sdr` package comes with the Pi package and with the ready SD card images.
+
+A ready image already has what the stick needs, so you do not need to restart for it. After a manual install, the restart at the end of the [DIY guide](../diy.md#assemble-and-install-manually) does the same as the restart in step 2 above. Where a message on the Pi says "Restart the Cardputer once", restart the Pi.
+
+### The aircraft viewer on a Pi
+
+1. On the menu, choose **Hardware** and press **OK**.
+2. Move to the card **Radio for aircraft (RTL-SDR)**. When the stick is ready, the card shows **K3: Aircraft**. Press **K3** and choose **Aircraft**.
+3. When the stick cannot listen, **K3** does not offer **Aircraft**, and the card says why, with the messages in the table above. With **Settings > Aircraft (ADS-B)** on **Auto** and no stick plugged in, there is no card.
+
+**The list** has one aircraft per row. Under the list are the height, speed, distance and direction of the aircraft you are on, and how long ago it was heard. **REC** shows while a capture runs. **K3** offers **Save capture** (or **End capture**), **Sort** and **Captures**.
+
+**One aircraft.** Press **OK** on a row. Move the joystick up and down to read everything it sent. Press **OK** again for the route.
+
+**The route.** The map fills the screen, with the size of the rings under it. Move the joystick down for the positions, newest first, and up again for the map.
+
+**Captures.** In the list of captures, **K3** offers **Delete**.
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/aircraft.png" width="256" alt="The aircraft viewer on the 1.44inch HAT: callsigns in a list, and the height, speed and distance of the one picked"> | <img src="../screens/diy/240/aircraft.png" width="240" alt="The aircraft viewer on the 1.3inch HAT: callsigns in a list, and the height, speed and distance of the one picked"> |
+| <img src="../screens/diy/128/aircraft-detail.png" width="256" alt="One aircraft on the 1.44inch HAT: its ICAO code, callsign, squawk, category and height"> | <img src="../screens/diy/240/aircraft-detail.png" width="240" alt="One aircraft on the 1.3inch HAT: its ICAO code, callsign, squawk, category, height, speed and position"> |
+| <img src="../screens/diy/128/aircraft-route.png" width="256" alt="The route of an aircraft on the 1.44inch HAT: its track on a map with rings at 10 and 20 km"> | <img src="../screens/diy/240/aircraft-route.png" width="240" alt="The route of an aircraft on the 1.3inch HAT: its track on a map with rings at 10 and 20 km"> |
+
+### No LoRa on a Pi
+
+LoRa mesh and LoRaWAN need the Cap LoRa-1262, which only fits the CardputerZero. So a Pi has no **LoRa mesh** setting, no **LoRaWAN networks** alert and no LoRa card on the Hardware screen. Its wardrives make no mesh files.

@@ -76,7 +76,13 @@ jobs:
           ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
       - name: Install the image tools
         run: |
-          sudo apt-get update
+          sudo apt-get update || {
+            echo "::warning::A package source of the runner failed. Trying again with the Ubuntu sources only."
+            for list in /etc/apt/sources.list.d/*; do
+              grep -qE 'ubuntu\.com/ubuntu|mirror\+file:' "$list" || sudo rm -f "$list"
+            done
+            sudo apt-get update
+          }
           sudo apt-get install -y qemu-user-static binfmt-support xz-utils e2fsprogs fdisk
           test -e /proc/sys/fs/binfmt_misc/qemu-arm
       - name: Build the Pi package from this branch
@@ -156,7 +162,13 @@ jobs:
           ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
       - name: Install the emulator
         run: |
-          sudo apt-get update
+          sudo apt-get update || {
+            echo "::warning::A package source of the runner failed. Trying again with the Ubuntu sources only."
+            for list in /etc/apt/sources.list.d/*; do
+              grep -qE 'ubuntu\.com/ubuntu|mirror\+file:' "$list" || sudo rm -f "$list"
+            done
+            sudo apt-get update
+          }
           sudo apt-get install -y qemu-system-arm qemu-utils mtools sshpass xz-utils
       - name: Fetch the image
         run: gh run download "$GITHUB_RUN_ID" --name "image-$HAT" --dir build/boot

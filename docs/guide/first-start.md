@@ -92,3 +92,25 @@ The battery level is at the top of every screen. You get a notice at 20 % and at
 At 5 %, off the charger for 15 seconds, a running wardrive is saved in full at once. It says "Battery 5%. Wardrive saved. Still recording." The wardrive keeps running and keeps saving every few seconds from then on, so a battery that gives out costs a few seconds at most. The next time Quartermaster opens, it finishes that log. Once a charger has been in for 15 seconds, the extra saving ends.
 
 When the battery is almost empty (3 %), a running wardrive is saved and Quartermaster closes, so the Cardputer can switch off safely. If you plug in a charger in time, it stays open.
+
+## On a DIY Raspberry Pi
+
+**Opening Quartermaster.** A ready SD card image opens Quartermaster by itself each time the Pi starts. The first start of a new card takes a few minutes, and the Pi may restart once. After a manual install, the [DIY guide](../diy.md) shows how to make it start by itself. Any button skips the boot animation.
+
+**The menu** is a list of the same eight items. Move through it with the joystick, and press the joystick or **K1** to open one. The line under the list tells you about the item you are on, as the tiles do on the CardputerZero. With a USB keyboard, the letters jump straight to an item. If you have not added any upload keys yet, a note says "Open Keys to add upload keys".
+
+**The Hardware screen** shows one device at a time. Its place in the list is in the top right corner, such as "4 / 5". Move the joystick up and down to go through the devices.
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/hardware.png" width="256" alt="The Hardware screen on the 1.44inch HAT, showing the USB GPS with its fix"> | <img src="../screens/diy/240/hardware.png" width="240" alt="The Hardware screen on the 1.3inch HAT, showing the USB GPS with its fix"> |
+
+**The GPS.** A Pi works with a USB GPS that sends standard NMEA data, or with gpsd. The Cap LoRa-1262 and the Grove port are parts of the CardputerZero. So on a Pi, **Settings > GPS source** has no **Cap / Grove** choice, and there is no **Cap and Grove power** setting. When no GPS is found, the Hardware screen says "Plug in a USB GPS or connect a receiver through gpsd." On a Zero, plug the GPS into the port marked **USB**. The port marked **PWR IN** is only for power.
+
+**Where to see the GPS.** The Pi's small screen has no GPS mark at the top. On the menu, move to **Hardware**. The line under the list then says **GPS fix**, **GPS searching** or **No GPS**. When an adapter does not start, it says **Check adapter** instead. During a wardrive, the wardrive screen shows **GPS fix** or **No fix** beside the timer. While a wardrive waits for its first fix, it says **Waiting for GPS fix**, and on the menu the line under **Wardrive** says **No fix yet**.
+
+**The country.** On a Pi, **Settings > Country** sets the Wi-Fi channels that nodes use and that [Deep scan](deep-scan.md) listens on. There is no LoRa band to set, because there is no LoRa cap. Quartermaster asks for it the first time you open **Settings > Nodes**, and never when a wardrive starts. The Pi's own Wi-Fi country is a setting of the Pi, not of Quartermaster. Set it in Raspberry Pi Imager, or as the [DIY guide](../diy.md) shows.
+
+**Your first wardrive.** On the menu, choose **Wardrive** and press **OK**. To stop, press **OK**, then **OK** again, because **Stop + save** is picked first. See [the wardrive screen on a Pi](wardrive.md#on-a-diy-raspberry-pi).
+
+**Battery.** A Pi has no battery of its own. The battery level shows at the top right only when the Pi's power supply reports a battery to Linux. Without one, there are no battery notices, and a running wardrive is not saved early at 5 % or 3 %. With one, the notices and the saving work as on the CardputerZero. When Quartermaster closes at 3 %, it stays closed until the Pi starts again.

@@ -1,0 +1,64 @@
+name: CardputerZero release title and banner
+
+# Gives a CardputerZero release that is already out the title and the banner that release.yml gives a new one, so
+# nobody mixes it up with the DIY version. The notes it has stay below the banner. It never moves the Latest badge:
+# the CardputerZero update links use releases/latest.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'CardputerZero release tag, for example v1.2.5'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+
+jobs:
+  notes:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check the CardputerZero release
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::$TAG is not a CardputerZero release tag, such as v1.2.5. A pi-v tag is a DIY release."
+            exit 1
+          }
+          gh release view "$TAG" --json isDraft --jq '.isDraft | not' | grep -qx true ||
+            { echo "::error::$TAG is a draft or has no release"; exit 1; }
+          latest=$(gh release view --json tagName --jq .tagName) || true
+          [ -n "$latest" ] || { echo "::error::There is no Latest release to keep"; exit 1; }
+          echo "LATEST=$latest" >> "$GITHUB_ENV"
+      - name: Add the title and the banner
+        run: |
+          mkdir -p build
+          gh release view "$TAG" --json body --jq .body > build/old.md
+          title="Quartermaster ${TAG#v} for CardputerZero"
+          rest=$(awk 'index($0, "**This is the CardputerZero version of Quartermaster.**") != 1' build/old.md |
+            sed '/[^[:space:]]/,$!d')
+          {
+            echo "**This is the CardputerZero version of Quartermaster.**" \
+              "Building one on a Raspberry Pi with a Waveshare LCD HAT?" \
+              "Use the DIY version: the names of its releases end in \"for Raspberry Pi\", and the" \
+              "[DIY guide](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/diy.md) shows how to flash it."
+            [ -z "$rest" ] || printf '\n%s\n' "$rest"
+          } > build/notes.md
+          if [ "$(cat build/notes.md)" = "$(cat build/old.md)" ] &&
+            [ "$(gh release view "$TAG" --json name --jq .name)" = "$title" ]; then
+            echo "$TAG already has its title and banner."
+            exit 0
+          fi
+          gh release edit "$TAG" --title "$title" --notes-file build/notes.md
+          now=$(gh release view --json tagName --jq .tagName)
+          if [ "$now" != "$LATEST" ]; then
+            gh release edit "$LATEST" --latest
+            echo "::error::$TAG took the Latest badge from $LATEST. It was given back to $LATEST."
+            exit 1
+          fi
+          echo "$TAG has its title and banner. $LATEST is still the Latest release."

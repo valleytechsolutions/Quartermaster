@@ -2,9 +2,10 @@
 
 ## 1.2.9
 
-- New: an aircraft viewer. On the Hardware screen, press **A** on the RTL-SDR card (K3 > Aircraft on a Pi screen). It is there when a stick is plugged in and can listen. When it cannot, the card says why.
-- It lists every aircraft heard, the nearest first: callsign or ICAO code, height, speed, distance and direction from your GPS position, and how long ago it was last heard. Tab changes the order to the latest first.
-- OK on an aircraft shows all it sent: ICAO code, callsign, squawk, category, barometric and GNSS height, ground speed, heading, vertical rate, position and message count. What an aircraft did not send is shown as "Unknown". OK again shows its route: the track it flew while it was heard, on a small map with north up, you in the middle and two range rings.
+- On the CardputerZero, this is the first release since 1.2.5. So it also brings Power guard from 1.2.6 and All adapters listen from 1.2.7. Power guard is on by default. Restart the Cardputer once after you install it, so the USB reset permission from 1.2.7 applies.
+- New: an aircraft viewer. On the Hardware screen, press **A** on the RTL-SDR card (**K3** > **Aircraft** on a Pi screen). It is there when a stick is plugged in and can listen. When it cannot, the card says why.
+- It lists every aircraft heard, the nearest first: callsign or ICAO code, height, speed, distance and direction from your GPS position, and how long ago it was last heard. **Tab** changes the order to the latest first (**K3** > **Sort** on a Pi screen).
+- **OK** on an aircraft shows all it sent: ICAO code, callsign, squawk, category, barometric and GNSS height, ground speed, heading, vertical rate, position and message count. What an aircraft did not send is shown as "Unknown". **OK** again shows its route: the track it flew while it was heard, on a small map with north up, you in the middle and two range rings.
 - Origin and destination are not sent by aircraft, so they are not shown.
 - **S** saves a capture to `quartermaster/aircraft`: a CSV with every position, and the raw Mode S frames as AVR lines with timestamps, which dump1090 and readsb read. **L** lists the captures and **D** deletes one.
 - A capture is timed by the GPS. The time the GPS gave is kept when its fix is lost. A capture begun before the GPS told the time is moved to that time once it does. With no GPS time and a clock that was never set, a capture does not start and says why.
@@ -13,9 +14,15 @@
 - Fixed: an aircraft that stands still (0 kt) was given a heading of 0°. It has no direction, so its heading is now "Unknown" in the viewer and left out of the aircraft file of a wardrive.
 - New: stop a wardrive without saving it. The stop question has a third choice, **Stop, don't save**. It asks once more, then removes that wardrive's log, summary, aircraft, mesh and alert files from the device, and nothing more of it is uploaded. A part of a long drive that an upload site already has stays on that site, and the question and the notice then say so. Earlier wardrives are not touched. "Stop + save" stays the choice that is selected. A Pi screen shows one choice at a time, with what that choice does.
 - New: at 5 % battery, off the charger, a running wardrive is saved in full at once and says "Battery 5%. Wardrive saved. Still recording." It keeps recording and keeps saving every few seconds, so a battery that gives out costs a few seconds at most. A charger that stays in ends the extra saving. At 3 % it still saves, stops and closes as before.
-- Raspberry Pi images: the login can now also read the Recon and Drive Alert logs in `~/quartermaster/recon` and the aircraft captures in `~/quartermaster/aircraft`, as it already could the saved drives.
+- Fixed: on a Pi screen, the text cursor in a field showed as a small box. It is now a line.
+- Raspberry Pi images from 1.2.9 on: the login can also read the Recon and Drive Alert logs in `~/quartermaster/recon` and the aircraft captures in `~/quartermaster/aircraft`, as it already could the saved drives. A card flashed with an older image still lets the login read only the saved drives, even after the 1.2.9 package is installed. Flash the newest image to read all three.
 - Raspberry Pi images: each image is now named after its Waveshare HAT, for example `quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat.img.xz`, and so is its choice in Raspberry Pi Imager. The release page shows a photo of each HAT next to its image.
 - DIY guide: a Zero W, Zero 2 W or 3B joins only 2.4 GHz Wi-Fi, so give Imager your 2.4 GHz network. The guide also says where to type the commands on Windows.
+- The README starts with "Which Quartermaster do I need?", a table that compares the CardputerZero version with the DIY version on each of its two HATs.
+- The DIY guide shows the main screens on both HATs, the controls, how it differs from the CardputerZero and what to do when something goes wrong.
+- The user guide says on each page what is different on a DIY Raspberry Pi.
+- Each new release page says which version it is for. A CardputerZero release is called "Quartermaster 1.2.9 for CardputerZero", and its first line points anyone building the DIY version to the DIY guide. A DIY release is called "Quartermaster 1.2.9 DIY for Raspberry Pi", and its first line points CardputerZero owners to the AppStore.
+- The page of a DIY release shows the menu, a wardrive, the Hardware screen and the aircraft viewer on both HATs. It also links to what is new and to the steps for updating a card you already use.
 
 ## 1.2.8
 

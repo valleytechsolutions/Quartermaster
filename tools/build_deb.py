@@ -9,11 +9,15 @@ import argparse
 import json
 import os
 from pathlib import Path
+import posixpath
+import re
 import shutil
 import subprocess
 import tempfile
 
 HERE = Path(__file__).resolve().parents[1]
+HOMEPAGE = "https://github.com/valleytechsolutions/Quartermaster"
+LINK = re.compile(r"\]\(([^)\s]+)\)")
 PREFIX = "usr/share/APPLaunch"
 MAINTAINER = "Valleytech Solutions <178694271+valleytechsolutions@users.noreply.github.com>"
 COPYRIGHT = ("Quartermaster\nCopyright (c) 2026 Valleytech Custom Solutions (Your Pal Kal)\n"
@@ -63,6 +67,17 @@ def pi_layout(stage):
     return stage / "usr/lib/quartermaster/app"
 
 
+def pi_guide(version):
+    """docs/diy.md as the Pi package has it: links to pages that the package leaves out go to GitHub, at the Pi
+    release of this version."""
+    def link(match):
+        target = match.group(1)
+        if target.startswith(("#", "screens/", "https://", "http://", "mailto:")):
+            return match.group(0)
+        return "](%s/blob/pi-v%s/%s)" % (HOMEPAGE, version, posixpath.normpath("docs/" + target))
+    return LINK.sub(link, (HERE / "docs/diy.md").read_text(encoding="utf-8"))
+
+
 def build(out, target="cardputer"):
     manifest = json.loads((HERE / "app-builder.json").read_text())
     pkg, version = manifest["package_name"], manifest["version"]
@@ -101,9 +116,10 @@ def build(out, target="cardputer"):
         control = stage / "DEBIAN"
         control.mkdir()
         if pi:
-            shutil.copy2(HERE / "docs/diy.md", doc / "diy.md")
+            (doc / "diy.md").write_text(pi_guide(version), encoding="utf-8")
             (doc / "screens").mkdir()
             shutil.copy2(HERE / "docs/screens/waveshare-preview.png", doc / "screens")
+            shutil.copytree(HERE / "docs/screens/diy", doc / "screens/diy")
             (control / "conffiles").write_text("/etc/quartermaster/display\n")
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
         depends = DEPENDS
@@ -112,10 +128,10 @@ def build(out, target="cardputer"):
         (control / "control").write_text(
             "Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: %s\nInstalled-Size: %d\n"
             "Depends: %s\n%sSection: %s\nPriority: optional\n"
-            "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
+            "Homepage: %s\n"
             "Description: %s\n Wi-Fi and Bluetooth wardriver for %s.\n"
             % (deb_name, version, MAINTAINER, size, depends, "Conflicts: quartermaster\n" if pi else "",
-               "net" if pi else "APPLaunch",
+               "net" if pi else "APPLaunch", HOMEPAGE,
                "GPS wardriver for Waveshare LCD HATs with WiGLE logs and uploads" if pi else manifest["description"],
                "Raspberry Pi with a Waveshare LCD HAT" if pi else "the M5Stack CardputerZero"))
         for script in ("postinst", "prerm"):

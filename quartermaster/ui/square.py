@@ -189,7 +189,7 @@ class SquareUI:
         while field and c.text_width(field, self.body) > self.size - 16:
             field = field[1:]
         c.rect((3, y, self.size - 4, y + self.row), fill=SURFACE, outline=LINE, radius=3)
-        c.text((7, y + 1), field + "│", self.body, TEXT)
+        c.text((7, y + 1), field + "|", self.body, TEXT)
         y += self.row + 4
         if self.mode != "type":
             self.paragraph(c, screen.hint or "Use K3 to enter text.", y, MUTED, face=self.small)

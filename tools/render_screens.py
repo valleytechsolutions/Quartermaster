@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Render every screen with sample data: python3 tools/render_screens.py [--out screenshots] [--scale 1] [--gif]
-[--hats]"""
+[--hats]
+
+The pictures of the DIY screens, for both Waveshare HATs, with their dates in UTC so that every computer draws the same:
+python3 tools/render_screens.py --out docs/screens --diy"""
 
 import argparse
 import math
+import os
 from pathlib import Path
 import sys
 import tempfile
 import time
+
+from PIL import features
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -42,6 +48,9 @@ HATS = (("st7735-128", 128), ("st7789-240", 240))
 HAT_TILES = ("menu", "settings", "wardrive", "confirm", "hardware")
 HAT_SLOT, HAT_GAP, HAT_LABEL = 256, 2, 19
 HAT_GROUND = (24, 32, 40)
+DIY = ("menu", "wardrive", "actions", "stop", "stop-no-save", "alert", "hardware", "settings", "logs", "keys",
+       "phone-setup", "keyboard", "aircraft", "aircraft-detail", "aircraft-route", "recon", "about")
+NO_RAQM = "Pillow lays out text here without raqm, so its letters are spaced differently from the DIY pictures."
 
 
 class Site:
@@ -292,6 +301,99 @@ def hats(root):
     return sheet.image
 
 
+def diy(root):
+    """Every picture of the DIY screens, as {size: {name: picture}}: the 1.44 inch screen at twice its size and the
+    1.3 inch one at its own size."""
+    pictures = {}
+    for profile, size in HATS:
+        home = root / profile
+        old_logs(home)
+        app = build(home, Hat(profile, size))
+        app.hw.battery = None
+        zoom = HAT_SLOT // size
+        shots = pictures[size] = {}
+
+        def shot(name):
+            if name in DIY:
+                shots[name] = steady(app).resize((size * zoom, size * zoom), 0)
+        shot("menu")
+        press(app, "ENTER")
+        heard(app)
+        shot("wardrive")
+        press(app, "TAB")
+        shot("actions")
+        press(app, "ESC", "ENTER")
+        shot("stop")
+        press(app, "RIGHT")
+        shot("stop-no-save")
+        press(app, "ESC")
+        flock(app)
+        shot("alert")
+        app.stop_wardrive()
+        app.open("Hardware")
+        app.screen.top = next(i for i, card in enumerate(app.screen.cards(app)) if card["tag"] == "GPS")
+        shot("hardware")
+        app.open("Settings")
+        shot("settings")
+        app.open("Logs")
+        shot("logs")
+        app.open("Keys")
+        shot("keys")
+        press(app, "ENTER")
+        shot("phone-setup")
+        press(app, "ESC", "DOWN", "ENTER")
+        app.keyboard.type("AID0f1e2d3c")
+        press(app, "TAB", "RIGHT", "RIGHT", "RIGHT")
+        shot("keyboard")
+        app.open("Recon")
+        press(app, "SPACE")
+        flagged(app)
+        press(app)
+        shot("recon")
+        app.stop_recon()
+        plug_in_stick(app)
+        sky(app, home, shot)
+        app.open("About")
+        shot("about")
+        app.shutdown()
+    return pictures
+
+
+def flock(app):
+    """A Flock camera heard on the wardrive, with its alert banner."""
+    app.drive.watch._show({"time": NOW, "category": "flock", "label": drive_watch.LABELS["flock"],
+                           "name": "Flock-3A1007", "address": "B4:1E:52:3A:10:07", "rssi": -71, "confidence": STRONG,
+                           "evidence": "Flock Safety OUI", "transport": "wifi"}, False)
+
+
+def flagged(app):
+    """Recon running for 12 minutes, with four devices flagged among the networks and Bluetooth devices heard."""
+    r = app.recon
+    r.started = time.monotonic() - 754
+
+    def wifi(bssid, ssid, rssi, channel=6):
+        return {"bssid": bssid, "ssid": ssid, "rssi": rssi, "channel": channel, "frequency": 2407 + channel * 5,
+                "security": "WPA2", "band": "2.4"}
+    for step in range(12):
+        r.observe("wifi", wifi("B4:1E:52:3A:10:07", "Flock-3A1007", -74 + step * 2), now=NOW - 24 + step * 2)
+    r.observe("wifi", wifi("00:25:DF:71:0C:2E", "", -63, 11), now=NOW - 4)
+    r.observe("wifi", wifi("00:B4:63:19:AA:40", "Ring Setup 40", -81, 1), now=NOW - 9)
+    r.observe("ble", {"address": "D1:22:33:44:55:66", "address_type": 1, "rssi": -69, "name": "", "uuids": [],
+                      "manufacturer": {0x004C: bytes([0x12, 0x19]) + bytes(25)}, "service_data": {}}, now=NOW - 2)
+    for i in range(31):
+        r.observe("wifi", wifi("AA:BB:CC:00:10:%02X" % i, "net %d" % i, -70), now=NOW - 3)
+    for i in range(18):
+        r.observe("ble", {"address": "11:22:33:00:20:%02X" % i, "address_type": 1, "rssi": -80, "name": "",
+                          "uuids": [], "manufacturer": {}, "service_data": {}}, now=NOW - 3)
+    r.unseen_alerts = 1
+
+
+def plug_in_stick(app):
+    """An RTL-SDR stick plugged in, with rtl_adsb installed."""
+    app.hw.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}]
+    app.hw.decoder = "/usr/bin/rtl_adsb"
+
+
 def wait(app, root, shot):
     """A wardrive started before the GPS has a fix, and stopped before it gets one."""
     factory = app.wardrive_factory
@@ -314,8 +416,7 @@ def fly(app, root, shot):
     app.change("nodes", [])
     app.nodes.configure(app.cfg)
     app.cfg["adsb"] = True
-    app.hw.sdr = [{"usb_id": "0bda:2838", "label": "RTL2838UHIDIR", "port": "1-1.3"}]
-    app.hw.decoder = "/usr/bin/rtl_adsb"
+    plug_in_stick(app)
     app.wardrive_factory = lambda c, g: Wardrive(c, g, root=root, adapters=ADAPTERS, ble=Ble(BLUETOOTH), fleet=Fleet,
                                                  clock=lambda: next(ticks), receiver=Aircraft)
     app.home()
@@ -443,11 +544,26 @@ def main():
     parser.add_argument("--gif", action="store_true", help="also write the boot animation as boot.gif")
     parser.add_argument("--hats", action="store_true",
                         help="also write both Waveshare HAT screens as waveshare-preview.png")
+    parser.add_argument("--diy", action="store_true",
+                        help="write only the pictures of the DIY screens, in diy/128 and diy/240 under --out")
     args = parser.parse_args()
+    if args.diy and not features.check("raqm"):
+        sys.exit(NO_RAQM + " Install libraqm0 and libfribidi0 first.")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="quartermaster-shots-"))
     scale = args.scale
+    if args.diy:
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        pictures = diy(root)
+        for size, shots in pictures.items():
+            folder = out / "diy" / str(size)
+            folder.mkdir(parents=True, exist_ok=True)
+            for name, picture in shots.items():
+                picture.save(folder / (name + ".png"))
+        print("%d DIY pictures in %s" % (sum(map(len, pictures.values())), out / "diy"))
+        return
 
     def save(image, name):
         image.resize((image.width * scale, image.height * scale), 0).save(out / (name + ".png"))
@@ -471,9 +587,7 @@ def main():
     press(app, "W")
     heard(app)
     shot("wardrive")
-    app.drive.watch._show({"time": NOW, "category": "flock", "label": drive_watch.LABELS["flock"],
-                           "name": "Flock-3A1007", "address": "B4:1E:52:3A:10:07", "rssi": -71, "confidence": STRONG,
-                           "evidence": "Flock Safety OUI", "transport": "wifi"}, False)
+    flock(app)
     shot("wardrive-alert")
     app.cfg["alert_place"] = "top"
     shot("wardrive-alert-top")
@@ -555,32 +669,15 @@ def main():
     press(app, "T")
     shot("watch-list")
     press(app, "ESC", "SPACE")
-    r = app.recon
-    r.started = time.monotonic() - 754
-
-    def wifi(bssid, ssid, rssi, channel=6):
-        return {"bssid": bssid, "ssid": ssid, "rssi": rssi, "channel": channel, "frequency": 2407 + channel * 5,
-                "security": "WPA2", "band": "2.4"}
-    for step in range(12):
-        r.observe("wifi", wifi("B4:1E:52:3A:10:07", "Flock-3A1007", -74 + step * 2), now=NOW - 24 + step * 2)
-    r.observe("wifi", wifi("00:25:DF:71:0C:2E", "", -63, 11), now=NOW - 4)
-    r.observe("wifi", wifi("00:B4:63:19:AA:40", "Ring Setup 40", -81, 1), now=NOW - 9)
-    r.observe("ble", {"address": "D1:22:33:44:55:66", "address_type": 1, "rssi": -69, "name": "", "uuids": [],
-                      "manufacturer": {0x004C: bytes([0x12, 0x19]) + bytes(25)}, "service_data": {}}, now=NOW - 2)
-    for i in range(31):
-        r.observe("wifi", wifi("AA:BB:CC:00:10:%02X" % i, "net %d" % i, -70), now=NOW - 3)
-    for i in range(18):
-        r.observe("ble", {"address": "11:22:33:00:20:%02X" % i, "address_type": 1, "rssi": -80, "name": "",
-                          "uuids": [], "manufacturer": {}, "service_data": {}}, now=NOW - 3)
-    r.unseen_alerts = 1
+    flagged(app)
     press(app)
     shot("recon")
     press(app, "ENTER")
     shot("recon-detail")
     press(app, "ENTER")
     shot("recon-finder")
-    r.alerts[0]["time"] = NOW
-    r.unseen_alerts = 1
+    app.recon.alerts[0]["time"] = NOW
+    app.recon.unseen_alerts = 1
     press(app, "ESC", "ESC", "ESC")
     shot("recon-alert")
     app.stop_recon()

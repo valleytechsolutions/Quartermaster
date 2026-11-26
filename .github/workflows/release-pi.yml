@@ -61,20 +61,10 @@ jobs:
             echo "$TAG already has its Pi package and checksums."
             exit 0
           fi
+          python tools/pi_release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$(git rev-parse HEAD)" \
+            > build/notes.md
           gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false \
-            --title "Quartermaster $VERSION for Raspberry Pi" \
-            --notes "Raspberry Pi build for the Waveshare 1.44inch LCD HAT and the Waveshare 1.3inch LCD HAT. Each image is named after its HAT.
-
-          | Your HAT | Its image |
-          | --- | --- |
-          | <img src='https://www.waveshare.com/media/catalog/product/1/_/1.44inch-lcd-hat-1.jpg' width='160' alt='The Waveshare 1.44inch LCD HAT'><br>**Waveshare 1.44inch LCD HAT**<br><sub>128×128 screen, ST7735S</sub> | \`quartermaster-pi-$VERSION-waveshare-1.44inch-lcd-hat.img.xz\` |
-          | <img src='https://www.waveshare.com/media/catalog/product/1/_/1.3inch-lcd-hat-1.jpg' width='160' alt='The Waveshare 1.3inch LCD HAT'><br>**Waveshare 1.3inch LCD HAT**<br><sub>240×240 screen, ST7789</sub> | \`quartermaster-pi-$VERSION-waveshare-1.3inch-lcd-hat.img.xz\` |
-
-          Photos by Waveshare.
-
-          **To flash a ready SD card:** install the newest Raspberry Pi Imager, download \`quartermaster.rpi-imager-manifest\` below and open it. Imager then lists the image for each HAT. On a Zero W, Zero 2 W or 3B, give Imager a 2.4 GHz Wi-Fi network. The [build and installation guide](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/docs/diy.md) has every step.
-
-          The images log in as user \`pi\` with password \`pi\` and have SSH on. Change the password with \`passwd\` after your first login. They are added to this release shortly after it is published. While this is the newest Pi release, they are rebuilt every month with the latest Raspberry Pi OS updates." \
+            --title "Quartermaster $VERSION DIY for Raspberry Pi" --notes-file build/notes.md \
             "build/pi/$package" build/pi/SHA256SUMS
       - name: Start the image build
         if: github.event_name == 'workflow_dispatch'

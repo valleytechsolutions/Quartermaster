@@ -80,3 +80,13 @@ Normal wardriving needs no monitor mode. Every adapter marked Yes above scans no
 ## How many adapters?
 
 See [Power and USB hubs](power.md#how-many-adapters).
+
+## On a DIY Raspberry Pi
+
+**Which Linux.** On a Pi, the Linux of Raspberry Pi OS decides which chips work, not the CardputerZero's Linux 6.18. To see its version, log in to the Pi and type `uname -r`. Some chips in the table above got their driver in a newer Linux than some Pis have: the MT7925U in Linux 6.7, the RTL8812AU and RTL8811AU / 8821AU in 6.13, the RTL8814AU in 6.15, and the RTL8851BU and RTL8852BU in 6.17. When the Pi's Linux has no driver for a chip, the Hardware screen says "No driver for it here. It needs Linux X."
+
+**The built-in Wi-Fi** of a Zero W, Zero 2 W or 3B covers 2.4 GHz. A 3B+ or 4B also covers 5 GHz. None of them covers 6 GHz. For 6 GHz, add an MT7921AU or MT7925U adapter, and set the Pi's own Wi-Fi country. See [Getting the most networks](more-networks.md#on-a-diy-raspberry-pi).
+
+**Firmware and driver discs.** The Pi package brings the same firmware packages and the same **usb-modeswitch** as the CardputerZero package. When an adapter needs **firmware-misc-nonfree** and the Pi does not have it, the Hardware screen names it. Install it as shown above.
+
+**On a Zero,** there is only one USB port for data, so the adapters go on an OTG hub. See [Power and USB hubs](power.md#on-a-diy-raspberry-pi).

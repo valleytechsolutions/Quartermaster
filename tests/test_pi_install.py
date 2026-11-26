@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -108,7 +109,23 @@ def test_pi_installer_contains_both_profiles_and_an_unprivileged_launcher(tmp_pa
     assert (stage / "usr/lib/quartermaster/app/quartermaster/ui/hat.py").is_file()
     unit = (stage / "usr/lib/systemd/system/quartermaster@.service").read_text()
     assert "User=%i\n" in unit and "%I" not in unit and "ExecStart=/usr/bin/quartermaster\n" in unit
-    assert (stage / "usr/share/doc/quartermaster-pi/diy.md").is_file()
-    assert (stage / "usr/share/doc/quartermaster-pi/screens/waveshare-preview.png").is_file()
+    doc = stage / "usr/share/doc/quartermaster-pi"
+    guide, source = (doc / "diy.md").read_text(encoding="utf-8"), (build_deb.HERE / "docs/diy.md").read_text()
+    assert build_deb.LINK.sub("]()", guide) == build_deb.LINK.sub("]()", source)
+    version = json.loads((build_deb.HERE / "app-builder.json").read_text())["version"]
+    on_github = "%s/blob/pi-v%s/" % (build_deb.HOMEPAGE, version)
+    for target in build_deb.LINK.findall(guide) + re.findall(r'<img src="([^"]+)"', guide):
+        if target.startswith(on_github):
+            path = build_deb.HERE / target[len(on_github):].partition("#")[0]
+            assert path.is_file() and path.suffix == ".md", target
+        elif not target.startswith(("#", "https://")):
+            assert (doc / target).is_file(), target
+    assert on_github + "docs/guide/alerts.md#on-a-diy-raspberry-pi" in guide
+    assert (doc / "screens/waveshare-preview.png").is_file()
+    source, shipped = build_deb.HERE / "docs/screens/diy", stage / "usr/share/doc/quartermaster-pi/screens/diy"
+    pictures = sorted(path.relative_to(source) for path in source.rglob("*.png"))
+    assert {path.parent.name for path in pictures} == {"128", "240"}
+    assert sorted(path.relative_to(shipped) for path in shipped.rglob("*") if path.is_file()) == pictures
+    assert all((shipped / path).read_bytes() == (source / path).read_bytes() for path in pictures)
     assert not (stage / "usr/share/APPLaunch").exists()
     assert not (stage / "usr/lib/tmpfiles.d/quartermaster.conf").exists()

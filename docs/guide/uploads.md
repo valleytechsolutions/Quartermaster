@@ -26,7 +26,7 @@ Each site gives you a key on its own website. Quartermaster never asks for your 
 2. On the menu, press **K**, then **OK** on the first row, "Set up from a phone or PC".
 3. Scan the QR code with your phone. The link in the code already holds the PIN, so the page fills it in by itself.
 4. Or type the address on the screen into a browser. Then enter the 6-digit PIN shown on the Cardputer.
-5. Paste your keys and press Save. The Cardputer says "Keys saved from the setup page".
+5. Paste your keys and press **Save keys**. The Cardputer says "Keys saved from the setup page".
 
 The page only exists while that screen is open. It closes when you leave the screen. A new PIN is made each time. After 5 wrong PINs it locks; close the screen and open it again for a new PIN. The page never shows a saved key in full, only its last four characters.
 
@@ -85,3 +85,20 @@ Open a log on the Logs screen to see what each site did with it, and press **U**
 | Nothing to send. No node gave its own position | A mesh file with nothing WDGWars can take. |
 | Wardrift takes mesh nodes only from a node key | Wardrift refused mesh nodes with this kind of key. |
 | Wardrift is busy with another upload. Will try again | It retries by itself. |
+
+## On a DIY Raspberry Pi
+
+**Wi-Fi.** The Pi uses the Wi-Fi network you entered in Raspberry Pi Imager. To join another network, [log in to the Pi](../diy.md#log-in) and run `sudo nmtui`. A Zero W, Zero 2 W or 3B can only join a 2.4 GHz network.
+
+**Entering keys from your phone or computer.** Open **Keys** and press **OK** on **Phone / PC setup**. The screen shows the QR code with the PIN under it. To see the address to type into a browser, press **K3** and choose **Address and PIN**. While the Pi is not on a network, the screen says "Connect the Pi and phone to the same network." **K2** closes the screen, and the page closes with it. While the address and PIN show, the first **K2** goes back to the QR code, so press **K2** twice.
+
+**Entering keys on the Pi.** Move to a key and press **OK**. Then press **K3** for the keyboard on the screen, or type on a USB keyboard. What you type shows as dots. See [Typing in a text box on a Pi](wardrive.md#typing-in-a-text-box-on-a-pi). On a key, **K3** offers **Test** and **Remove**. The list does not show which keys are saved. To see that, press **K3** and choose **Pan details**.
+
+**The Uploads screen** shows the CardputerZero layout. **OK** uploads now, and **K3** offers **Test keys** and **Keys**.
+
+**Where the keys are kept.** A ready SD card image keeps them in another folder. See [Files and logs](files.md#on-a-diy-raspberry-pi).
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/keys.png" width="256" alt="Keys on the 1.44inch HAT: Phone / PC setup, then the WiGLE, WDGWars and Wardrift keys"> | <img src="../screens/diy/240/keys.png" width="240" alt="Keys on the 1.3inch HAT: Phone / PC setup, then the WiGLE, WDGWars and Wardrift keys"> |
+| <img src="../screens/diy/128/phone-setup.png" width="256" alt="The phone setup screen on the 1.44inch HAT: a QR code with the PIN under it"> | <img src="../screens/diy/240/phone-setup.png" width="240" alt="The phone setup screen on the 1.3inch HAT: a QR code with the PIN under it"> |

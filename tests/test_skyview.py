@@ -482,7 +482,7 @@ def test_a_capture_does_not_start_on_a_clock_that_was_never_set(view, tmp_path):
 
 
 def test_a_second_capture_gets_its_own_name_and_only_new_frames(view, tmp_path):
-    viewer = view(epoch=lambda fix: NOW + time.monotonic() % 0.5)
+    viewer = view(epoch=lambda fix: NOW + 0.5)
     viewer.step()
     hear(viewer, plane("4840d6", 25.3, -77.4))
     viewer.capture_start()

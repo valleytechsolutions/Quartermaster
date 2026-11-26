@@ -123,3 +123,39 @@ Recon hears Wi-Fi and Bluetooth only (plus nodes and Deep scan), so its watch li
 - **Silent devices** that send nothing while you pass cannot be seen at all. A camera recording to a memory card, with its radio off, is invisible.
 - **LoRaWAN** is heard on one channel and one data rate only, so many networks are missed. See [LoRaWAN](aircraft-and-lora.md#lorawan-networks).
 - Detection is best effort. A device may simply be quiet as you pass it.
+
+## On a DIY Raspberry Pi
+
+Drive Alerts and Recon work as on the CardputerZero. These things are different:
+
+- **LoRaWAN networks** is not offered, because it needs the Cap LoRa-1262. **Settings > Alert me about** lists the other 19 kinds.
+- The HATs have no speaker. Quartermaster plays alert tones on the Pi's default sound output, if there is one. Alerts always show on the screen.
+- An alert shows as a box with a short line, such as "Flock camera", at the bottom of the screen. **Settings > Alert position** can put it at the top.
+- The small wardrive screen does not show the number of alerts or the quiet time left. Press **K3** and choose **Alerts** to see the alerts of the drive.
+- The alert list, Recon, **Alert me about**, **My alerts** and **No alerts for** show the CardputerZero layout. See [What fits on the small screen](wardrive.md#what-fits-on-the-small-screen).
+
+With the buttons of the HAT, a quiet time starts from the **K3** list while an alert shows, or from the alert list.
+
+| On the CardputerZero | On a DIY Raspberry Pi |
+| --- | --- |
+| **Del** while a banner shows | **K3**, then **Dismiss alert** |
+| **Q** while a banner shows | **K3**, then **Quiet 10 min** |
+| **Q** on the wardrive screen during a quiet time | **K3**, then **End quiet** |
+| **A** on the wardrive screen | **K3**, then **Alerts** |
+| **Q** in the alert list | **K3**, then **Quiet 10 min**, or **End quiet** with the time left, such as **End quiet (9m)** |
+| **N** on an alert's details screen | **K3**, then **No alerts** |
+| **Z** / **C** in **Alert me about** | Move the joystick left or right |
+| **P**, **T** and **D** in **Alert me about** | **K3**, then **Play**, **Mute** or **Defaults** |
+| **A** and **D** in **My alerts** | **K3**, then **Add** or **Remove** |
+| **D** in **No alerts for** | **K3**, then **Remove** |
+| **R** on the menu | Choose **Recon** and press **OK** |
+| **Space** in Recon | **K3**, then **Start** or **Stop** |
+| **T** in Recon, before starting | **K3**, then **Watch list**. In the watch list, **K3** offers **All on**. |
+| **A** in Recon | **K3**, then **All** or **Flagged** |
+| **S** in Recon | **K3**, then the sort, such as **Threat**. Choosing it moves to the next sort. |
+| **R** in the signal finder | **K3**, then **Reset peak** |
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/alert.png" width="256" alt="A wardrive on the 1.44inch HAT with an alert box at the bottom that says Flock camera"> | <img src="../screens/diy/240/alert.png" width="240" alt="A wardrive on the 1.3inch HAT with an alert box at the bottom that says Flock camera"> |
+| <img src="../screens/diy/128/recon.png" width="256" alt="Recon on the 1.44inch HAT in the CardputerZero layout, with flagged devices and their kinds"> | <img src="../screens/diy/240/recon.png" width="240" alt="Recon on the 1.3inch HAT in the CardputerZero layout, with flagged devices and their kinds"> |
