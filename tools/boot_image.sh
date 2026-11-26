@@ -257,7 +257,7 @@ checks() {
         grep '^Cannot open' | tail -n 1) || true
     check "$when: the app is started for the $hat HAT" \
         "$(grep -c "^Cannot open $hat display or controls: " <<< "$app" || true)" 1
-    check "$when: the app misses none of its software" \
+    check "$when: the app reports no missing software" \
         "$(grep -ciE 'no module named|cannot import|shared object' <<< "$app" || true)" 0
     as_root "-u $service_user sh -c 'umask 077 && echo saved > $data/logs/boot-check.wigle.csv'" || true
     for _ in $(seq 1 12); do
