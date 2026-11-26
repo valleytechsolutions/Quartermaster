@@ -51,14 +51,22 @@ def test_the_boot_file_knows_exactly_the_hat_profiles_the_app_accepts():
     ("display=st7735-128\r\ndisplay=\"st7789-240\"\r\n", "st7789-240"),
     ("Display=1.44\n", "st7735-128"),
     ("display='1.3in'\n", "st7789-240"),
-    ("# nothing chosen\nbrightness=3\nst7789-240\n", None),
+    ("# nothing chosen\nbrightness=3\n", None),
+    ("display=st7735-128\nst7789-240\n", "st7789-240"),
+    ("  ST7735-128  \n", "st7735-128"),
+    ("display: st7789-240\n", "st7789-240"),
+    ("#   1.3 inch HAT (240x240):   st7789-240\ndisplay=st7735-128\n", "st7735-128"),
+    ("1.3 inch HAT (240x240):   st7789-240\n", "st7789-240"),
+    ("display=st7789-240\nmy HAT is the \"st7735-128\"\n", "st7735-128"),
+    ("brightness=128\nsize: 240\nst7789-240 is not my HAT\n", None),
+    ("240\n", "st7789-240"),
     ("", None),
 ])
 def test_the_boot_file_parser_takes_the_last_display_line(text, profile):
     assert boot_config.parse(text) == profile
 
 
-@pytest.mark.parametrize("text", ["display=st7735\n", "display=\n", "display=cardputer\n",
+@pytest.mark.parametrize("text", ["display=st7735\n", "display=\n", "display=cardputer\n", "display: big\n",
                                   "display=st7789-240\ndisplay=hdmi\n"])
 def test_the_boot_file_parser_refuses_an_unknown_display(text):
     with pytest.raises(ValueError, match="unknown display"):
@@ -92,6 +100,9 @@ def test_the_boot_partition_template_selects_its_hat(profile):
     assert boot_config.parse(text) == profile
     for other in boot_config.PROFILES:
         assert other in text
+    lines = text.splitlines()
+    assert lines[-1] == "display=" + profile and all(line.startswith("#") for line in lines[:-1])
+    assert "display=" not in "".join(lines[:-1]).replace("after display= on the last line", "")
 
 
 def test_the_boot_config_unit_runs_before_the_app_and_points_at_the_installed_script():
@@ -255,6 +266,7 @@ def test_the_first_login_unit_runs_once_after_cloud_init_made_its_users_and_befo
     ("users:\n  default: true\n  robot: {passwd: $6$r$s}\n", ("robot", "$6$r$s")),
     ("users:\n  off: false\n  bare: {}\n", ("bare", None)),
     ("users: pi\n", ("pi", None)),
+    ("users:\n  pi:\n    shell: /bin/bash\n", ("pi", None)),
     ("users: \"default, kal\"\n", ("kal", None)),
     ("users:\n- default,kal\n", ("kal", None)),
     ("users:\n- name: default\n  lock_passwd: false\n", None),
@@ -325,8 +337,7 @@ def test_a_login_asked_for_without_a_password_never_keeps_the_default_one():
     assert login_plan(users, {"kal": DEFAULT}, ("kal", DEFAULT), **renamed) == [["usermod", "-L", "kal"]]
     assert login_plan(users, {"kal": DEFAULT}, None, **renamed) == [["usermod", "-L", "kal"]]
     assert login_plan(users, {"kal": DEFAULT}, ("pi", OWN), **renamed) == [["usermod", "-L", "kal"]]
-    assert login_plan(PI, {"pi": "!" + DEFAULT}, first_login.requested("users:\n  pi:\n    shell: /bin/bash\n")) == []
-    assert login_plan(PI, {"pi": "!" + DEFAULT}, first_login.requested("users: pi\n")) == []
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, ("pi", None)) == []
 
 
 def test_pi_set_up_in_imager_gets_its_group_and_link_back():

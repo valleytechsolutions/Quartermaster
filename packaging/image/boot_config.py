@@ -1,6 +1,7 @@
 """Apply the display named in quartermaster.txt on the boot partition to /etc/quartermaster/display."""
 
 import os
+import re
 import sys
 
 PROFILES = ("st7735-128", "st7789-240")
@@ -11,18 +12,21 @@ DISPLAY_FILE = "/etc/quartermaster/display"
 
 
 def parse(text):
-    """The profile from the last display= line, None when there is none; ValueError for an unknown one."""
+    """The profile the last setting line names, None when no line names one; ValueError for an unknown display.
+
+    A setting line is display=<name>, or any other line that ends with a HAT name."""
     chosen = None
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        key, sep, value = line.partition("=")
-        if not sep or key.strip().lower() != "display":
-            continue
-        value = value.strip().strip("\"'").strip().lower()
+        line = raw.split("#", 1)[0].strip().lower()
+        setting = re.fullmatch(r"display\s*[=:]\s*(.*)", line)
+        value = (setting.group(1) if setting else line).strip().strip("\"'").strip()
         value = ALIASES.get(value, value)
-        if value not in PROFILES:
+        if not setting and value not in PROFILES:
+            value = re.split(r"[\s=:\"']+", value)[-1]
+        if value in PROFILES:
+            chosen = value
+        elif setting:
             raise ValueError("unknown display %r, expected one of %s" % (value, ", ".join(PROFILES)))
-        chosen = value
     return chosen
 
 
