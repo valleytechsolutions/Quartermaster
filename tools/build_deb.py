@@ -102,6 +102,8 @@ def build(out, target="cardputer"):
         control.mkdir()
         if pi:
             shutil.copy2(HERE / "docs/diy.md", doc / "diy.md")
+            (doc / "screens").mkdir()
+            shutil.copy2(HERE / "docs/screens/waveshare-preview.png", doc / "screens")
             (control / "conffiles").write_text("/etc/quartermaster/display\n")
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
         depends = DEPENDS
@@ -113,7 +115,8 @@ def build(out, target="cardputer"):
             "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
             "Description: %s\n Wi-Fi and Bluetooth wardriver for %s.\n"
             % (deb_name, version, MAINTAINER, size, depends, "Conflicts: quartermaster\n" if pi else "",
-               "net" if pi else "APPLaunch", manifest["description"],
+               "net" if pi else "APPLaunch",
+               "GPS wardriver for Waveshare LCD HATs with WiGLE logs and uploads" if pi else manifest["description"],
                "Raspberry Pi with a Waveshare LCD HAT" if pi else "the M5Stack CardputerZero"))
         for script in ("postinst", "prerm"):
             shutil.copy2(HERE / "packaging" / script, control / script)

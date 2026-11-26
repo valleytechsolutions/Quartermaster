@@ -25,6 +25,7 @@ class HatDisplay:
             from luma.lcd.device import st7735, st7789
 
             with ExitStack() as opened:
+                self._resources = opened
                 gpio.setmode(gpio.BCM)
                 # Scope cleanup to the display; the button reader owns different pins.
                 opened.callback(gpio.cleanup, [25, 27, 24])
@@ -34,13 +35,19 @@ class HatDisplay:
                 serial = spi(spi=bus, gpio=gpio, port=0, device=0, gpio_DC=25, gpio_RST=27,
                              reset_hold_time=0.1, reset_release_time=0.12,
                              bus_speed_hz=8000000 if small else 32000000)
-                light = dict(gpio=gpio, gpio_LIGHT=24, active_low=False)
+                controller = st7735 if small else st7789
+                side = 128 if small else 240
+                options = dict(width=side, height=side, gpio=gpio, gpio_LIGHT=24, active_low=False)
                 if small:
                     # With the joystick at the left the ST7735S glass starts at column 1, row 2.
-                    self.panel = st7735(serial, width=128, height=128, h_offset=1,
-                                        v_offset=2, bgr=True, **light)
-                else:
-                    self.panel = st7789(serial, width=240, height=240, **light)
+                    options.update(h_offset=1, v_offset=2, bgr=True)
+
+                class Panel(controller):
+                    # Luma registers this hook before initialization finishes. Use the same
+                    # idempotent cleanup as the launcher, even if the controller fails to start.
+                    cleanup = staticmethod(self.close)
+
+                self.panel = Panel(serial, **options)
                 opened.callback(self.panel.backlight, False)
                 self.width, self.height = self.panel.size
                 self._resources = opened.pop_all()

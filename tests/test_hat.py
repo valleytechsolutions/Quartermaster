@@ -14,20 +14,33 @@ from quartermaster.ui.keys import Key
 def panel_drivers(monkeypatch):
     gpio, bus, serial, small, large = (Mock() for _ in range(5))
     small.return_value.size, large.return_value.size = (128, 128), (240, 240)
+    hooks = []
+
+    def controller(calls):
+        class LCD:
+            def __init__(self, *args, **kwargs):
+                hooks.append(lambda: self.cleanup())
+                panel = calls(*args, **kwargs)
+                self.size, self.display, self.backlight = panel.size, panel.display, panel.backlight
+
+            def cleanup(self):
+                pytest.fail("Luma tried to access the released display at interpreter shutdown")
+        return LCD
+
     for name, module in {
         "RPi": SimpleNamespace(GPIO=gpio),
         "RPi.GPIO": gpio,
         "spidev": SimpleNamespace(SpiDev=lambda: bus),
         "luma.core.interface.serial": SimpleNamespace(spi=serial),
-        "luma.lcd.device": SimpleNamespace(st7735=small, st7789=large),
+        "luma.lcd.device": SimpleNamespace(st7735=controller(small), st7789=controller(large)),
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
-    return gpio, bus, serial, small, large
+    return gpio, bus, serial, small, large, hooks
 
 
 @pytest.mark.parametrize("profile,side", [("st7735-128", 128), ("st7789-240", 240)])
 def test_waveshare_uses_its_native_frame_and_only_releases_display_pins(panel_drivers, profile, side):
-    gpio, bus, serial, small, large = panel_drivers
+    gpio, bus, serial, small, large, hooks = panel_drivers
     display = hat.HatDisplay(profile)
     assert display.profile == profile
     assert (display.width, display.height) == (side, side)
@@ -45,16 +58,27 @@ def test_waveshare_uses_its_native_frame_and_only_releases_display_pins(panel_dr
         display.show(Image.new("RGB", (320, 170)))
     display.close()
     display.close()
+    hooks[0]()
     driver.return_value.backlight.assert_called_once_with(False)
     bus.close.assert_called_once()
     gpio.cleanup.assert_called_once_with([25, 27, 24])
 
 
 def test_failed_display_releases_the_bus_and_pins(panel_drivers):
-    gpio, bus, serial, _, _ = panel_drivers
+    gpio, bus, serial, _, _, _ = panel_drivers
     serial.side_effect = OSError("SPI disabled")
     with pytest.raises(OSError, match="SPI disabled"):
         hat.HatDisplay("st7735-128")
+    bus.close.assert_called_once()
+    gpio.cleanup.assert_called_once_with([25, 27, 24])
+
+
+def test_failed_controller_cannot_touch_released_pins_at_shutdown(panel_drivers):
+    gpio, bus, _, small, _, hooks = panel_drivers
+    small.side_effect = OSError("panel initialization failed")
+    with pytest.raises(OSError, match="panel initialization failed"):
+        hat.HatDisplay("st7735-128")
+    hooks[0]()
     bus.close.assert_called_once()
     gpio.cleanup.assert_called_once_with([25, 27, 24])
 

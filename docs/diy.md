@@ -17,12 +17,12 @@ Use a Raspberry Pi, either of Raspyjack's joystick HATs, and a GPS to build a ha
 | [1.44″ joystick HAT, 128×128](https://www.waveshare.com/1.44inch-lcd-hat.htm) | ST7735S | `st7735-128` |
 | [1.3″ IPS joystick HAT, 240×240](https://www.waveshare.com/wiki/1.3inch_LCD_HAT) | ST7789 | `st7789-240` |
 
-The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For 6 GHz, add a Linux-supported tri-band adapter and check the bands shown under **Hardware**. The Cardputer's Cap LoRa-1262, Grove port and power rails are specific to the M5Stack hardware. Use USB GPS or gpsd on a Pi. Battery percentage requires a power supply that reports a system battery to Linux. [Pi Zero specifications](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) · [Quartermaster adapter list](../README.md#wi-fi-adapters)
+The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For 6 GHz, add a Linux-supported tri-band adapter and check the bands shown under **Hardware**. The Cardputer's Cap LoRa-1262, Grove port and power rails are specific to the M5Stack hardware. Use USB GPS or gpsd on a Pi. Battery percentage requires a power supply that reports a system battery to Linux. [Pi Zero specifications](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) · [Quartermaster adapter list](https://github.com/valleytechsolutions/Quartermaster#wi-fi-adapters)
 
 ## Assemble and install
 
 1. With the Pi powered off, align pin 1 and seat the HAT on the GPIO header. Plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
-2. Write Raspberry Pi OS Lite (Trixie) to the microSD. Choose 64-bit for Zero 2 W, 3B, 3B+ or 4B, or 32-bit for the original Zero W. In Raspberry Pi Imager configure a username, network and SSH so you can complete setup from your computer.
+2. For a new build, write Raspberry Pi OS Lite (Trixie) to the microSD. Zero 2 W, 3B, 3B+ and 4B can use 32-bit or 64-bit. The original Zero W needs 32-bit. RaspyJack's DIY guide uses the 32-bit edition. In Raspberry Pi Imager configure a username, network and SSH. If your existing build runs Raspberry Pi OS Bookworm with the standard Raspberry Pi repositories, you can install on that card starting at step 3.
 3. Boot the Pi and connect over SSH. Download the installer and checksum from the [Quartermaster Pi 1.2.5 release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.5). Run these commands in a new directory on the Pi.
 
 ```sh
