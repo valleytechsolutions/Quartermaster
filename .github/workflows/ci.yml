@@ -10,51 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  facts:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Show more of what the base image ships
-        run: |
-          url=$(curl -fsSIL --retry 3 -o /dev/null -w '%{url_effective}' https://downloads.raspberrypi.com/raspios_lite_armhf_latest)
-          curl -fsSL --retry 3 -o base.img.xz "$url"
-          xz -d base.img.xz
-          loop=$(sudo losetup --find --show --partscan --read-only base.img)
-          sudo udevadm settle || true
-          for _ in 1 2 3 4 5; do [ -b "${loop}p2" ] && break; sleep 1; done
-          sudo mkdir -p /mnt/base
-          sudo mount -o ro,noload "${loop}p2" /mnt/base
-          sudo mount -o ro "${loop}p1" /mnt/base/boot/firmware
-          cd /mnt/base
-          show() {
-            local f
-            for f in "$@"; do
-              echo "=================== $f"
-              if sudo test -d "$f"; then sudo ls -la "$f"; else sudo cat "$f" 2>&1 || true; fi
-            done
-          }
-          echo "=================== cc_ssh enable_ssh"
-          sudo sed -n '225,290p' usr/lib/python3/dist-packages/cloudinit/config/cc_ssh.py
-          echo "=================== cc_set_passwords ssh_pwauth"
-          sudo grep -n "ssh_pwauth\|def handle_ssh_pwauth" -A 6 usr/lib/python3/dist-packages/cloudinit/config/cc_set_passwords.py | cut -c1-200 | head -120 || true
-          echo "=================== who owns rfkill_default.conf"
-          sudo grep -l "rfkill_default" var/lib/dpkg/info/*.list var/lib/dpkg/info/*.conffiles var/lib/dpkg/info/*.postinst 2>/dev/null || true
-          sudo grep -rn "rfkill" var/lib/dpkg/info/raspberrypi-sys-mods.* 2>/dev/null | cut -c1-200 | head -20 || true
-          echo "=================== brcm country defaults"
-          sudo sh -c 'grep -n "ccode\|regrev" usr/lib/firmware/brcm/*.txt usr/lib/firmware/cypress/*.txt 2>/dev/null' | cut -c1-200 | head -60 || true
-          sudo sh -c 'ls usr/lib/firmware/brcm/ | grep -i "4345\|43455"' || true
-          echo "=================== kmod and iw"
-          sudo sh -c 'ls -la usr/bin/kmod usr/sbin/modprobe usr/sbin/iw usr/sbin/rfkill 2>&1' || true
-          sudo grep -n "Version" -m1 var/lib/dpkg/info/../status >/dev/null 2>&1 || true
-          sudo sh -c "grep -A 8 '^Package: kmod$' var/lib/dpkg/status | grep '^Version'" || true
-          sudo sh -c "grep -A 8 '^Package: network-manager$' var/lib/dpkg/status | grep '^Version'" || true
-          echo "=================== netplan and NetworkManager dirs"
-          show etc/netplan usr/lib/netplan etc/NetworkManager/conf.d etc/NetworkManager/system-connections
-          echo "=================== update-motd and pam"
-          sudo grep -n "motd" etc/pam.d/sshd etc/pam.d/login | cut -c1-200 || true
-          echo "=================== user-data seed"
-          show boot/firmware/user-data boot/firmware/network-config boot/firmware/meta-data
-
   test:
     runs-on: ubuntu-24.04
     strategy:

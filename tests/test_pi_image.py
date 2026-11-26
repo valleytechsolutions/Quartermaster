@@ -137,6 +137,14 @@ def test_the_image_script_is_strict_cleans_up_and_keeps_imager_customisation_wor
     assert 'check "cmdline.txt and cloud-init seed" "$(seeds)" "$seed_before"' in script
 
 
+@pytest.mark.parametrize("name", ["first_user", "probe"])
+def test_a_lookup_that_fails_in_the_base_image_reaches_the_message_written_for_it(name):
+    line, = [line for line in SCRIPT.read_text().splitlines() if line.startswith(name + "=$(")]
+    run = subprocess.run(["bash", "-c", "set -euo pipefail\nin_chroot() { return 2; }\nlogin_id=1000\n%s\n"
+                          'echo "reached [$%s]"' % (line, name)], capture_output=True, text=True)
+    assert (run.returncode, run.stdout) == (0, "reached []\n"), run
+
+
 def shell_list(script, name):
     return re.search(r"^%s=\(([^)]*)\)" % name, script, re.M).group(1).split()
 
@@ -791,6 +799,8 @@ def test_the_image_workflow_builds_both_hats_on_tags_monthly_and_on_request():
     assert triggers["push"] == {"tags": ["pi-v*"]} and "workflow_dispatch" in triggers
     assert re.fullmatch(r"\d+ \d+ \d+ \* \*", triggers["schedule"][0]["cron"])
     assert workflow["permissions"] == {"contents": "write", "actions": "read"}
+    assert workflow["concurrency"] == {"group": "pi-images${{ inputs.practice && '-practice' || '' }}",
+                                       "cancel-in-progress": False}
     image = workflow["jobs"]["image"]
     assert image["needs"] == "release" and image["runs-on"] == "ubuntu-24.04"
     assert tuple(image["strategy"]["matrix"]["hat"]) == boot_config.PROFILES
@@ -802,6 +812,11 @@ def test_the_image_workflow_builds_both_hats_on_tags_monthly_and_on_request():
     assert "gh release" not in steps.replace("gh release download", "")
     publish = workflow["jobs"]["publish"]
     assert publish["needs"] == ["release", "image"] and "imager-list" not in workflow["jobs"]
+    tagged = "${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}"
+    for job in (image, publish):
+        assert job["steps"][0]["uses"].startswith("actions/checkout@") and job["steps"][0]["with"] == {"ref": tagged}
+        assert job["env"]["TAG"] == "${{ needs.release.outputs.tag }}"
+    assert workflow["jobs"]["release"]["outputs"] == {"tag": "${{ steps.pick.outputs.tag }}"}
     listing = "\n".join(step.get("run", "") for step in publish["steps"])
     assert "tools/imager_os_list.py" in listing and "--clobber" not in listing
     assert listing.index("tools/imager_os_list.py") < listing.index("tools/replace_release_assets.sh")
@@ -829,7 +844,11 @@ def test_a_practice_run_builds_the_images_from_the_branch_and_publishes_nothing(
     assert own["if"] == "inputs.practice" and "tools/build_deb.py --target pi --out build/pi" in own["run"]
     assert "gh " not in own["run"]
     assert steps["Wait for the Pi package"]["if"] == "${{ !inputs.practice }}"
-    assert "gh release download" in steps["Wait for the Pi package"]["run"]
+    wait = steps["Wait for the Pi package"]["run"]
+    assert wait.index("if gh release download") < wait.index('[ -s "build/pi/quartermaster-pi_${version}_all.deb" ] &&') < \
+        wait.index("sha256sum --check --ignore-missing --strict SHA256SUMS); then") < wait.index("break")
+    assert wait.count("sha256sum") == 1 and wait.rstrip().endswith('echo "VERSION=$version" >> "$GITHUB_ENV"')
+    assert set(workflow["jobs"]) == {"release", "image", "publish"}
     named = steps["Name the package and the image"]
     assert "if" not in named and 'test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"' in named["run"]
     order = [step.get("name") for step in jobs["image"]["steps"]]

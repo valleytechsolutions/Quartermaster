@@ -237,7 +237,7 @@ chmod 750 "$mnt/var/lib/quartermaster"
 install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data" "$mnt$data/logs"
 
 log "Setting up the $login_user login, SSH and the name $host_name"
-first_user=$(in_chroot getent passwd "$login_id" | cut -d: -f1)
+first_user=$(in_chroot getent passwd "$login_id" | cut -d: -f1) || true
 if [ -z "$first_user" ]; then
     in_chroot getent passwd "$login_user" >/dev/null && die "$login_user in the base image is not uid $login_id"
     in_chroot useradd --uid "$login_id" --user-group --create-home --shell /bin/bash "$login_user"
@@ -364,7 +364,7 @@ sys.path.insert(0, "/usr/lib/quartermaster")
 import radiod
 user = pwd.getpwnam(sys.argv[1])
 print(radiod.peer_allowed(user.pw_uid, user.pw_gid))' "$service_user")" True
-probe=$(in_chroot sh -c 'useradd -M -N -s /usr/sbin/nologin qm-probe && id -u qm-probe; userdel qm-probe' 2>/dev/null)
+probe=$(in_chroot sh -c 'useradd -M -N -s /usr/sbin/nologin qm-probe && id -u qm-probe; userdel qm-probe' 2>/dev/null) || true
 check "next login user below the service uid" "$([ "${probe:-0}" -ge 1000 ] && [ "$probe" -lt "$service_id" ] && echo yes || echo "no ($probe)")" yes
 check "Wi-Fi rfkill saved state" "$(cat "$mnt"/var/lib/systemd/rfkill/*:wlan 2>/dev/null | grep -vx 0 | xargs)" ""
 kernels=0
