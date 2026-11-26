@@ -28,7 +28,7 @@ The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For
 
 Each Raspberry Pi release has two ready SD card images, one for each HAT. They boot straight into Quartermaster. You do not need to type any commands.
 
-1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer. Use version 2 or newer.
+1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer. Use the newest version.
 2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.9/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
 
    If opening the file does not start Imager, open Imager yourself. Click **App Options**, then **Edit** beside **Content Repository**. Choose **Use custom file**, pick the file you downloaded and click **Apply & Restart**.
@@ -43,7 +43,7 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
 6. Imager shows its set-up pages one after another. Go through them with **Next**. You can leave a page empty, except **Localisation**: there **Next** works only after you choose a city. We recommend filling in two pages.
    - **Localisation**: choose your capital city. This sets your Wi-Fi country, so the Pi scans every Wi-Fi channel your country allows.
-   - **Wi-Fi**: enter your network if you want to log in to the Pi over your network.
+   - **Wi-Fi**: enter your network if you want to log in to the Pi over your network. Imager may fill in the network your computer uses. A Zero W, Zero 2 W or 3B can only join a 2.4 GHz network, so if your router has a separate 5 GHz name, type the 2.4 GHz name and its password instead.
 
    A username and password set on the **User** page replace the default login below. On the last page, **Remote access**, you can click **Next** without changing anything, because SSH is already on. If you choose public-key authentication there, fill in the **User** page too. Otherwise the login is named after your computer account, has no password and cannot use `sudo`.
 
@@ -53,21 +53,22 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 
 ### Log in
 
+- On Windows, open **Terminal** or **PowerShell** from the Start menu and type the commands below there. Nothing shows on the screen while you type a password. That is normal.
 - The default login is user `pi` with password `pi`. SSH is on.
 - Connect from a computer on the same network with `ssh pi@quartermaster.local`. If that name is not found, use the Pi's address from your router: `ssh pi@<address>`.
 - **Change the password right away.** Log in, type `passwd` and follow the prompts. Anyone on the same network can log in with the default password, so do this first on shared or public Wi-Fi. The Pi reminds you each time you log in until you have changed it.
 - A username and password set in Raspberry Pi Imager replace the default: `pi` with password `pi` then no longer works. Log in with `ssh <your user>@quartermaster.local`. A hostname set in Imager replaces `quartermaster` too.
-- The Pi needs a network for SSH: set your Wi-Fi in Imager, or plug in an Ethernet cable on a 3B, 3B+ or 4B.
-- Each Pi makes its own SSH host keys on its first start. Your computer asks you to trust the new key the first time you connect.
-- Saved drives are in `~/quartermaster/logs`. Copy them to your computer with `scp "pi@quartermaster.local:quartermaster/logs/*" .`. The real folder is `/var/lib/quartermaster/quartermaster/logs/`. Any user in the `_quartermaster` group can read it. Add a user with `sudo usermod -aG _quartermaster <user>`.
+- The Pi needs a network for SSH: set your Wi-Fi in Imager, or plug in an Ethernet cable on a 3B, 3B+ or 4B. If a Zero W, Zero 2 W or 3B never shows up, check that you gave Imager your 2.4 GHz network, and write the card again if you did not.
+- Each Pi makes its own SSH host keys on its first start. Your computer asks you to trust the new key the first time you connect. Type `yes` to go on.
+- Saved drives are in `~/quartermaster/logs`, Recon and Drive Alert logs in `~/quartermaster/recon` and aircraft captures in `~/quartermaster/aircraft`. Copy the drives to your computer with `scp "pi@quartermaster.local:quartermaster/logs/*" .`, and the other two folders the same way. The real folders are in `/var/lib/quartermaster/quartermaster/`. Any user in the `_quartermaster` group can read them. Add a user with `sudo usermod -aG _quartermaster <user>`.
 
 ### Good to know
 
-- **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the last line to `display=st7735-128` for the 1.44″ HAT or `display=st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
+- **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the last line to `display=st7735-128` for the 1.44″ HAT or `display=st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi. Windows may also show another drive from the card and offer to format it. Click **Cancel**, because formatting it erases Quartermaster.
 - **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on Imager's **Localisation** page in step 6, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
-- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) also has the two image files under **Assets**: `quartermaster-pi-1.2.9-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.9-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with any other SD card tool. You do not need to unzip it. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
-- The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates.
+- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) also has the two image files under **Assets**: `quartermaster-pi-1.2.9-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.9-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with balenaEtcher. Neither needs the file unpacked. Some other tools, such as Win32 Disk Imager, need it unpacked first. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`. To reach the Pi for that, use an Ethernet cable on a 3B, 3B+ or 4B, or plug in a screen and a keyboard.
+- The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. The images of the newest Pi release are rebuilt every month with the latest Raspberry Pi OS updates.
 - **Updating.** To update only Quartermaster, log in and run the commands of step 3 under [Assemble and install manually](#assemble-and-install-manually), then restart the Pi with `sudo reboot`. Skip steps 4 and 5 there: the image has already done them. You can also flash the newest image. Flashing erases the card, so copy your saved drives to your computer first. After flashing, the Pi has new SSH keys and your computer may refuse to connect. Run `ssh-keygen -R quartermaster.local` on the computer once, then connect again.
 - To start faster, the image does not check for system updates in the background. Run `sudo apt update && sudo apt full-upgrade` when you want them.
 - The first start grows the card's file system to the full size of the card. You do not need to do anything.

@@ -29,6 +29,7 @@ kept=(NetworkManager.service bluetooth.service systemd-timesyncd.service rpi-res
       regenerate_ssh_host_keys.service cloud-init-local.service cloud-init-main.service cloud-init-network.service
       cloud-config.service cloud-final.service)
 data=/var/lib/quartermaster/quartermaster
+log_folders=(logs recon aircraft)
 
 die() { echo "build_image: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
@@ -234,7 +235,10 @@ for group in "${groups_wanted[@]}"; do
     fi
 done
 chmod 750 "$mnt/var/lib/quartermaster"
-install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data" "$mnt$data/logs"
+install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data"
+for folder in "${log_folders[@]}"; do
+    install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data/$folder"
+done
 
 log "Setting up the $login_user login, SSH and the name $host_name"
 first_user=$(in_chroot getent passwd "$login_id" | cut -d: -f1) || true
@@ -413,14 +417,19 @@ check "root password locked" "$(shadow_of root | cut -c1 | tr '*' '!')" '!'
 check "$service_user password locked" "$(shadow_of "$service_user" | cut -c1 | tr '*' '!')" '!'
 check "$service_user shell" "$(in_chroot getent passwd "$service_user" | cut -d: -f7)" /usr/sbin/nologin
 check "logs link" "$(readlink "$mnt$login_home/quartermaster")" "$data"
-check "$login_user reads the logs" "$(in_chroot runuser -u "$login_user" -- ls "$login_home/quartermaster/logs" 2>&1)" ""
-in_chroot runuser -u "$service_user" -- sh -c "umask 077 && : > $data/logs/probe.wigle.csv"
+for folder in "${log_folders[@]}"; do
+    check "$login_user reads $folder" \
+        "$(in_chroot runuser -u "$login_user" -- ls "$login_home/quartermaster/$folder" 2>&1)" ""
+    in_chroot runuser -u "$service_user" -- sh -c "umask 077 && : > $data/$folder/probe.log"
+done
 share=$(sed -n '/^ExecStart=-/{s///p;q}' "$mnt/etc/systemd/system/quartermaster-logs.service")
 # shellcheck disable=SC2086
 in_chroot runuser -u "$service_user" -- $share
-check "$login_user reads a newly saved log" "$(in_chroot runuser -u "$login_user" -- \
-    cat "$login_home/quartermaster/logs/probe.wigle.csv" 2>&1)" ""
-rm -f "$mnt$data/logs/probe.wigle.csv"
+for folder in "${log_folders[@]}"; do
+    check "$login_user reads a newly saved log in $folder" "$(in_chroot runuser -u "$login_user" -- \
+        cat "$login_home/quartermaster/$folder/probe.log" 2>&1)" ""
+    rm -f "$mnt$data/$folder/probe.log"
+done
 check "first start keeps the default login" "$(in_chroot python3 -I -c '
 import sys
 sys.path.insert(0, "/usr/local/lib/quartermaster-image")

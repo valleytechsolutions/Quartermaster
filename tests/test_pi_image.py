@@ -434,17 +434,29 @@ def test_the_login_notice_is_installed_where_every_login_shows_it():
 
 def test_pi_reaches_the_logs_through_the_group_and_a_link_in_its_home():
     script = SCRIPT.read_text()
-    assert 'install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data" "$mnt$data/logs"' in script
+    folders = shell_list(script, "log_folders")
+    assert folders == ["logs", "recon", "aircraft"] and shell_list(BOOT.read_text(), "log_folders") == folders
+    assert 'install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data"\n' in script
+    assert 'install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data/$folder"' in script
     assert 'ln -sfn "$data" "$mnt$login_home/quartermaster"' in script
-    assert 'check "logs link"' in script and 'check "$login_user reads the logs"' in script
+    assert 'check "logs link"' in script and 'check "$login_user reads $folder"' in script
     path = settings((IMAGE / "quartermaster-logs.path").read_text())
-    assert path["PathChanged"] == [first_login.DATA + "/logs"] and path["WantedBy"] == ["multi-user.target"]
+    assert path["PathChanged"] == [first_login.DATA + "/" + folder for folder in folders]
+    assert path["WantedBy"] == ["multi-user.target"]
     service = settings((IMAGE / "quartermaster-logs.service").read_text())
     assert service["User"] == [SERVICE_USER] and service["Type"] == ["oneshot"]
     command = service["ExecStart"][0].split()
-    assert command[:2] == ["-/usr/bin/find", first_login.DATA + "/logs"]
+    assert command[:1 + len(folders)] == ["-/usr/bin/find"] + path["PathChanged"]
     assert command[-6:] == "-exec chmod -f g+rX {} +".split()
-    assert 'check "$login_user reads a newly saved log"' in script
+    assert 'check "$login_user reads a newly saved log in $folder"' in script
+
+
+def test_every_folder_of_the_readme_logs_table_opens_to_the_login_on_the_image():
+    readme = (ROOT / "README.md").read_text()
+    table = readme[readme.index("## Logs\n"):]
+    table = table[:table.index("\n\n", table.index("| File |"))]
+    folders = set(re.findall(r"^\| `([a-z]+)/", table, re.M))
+    assert folders == set(shell_list(SCRIPT.read_text(), "log_folders"))
 
 
 def test_a_log_saved_while_nothing_watched_or_in_a_burst_still_opens_to_the_group():
@@ -485,7 +497,7 @@ def test_a_restart_of_the_logs_rule_during_its_pause_is_a_clean_stop_and_the_fir
     wait = re.search(r'\n    sleep (\d+)\n    check "\$when: saving a log leaves no warning in the journal" '
                      r'"\$\(as_root "journalctl -b -q -p warning -o cat --no-pager -u quartermaster-logs\.service '
                      r'-u quartermaster-logs-changed\.service && echo none"\)" none\n', script)
-    assert wait and script.index("a newly saved log opens to the login") < wait.start()
+    assert wait and script.index("a newly saved log in $folder opens to the login") < wait.start()
     chain = float(changed["ExecStart"][0].split()[-1]) + float(service["ExecStart"][1].split()[-1])
     assert int(wait.group(1)) >= 2 * chain
 
@@ -521,18 +533,21 @@ def test_the_image_check_loads_every_screen_and_button_module_the_hat_code_impor
 @pytest.mark.skipif(not shutil.which("find"), reason="needs find")
 def test_the_logs_rule_opens_new_logs_to_the_group_and_then_changes_nothing(tmp_path):
     service = settings((IMAGE / "quartermaster-logs.service").read_text())
-    logs = tmp_path / "logs"
-    (logs / "sub").mkdir(parents=True)
-    for name in ("a.wigle.csv", "sub/b.json"):
-        (logs / name).write_text("x")
-        (logs / name).chmod(0o600)
-    (logs / "sub").chmod(0o700)
-    logs.chmod(0o700)
-    command = [str(logs) if part == first_login.DATA + "/logs" else part
-               for part in service["ExecStart"][0].lstrip("-").split()]
+    parts = service["ExecStart"][0].lstrip("-").split()
+    folders = {part: tmp_path / part.rsplit("/", 1)[1] for part in parts if part.startswith(first_login.DATA + "/")}
+    assert len(folders) == 3
+    for folder in folders.values():
+        (folder / "sub").mkdir(parents=True)
+        for name in ("a.log", "sub/b.json"):
+            (folder / name).write_text("x")
+            (folder / name).chmod(0o600)
+        (folder / "sub").chmod(0o700)
+        folder.chmod(0o700)
+    command = [str(folders.get(part, part)) for part in parts]
     subprocess.run(command, check=True)
-    assert [(logs / name).stat().st_mode & 0o777 for name in (".", "sub", "a.wigle.csv", "sub/b.json")] == \
-        [0o750, 0o750, 0o640, 0o640]
+    for folder in folders.values():
+        assert [(folder / name).stat().st_mode & 0o777 for name in (".", "sub", "a.log", "sub/b.json")] == \
+            [0o750, 0o750, 0o640, 0o640]
     changed = subprocess.run(command[:-6] + ["-print"], capture_output=True, text=True, check=True).stdout
     assert changed == ""
 
@@ -1089,7 +1104,9 @@ def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
     assert by_hand < target < pushed < publish.index('gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false')
     assert publish.count("--verify-tag") == 1 and publish.count("gh release create") == 1
     notes = publish[publish.index('--notes "'):]
-    for text in ("download \\`quartermaster.rpi-imager-manifest\\` below and open it", "Raspberry Pi Imager 2",
+    for text in ("download \\`quartermaster.rpi-imager-manifest\\` below and open it",
+                 "install the newest Raspberry Pi Imager", "give Imager a 2.4 GHz Wi-Fi network",
+                 "While this is the newest Pi release, they are rebuilt every month",
                  "user \\`pi\\` with password \\`pi\\`", "Change the password with \\`passwd\\`",
                  "blob/$TAG/docs/diy.md"):
         assert text in notes, text
@@ -1113,12 +1130,15 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     section = guide[easy:manual]
     version = json.loads((ROOT / "app-builder.json").read_text())["version"]
     for text in ("releases/download/pi-v%s/quartermaster.rpi-imager-manifest) and open it" % version,
-                 "version 2 or newer", "Click **Quartermaster %s**" % version, "**Skip customisation**",
+                 "Use the newest version.", "Click **Quartermaster %s**" % version, "**Skip customisation**",
                  "**Localisation**: choose your capital city", "**Use custom file**", "**Apply & Restart**",
                  "shows no set-up pages for a file chosen this way", "`sudo nmtui`",
                  "quartermaster-pi-%s-st7735-128.img.xz" % version, "quartermaster-pi-%s-st7789-240.img.xz" % version,
                  "Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
-                 "quartermaster@%s.service" % SERVICE_USER, "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
+                 "quartermaster@%s.service" % SERVICE_USER, "`/var/lib/quartermaster/quartermaster/`", "Wi-Fi country",
+                 "can only join a 2.4 GHz network", "type the 2.4 GHz name", "Click **Cancel**",
+                 "Some other tools, such as Win32 Disk Imager, need it unpacked first",
+                 "The images of the newest Pi release are rebuilt every month",
                  "built-in `%s` account" % SERVICE_USER,
                  "8 GB or more", "switched on from the first start", "does not choose a country for you",
                  "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login",
@@ -1147,6 +1167,8 @@ def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password()
                  "Change the password right away", "`passwd`", "shared or public Wi-Fi",
                  "reminds you each time you log in",
                  "set in Raspberry Pi Imager replace the default", "`~/quartermaster/logs`", "host keys",
+                 "`~/quartermaster/recon`", "`~/quartermaster/aircraft`", "**Terminal** or **PowerShell**",
+                 "Nothing shows on the screen while you type a password", "your 2.4 GHz network", "Type `yes` to go on",
                  "`sudo usermod -aG %s <user>`" % SERVICE_USER):
         assert text in login, text
     assert login.index("user `pi` with password `pi`") < login.index("Change the password right away")
