@@ -55,6 +55,59 @@ jobs:
           [[ $tag =~ ^pi-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::No Pi release to build images for ($tag)"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+  facts:
+    if: inputs.practice
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Show what the base image ships
+        run: |
+          url=$(curl -fsSIL --retry 3 -o /dev/null -w '%{url_effective}' https://downloads.raspberrypi.com/raspios_lite_armhf_latest)
+          echo "$url"
+          curl -fsSL --retry 3 -o base.img.xz "$url"
+          xz -d base.img.xz
+          loop=$(sudo losetup --find --show --partscan --read-only base.img)
+          sudo udevadm settle || true
+          for _ in 1 2 3 4 5; do [ -b "${loop}p2" ] && break; sleep 1; done
+          sudo mkdir -p /mnt/base
+          sudo mount -o ro,noload "${loop}p2" /mnt/base
+          sudo mount -o ro "${loop}p1" /mnt/base/boot/firmware
+          cd /mnt/base
+          show() {
+            local f
+            for f in "$@"; do
+              echo "=================== $f"
+              if sudo test -d "$f"; then sudo ls -la "$f"; else sudo cat "$f" 2>&1 || true; fi
+            done
+          }
+          show boot/firmware boot/firmware/user-data boot/firmware/meta-data boot/firmware/network-config \
+            boot/firmware/cmdline.txt boot/firmware/issue.txt
+          show etc/cloud etc/cloud/cloud.cfg etc/cloud/cloud.cfg.d etc/cloud/cloud.cfg.d/* etc/cloud/ds-identify.cfg
+          show usr/lib/systemd/system/userconfig.service etc/systemd/system/userconfig.service \
+            usr/bin/rename-user usr/bin/cancel-rename usr/lib/userconf-pi usr/lib/userconf-pi/*
+          show usr/lib/systemd/system/cloud-init-local.service usr/lib/systemd/system/cloud-init-network.service \
+            usr/lib/systemd/system/cloud-init-main.service usr/lib/systemd/system/cloud-init.service \
+            usr/lib/systemd/system/cloud-config.service usr/lib/systemd/system/cloud-final.service \
+            usr/lib/systemd/system/cloud-init.target usr/lib/systemd/system/regenerate_ssh_host_keys.service \
+            usr/lib/systemd/system/rpi-resize.service usr/lib/systemd/system/ssh.service \
+            usr/lib/systemd/system/sshswitch.service usr/lib/systemd/system/systemd-user-sessions.service
+          show etc/ssh/sshd_config.d etc/ssh/sshd_config.d/* etc/pam.d/sshd etc/pam.d/login etc/update-motd.d etc/motd
+          echo "=================== sshd_config"; sudo grep -v '^[[:space:]]*\(#\|$\)' etc/ssh/sshd_config || true
+          echo "=================== accounts"
+          sudo awk -F: '$3 == 0 || $3 >= 1000 {print}' etc/passwd
+          sudo awk -F: '$1 == "pi" || $1 == "root" {print $1 ": " substr($2, 1, 3) " (" length($2) " characters)"}' etc/shadow
+          sudo grep -E '(^|[:,])pi(,|$)' etc/group | cut -d: -f1 | xargs
+          sudo grep -E '^[[:space:]]*(UID_MAX|GID_MAX|UID_MIN)' etc/login.defs || true
+          show etc/sudoers.d etc/sudoers.d/* etc/hostname etc/hosts etc/machine-id var/lib/systemd/rfkill
+          show etc/systemd/system etc/systemd/system/multi-user.target.wants etc/systemd/system/sysinit.target.wants \
+            etc/systemd/system/getty.target.wants etc/systemd/system/cloud-init.target.wants \
+            etc/systemd/system/sockets.target.wants etc/systemd/system/timers.target.wants \
+            etc/systemd/system/default.target etc/NetworkManager/conf.d etc/netplan usr/lib/raspberrypi-sys-mods
+          echo "=================== default target"; sudo readlink etc/systemd/system/default.target usr/lib/systemd/system/default.target || true
+          echo "=================== packages"
+          sudo awk '/^Package:/ {p = $2} /^Version:/ {print p, $2}' var/lib/dpkg/status |
+            grep -E '^(cloud-init|userconf-pi|raspi-config|raspberrypi-sys-mods|systemd|openssh-server|network-manager|netplan\.io|avahi-daemon|python3-yaml|python3|rpi-[a-z-]+|raspi-firmware|linux-image-[a-z0-9+.-]+|libpam-modules|polkitd|bluez|gpsd|python3-pil|python3-numpy|python3-spidev|python3-rpi-lgpio|python3-lgpio|python3-gpiozero) ' || true
+          echo "=================== free space"; df -h /mnt/base /mnt/base/boot/firmware
+
   image:
     needs: release
     runs-on: ubuntu-24.04
