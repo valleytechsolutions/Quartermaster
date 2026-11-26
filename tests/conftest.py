@@ -2,9 +2,18 @@ import time
 
 import pytest
 
-from quartermaster import drive_watch, engine, faults, hardware, lora, radios, tones
+from quartermaster import drive_watch, engine, faults, hardware, lora, power, powerguard, radios, tones
 from quartermaster.names import one_line
 from quartermaster.ui import gfx, keys
+
+
+@pytest.fixture(autouse=True)
+def no_real_power_readings(tmp_path_factory, monkeypatch):
+    """The power guard and the battery read the machine's own sysfs and kernel log, which tests must not see."""
+    nowhere = tmp_path_factory.mktemp("power") / "missing"
+    for name in ("SYS_USB", "SYS_NET", "HWMON", "SUPPLIES", "KMSG"):
+        monkeypatch.setattr(powerguard, name, nowhere)
+    monkeypatch.setattr(power, "SUPPLIES", nowhere)
 
 
 @pytest.fixture

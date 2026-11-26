@@ -1,0 +1,136 @@
+name: Raspberry Pi images
+
+on:
+  push:
+    tags: ['pi-v*']
+  schedule:
+    - cron: '23 5 2 * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Pi release to rebuild the images for, like pi-v1.2.8 (empty for the newest)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pi-images
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      PUSHED: ${{ github.ref_name }}
+      REQUESTED: ${{ inputs.tag }}
+    steps:
+      - name: Pick the Pi release
+        id: pick
+        run: |
+          if [ "$EVENT" = push ]; then
+            tag=$PUSHED
+          elif [ -n "$REQUESTED" ]; then
+            tag=$REQUESTED
+          else
+            tag=$(gh release list --limit 100 --json tagName,isDraft,createdAt \
+              --jq '[.[] | select((.tagName | startswith("pi-v")) and (.isDraft | not))] | sort_by(.createdAt) | last | .tagName // empty')
+          fi
+          [[ $tag =~ ^pi-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::No Pi release to build images for ($tag)"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        hat: [st7735-128, st7789-240]
+    name: Image for ${{ matrix.hat }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release.outputs.tag }}
+      HAT: ${{ matrix.hat }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install the image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support xz-utils e2fsprogs fdisk
+          test -e /proc/sys/fs/binfmt_misc/qemu-arm
+      - name: Wait for the Pi package
+        run: |
+          mkdir -p build/pi
+          version=${TAG#pi-v}
+          for attempt in $(seq 1 40); do
+            if gh release download "$TAG" --dir build/pi --clobber \
+                --pattern "quartermaster-pi_${version}_all.deb" --pattern SHA256SUMS; then
+              break
+            fi
+            [ "$attempt" -lt 40 ] || { echo "::error::$TAG has no Pi package"; exit 1; }
+            sleep 30
+          done
+          cd build/pi
+          sha256sum --check --ignore-missing --strict SHA256SUMS
+          echo "DEB=build/pi/quartermaster-pi_${version}_all.deb" >> "$GITHUB_ENV"
+          echo "IMAGE=quartermaster-pi-${version}-${HAT}.img.xz" >> "$GITHUB_ENV"
+      - name: Build the image
+        run: |
+          sudo tools/build_image.sh --hat "$HAT" --deb "$DEB" --out build/images
+          sudo chown -R "$(id -u):$(id -g)" build/images
+      - name: Check the image
+        run: |
+          cd build/images
+          size=$(stat -c %s "$IMAGE")
+          [ "$size" -lt 2147483648 ] || { echo "::error::$IMAGE is $size bytes, over the 2 GiB asset limit"; exit 1; }
+          xz --test "$IMAGE"
+          sha256sum --check --strict SHA256SUMS
+          grep -F "  $IMAGE" SHA256SUMS > "$IMAGE.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-${{ matrix.hat }}
+          path: |
+            build/images/*.img.xz
+            build/images/*.img.xz.sha256
+            build/images/*.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [release, image]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Collect the images
+        run: |
+          gh run download "$GITHUB_RUN_ID" --pattern 'image-*' --dir build/download
+          mkdir build/release
+          mv build/download/*/* build/release/
+          cd build/release
+          images=(*.img.xz)
+          [ "${#images[@]}" = 2 ] || { echo "::error::Expected two images, got ${images[*]}"; exit 1; }
+          for sum in *.img.xz.sha256; do
+            sha256sum --check --strict "$sum"
+          done
+      - name: Write the Raspberry Pi Imager list
+        run: |
+          python3 tools/imager_os_list.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" build/release/*.json \
+            > build/release/quartermaster-imager.json
+      - name: Publish the images and the Imager list together
+        run: |
+          cd build/release
+          ../../tools/replace_release_assets.sh "$TAG" *.img.xz *.img.xz.sha256 quartermaster-imager.json

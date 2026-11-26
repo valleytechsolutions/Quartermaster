@@ -275,10 +275,14 @@ def test_another_connection_cannot_touch_a_monitor_it_did_not_start(radios):
     assert ask(other, cmd="capture", vif=vif)["ok"] is False
     assert helper.open_session(lambda data: None) is None
     assert ask(other, cmd="monitor_start", iface="wlan1")["ok"]
-    radios.add("wlan6", "phy6", "mt7921u", mac="00:c0:ca:00:00:06")
-    assert ask(other, cmd="monitor_start", iface="wlan6")["error"] == "too many monitors"
+    for n in range(3, 8):
+        radios.add("wlan%d" % n, "phy%d" % n, "mt7921u", mac="00:c0:ca:00:00:0%d" % n)
+    for n in range(3, 3 + radiod.MAX_MONITORS - 2):
+        assert ask(other if n % 2 else sess, cmd="monitor_start", iface="wlan%d" % n)["ok"]
+    assert helper.monitor_count() == radiod.MAX_MONITORS == 6
+    assert ask(other, cmd="monitor_start", iface="wlan7")["error"] == "too many monitors"
     helper.restore_all()
-    assert radios.links == {"wlan0": "managed", "wlan1": "managed", "wlan2": "managed", "wlan6": "managed"}
+    assert radios.links == dict({"wlan0": "managed"}, **{"wlan%d" % n: "managed" for n in range(1, 8)})
 
 
 def test_tuning_turns_power_save_off_and_power_up_to_the_regulatory_limit(radios):

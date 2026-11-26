@@ -16,7 +16,7 @@ import time
 
 import zlib
 
-from . import deepscan, faults, hardware, radios, recon, tones
+from . import deepscan, faults, hardware, radios, recon, tones, wigle
 from .ble import BleScanner
 from .engine import DEFAULT_ROOT, MIN_FREE_BYTES, gps_epoch
 from .tracker import distance_m
@@ -68,6 +68,7 @@ class Recon:
         self._seen = set()
         self._cache = {}
         self._log = None
+        self._synced = 0.0
         self._stop = threading.Event()
         self._threads = []
         self._hotplug = False
@@ -129,9 +130,9 @@ class Recon:
             deep = self.deep = self.deep_class(self.cfg)
             if not deep.open():
                 return usable
-            managed = deep.plan_roles(usable, self._node_bands())
-            if len(managed) < len(usable) and not deep.start(self._wifi_sink, self._deep_frame):
-                managed = usable
+            deep.plan_roles(usable, self._node_bands())
+            deep.start(self._wifi_sink, self._deep_frame)
+            managed = deep.managed(usable)
             deep.tune(managed)
             return deep.scanners(managed)
         except Exception:
@@ -386,6 +387,9 @@ class Recon:
                 self._log = os.fdopen(fd, "a", encoding="utf-8")
             self._log.write(json.dumps(record, ensure_ascii=True, allow_nan=False, default=_plain) + "\n")
             self._log.flush()
+            if time.monotonic() - self._synced >= wigle.SYNC_SECONDS:
+                wigle.fsync(self._log.fileno())
+                self._synced = time.monotonic()
             self.counters["logged"] += 1
         except (OSError, ValueError):
             self.counters["log_errors"] += 1

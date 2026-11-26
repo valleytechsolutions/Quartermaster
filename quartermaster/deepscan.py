@@ -1,8 +1,12 @@
-"""Deep scan: one spare USB adapter listens in monitor mode while a wardrive or Recon runs.
+"""Deep scan: spare USB adapters listen in monitor mode while a wardrive or Recon runs.
 
 Which adapter listens is decided so that no band loses its managed scans: every band of the listening adapter must
-still be swept by another adapter, and 6 GHz by another 6 GHz adapter, because the monitor never goes there. The
-built-in radio, an adapter on a network and the only 6 GHz adapter always keep scanning normally.
+still be swept by another adapter, and 6 GHz by another 6 GHz adapter. The built-in radio, an adapter on a network
+and the only 6 GHz adapter always keep scanning normally.
+
+With All adapters listen, every USB adapter beyond the few that keep each band in managed sweeps listens, each on its
+own share of the channels, as many as the frame reader can keep up with. An adapter that drops out hands its channels
+to the others at once and listens again once it is back.
 
 The listen pattern follows flock-you (11, 6 and 1 at 250 ms, downwards, as Flock cameras hop upwards every 125 ms)
 and SquachWatch (the other 2.4 GHz channels by how busy they are, and a slice of the busy 5 GHz channels).
@@ -24,6 +28,18 @@ SLOW_SWITCH_MS, SLOW_DWELL = 40, 150
 SWITCH_MS = 30
 CPU_LIMIT = 25.0
 FORWARD_QUEUE = 64
+LISTEN_CAP = 6
+START_CAP = 3
+CAPTURE_BUDGET = 18.0
+OVERHEAD = 1.5
+PSC6 = tuple(range(5, 234, 16))
+LOOK6 = 150
+STAGGER = 1.5
+CALM = 6
+MOVED_FOR = 30.0
+CALM_MOST = 48
+RETRY_JOIN = 60.0
+MAX_STEPS = 64
 REASONS = {
     "builtin": "Built-in: always scans normally",
     "only6": "Only 6 GHz radio: scans normally",
@@ -32,6 +48,10 @@ REASONS = {
     "band": "Needed to keep its bands scanned",
     "other": "Another adapter listens",
     "chosen": "Not the adapter picked in Settings",
+    "keeper": "Keeps its bands in normal scans",
+    "cap": "Listen limit for this CPU reached",
+    "held": "Paused to save USB power",
+    "refused": "Could not listen: tried again soon",
 }
 
 
@@ -116,15 +136,111 @@ def keeps_six(adapters, roles):
     return any("6" in a.get("bands", ()) and roles.get(a["interface"]) == "managed" for a in adapters)
 
 
+def _can_listen(adapter, state):
+    return bool(adapter.get("external") and adapter.get("monitor") and adapter.get("driver") in DRIVERS and
+                state.get("monitor") is not False)
+
+
+def all_listen(cfg, adapters, helper=None):
+    """Whether All adapters listen applies: Deep scan on, the setting on Auto, the monitor adapter on Auto and at
+    least two USB adapters that can listen."""
+    if not cfg.get("deep_scan") or cfg.get("deep_scan_all", "auto") != "auto":
+        return False
+    if cfg.get("deep_scan_adapter", "auto") not in (None, "", "auto"):
+        return False
+    live = {a.get("interface"): a for a in helper or ()}
+    return sum(1 for a in adapters if _can_listen(a, live.get(a["interface"], {}))) >= 2
+
+
+def assign_all(adapters, helper=None, cap=LISTEN_CAP, held=(), listening=(), stay=()):
+    """Roles with All adapters listen: the fewest USB adapters that keep every band any adapter has in managed
+    sweeps (6 GHz by a 6 GHz radio), and up to `cap` of the others listening. The built-in radio, an adapter on a
+    network, one without monitor mode and the adapters in `held` or `stay` stay managed. The adapters in `held` are
+    paused and sweep nothing, so their bands must be kept by others; those in `stay` sweep as usual. Adapters already
+    in `listening` keep listening rather than trade places with an equal one.
+
+    {"monitor": first listener or None, "monitors": [...], "roles", "reasons", "unavailable"}."""
+    live = {a.get("interface"): a for a in helper or ()}
+    listening = set(listening)
+    roles = {a["interface"]: "managed" for a in adapters}
+    reasons, candidates = {}, []
+    for a in adapters:
+        name, state = a["interface"], live.get(a["interface"], {})
+        if not a.get("external"):
+            reasons[name] = REASONS["builtin"]
+        elif not _can_listen(a, state):
+            reasons[name] = REASONS["no_monitor"]
+        elif state.get("connected") or state.get("default_route"):
+            reasons[name] = REASONS["connected"]
+        elif name in held:
+            reasons[name] = REASONS["held"]
+        elif name in stay:
+            reasons[name] = REASONS["refused"]
+        else:
+            candidates.append(a)
+    need, have = set(), set()
+    for a in adapters:
+        need.update(a.get("bands") or ())
+        if a not in candidates and a["interface"] not in held:
+            have.update(a.get("bands") or ())
+    pool = list(candidates)
+    while need - have and pool:
+        missing = need - have
+        best = sorted(pool, key=lambda a: (-len(missing & set(a.get("bands") or ())), a["interface"] in listening,
+                                           "6" not in (a.get("bands") or ()), not _is_alfa(a),
+                                           -len(a.get("bands") or ()), adapters.index(a)))[0]
+        if not missing & set(best.get("bands") or ()):
+            break
+        pool.remove(best)
+        have.update(best.get("bands") or ())
+        reasons[best["interface"]] = REASONS["keeper"]
+    pool.sort(key=lambda a: (a["interface"] not in listening, "6" in (a.get("bands") or ()), _is_alfa(a),
+                             adapters.index(a)))
+    chosen, over = pool[:max(0, cap)], pool[max(0, cap):]
+    for a in over:
+        reasons[a["interface"]] = REASONS["cap"]
+    for a in chosen:
+        roles[a["interface"]] = "monitor"
+    if not chosen:
+        single = assign(adapters, (), helper)
+        why = single["unavailable"] or "No spare adapter can listen without losing a band"
+        return {"monitor": None, "monitors": [], "roles": roles, "reasons": reasons, "unavailable": why}
+    return {"monitor": chosen[0], "monitors": chosen, "roles": roles, "reasons": reasons, "unavailable": ""}
+
+
+def listen_cap(stats, listeners):
+    """How many adapters may listen, from what the frame reader measured: its Python cost per frame and the frames a
+    second of each listener, with the helper's relay on top, kept within CAPTURE_BUDGET of one core. None before
+    there is a measurement."""
+    parse_us, fps = stats.get("parse_us"), stats.get("frames_per_s")
+    if not listeners or not isinstance(parse_us, (int, float)) or not isinstance(fps, (int, float)) or fps <= 0:
+        return None
+    each = fps / listeners * parse_us * OVERHEAD / 1e4
+    if each <= 0:
+        return LISTEN_CAP
+    return max(1, min(LISTEN_CAP, int(CAPTURE_BUDGET // each)))
+
+
 def freq_of(band, channel):
+    if band == "6":
+        return 5950 + 5 * channel
     return (2484 if channel == 14 else 2407 + 5 * channel) if band == "2.4" else 5000 + 5 * channel
+
+
+def band_channel(freq):
+    freq = int(freq)
+    if freq < 3000:
+        return "2.4", (14 if freq == 2484 else (freq - 2407) // 5)
+    if freq > 5925:
+        return "6", (freq - 5950) // 5
+    return "5", (freq - 5000) // 5
 
 
 class HopPlan:
     """The monitor's listen pattern, rebuilt each cycle from how busy each channel was."""
 
     def __init__(self, country="US", mode="balanced", allowed=None):
-        self.mode = mode
+        self.mode, self.country = mode, country
         found = planner.channels(country)
         allowed = set(allowed) if allowed else None
         ok = lambda band, ch: allowed is None or freq_of(band, ch) in allowed
@@ -133,7 +249,7 @@ class HopPlan:
         self.flock = [ch for ch in FLOCK_CHANNELS if ch in self.ghz2]
         self.fill = [ch for ch in self.ghz2 if ch not in self.flock]
         self.min_dwell = FILL_DWELL
-        self.rates2, self.rates5 = {}, {}
+        self.rates2, self.rates5, self.rates6 = {}, {}, {}
         self.quiet_next = 0
 
     def slower(self):
@@ -144,14 +260,11 @@ class HopPlan:
         channel missing from the stretch was silent, so it cools down too."""
         fresh = {}
         for freq, rate in per_freq.items():
-            freq = int(freq)
-            band = "2.4" if freq < 3000 else "5"
-            ch = (freq - 2407) // 5 if band == "2.4" else (freq - 5000) // 5
-            fresh[(band, ch)] = rate
-        for band, table in (("2.4", self.rates2), ("5", self.rates5)):
+            fresh[band_channel(freq)] = rate
+        for band, table in (("2.4", self.rates2), ("5", self.rates5), ("6", self.rates6)):
             for ch in set(table) | {c for b, c in fresh if b == band}:
                 table[ch] = (table.get(ch, 0.0) * 3 + fresh.get((band, ch), 0.0)) / 4
-                if band == "5" and table[ch] < 0.25:
+                if band != "2.4" and table[ch] < 0.25:
                     table[ch] = 0.0
 
     def _fill(self, dwell=None):
@@ -194,6 +307,73 @@ class HopPlan:
         return sum(dwell + SWITCH_MS for _, dwell in plan) / 1000.0
 
 
+class SplitPlan(HopPlan):
+    """The listen patterns of several monitor adapters at once: each channel goes to one of them, so together they
+    cover every channel they can tune. One adapter takes the Flock channels 11, 6 and 1; the other channels go to the
+    adapter with the least to do, the busiest and slowest first. The 6 GHz preferred scanning channels go to 6 GHz
+    adapters only when `six` says a 6 GHz radio still sweeps normally.
+
+    radios: [(vif, bands, allowed MHz or None)]."""
+
+    def __init__(self, country="US", mode="balanced", radios=(), six=False):
+        super().__init__(country, mode)
+        self.radios = [(vif, tuple(bands or ()), set(allowed) if allowed else None) for vif, bands, allowed in radios]
+        self.six = six
+
+    @classmethod
+    def taking(cls, plan, radios, six):
+        """A split plan that keeps what an earlier plan learned about how busy each channel is."""
+        split = cls(plan.country, plan.mode, radios, six)
+        split.rates2, split.rates5, split.rates6 = plan.rates2, plan.rates5, plan.rates6
+        split.min_dwell, split.quiet_next = plan.min_dwell, plan.quiet_next
+        return split
+
+    @staticmethod
+    def _can(radio, band, ch):
+        _, bands, allowed = radio
+        return band in bands and (allowed is None or freq_of(band, ch) in allowed)
+
+    def _items(self):
+        items = [(f, d) for f, d in self._fill()]
+        for ch in self.ghz5:
+            items.append((freq_of("5", ch), LOOK5_BUSY if self.rates5.get(ch) else max(LOOK5_QUIET, self.min_dwell)))
+        if self.six:
+            for ch in PSC6:
+                items.append((freq_of("6", ch), LOOK6 if self.rates6.get(ch) else max(LOOK5_QUIET, self.min_dwell)))
+        return items
+
+    def build_all(self):
+        """{vif: [(MHz, dwell ms)]}, each channel on one adapter only."""
+        out = {vif: [] for vif, _, _ in self.radios}
+        load = dict.fromkeys(out, 0)
+        if not self.radios:
+            return out
+        order = {vif: i for i, (vif, _, _) in enumerate(self.radios)}
+        flock = [r for r in self.radios if self.flock and all(self._can(r, "2.4", ch) for ch in self.flock)]
+        items = self._items()
+        if flock:
+            keeper = min(flock, key=lambda r: (len(r[1]), order[r[0]]))
+            steps = [(freq_of("2.4", ch), FLOCK_DWELL) for ch in self.flock]
+            out[keeper[0]] = steps * (4 if self.mode == "flock" else 1)
+            load[keeper[0]] = sum(d + SWITCH_MS for _, d in out[keeper[0]])
+        else:
+            items += [(freq_of("2.4", ch), FLOCK_DWELL) for ch in self.flock]
+        for freq, dwell in sorted(items, key=lambda item: (-item[1], item[0])):
+            band, ch = band_channel(freq)
+            able = [r for r in self.radios if self._can(r, band, ch) and len(out[r[0]]) < MAX_STEPS]
+            if not able:
+                continue
+            vif = min(able, key=lambda r: (load[r[0]], len(r[1]), order[r[0]]))[0]
+            out[vif].append((freq, dwell))
+            load[vif] += dwell + SWITCH_MS
+        flock_freqs = {freq_of("2.4", ch) for ch in self.flock}
+        for vif, steps in out.items():
+            head = [s for s in steps if s[0] in flock_freqs and s[1] == FLOCK_DWELL]
+            rest = sorted((s for s in steps if s not in head), key=lambda s: s[0])
+            out[vif] = (head + rest)[:MAX_STEPS]
+        return out
+
+
 def wanted(cfg):
     return radio_helper.wanted(cfg)
 
@@ -215,21 +395,34 @@ def _process_cpu(pid, proc="/proc"):
 
 
 class DeepScan:
-    """The radio helper session of one wardrive or Recon: the monitor, direct scans and tuning, all put back at stop.
+    """The radio helper session of one wardrive or Recon: the monitors, direct scans and tuning, all put back at stop.
 
     Nothing here runs unless one of the three settings is on."""
 
-    def __init__(self, cfg, connect=radio_helper.connect, process=None):
+    def __init__(self, cfg, connect=radio_helper.connect, process=None, clock=time.monotonic):
         self.cfg = cfg
         self._connect = connect
         self._process = process
+        self.clock = clock
         self.client = None
         self.state, self.detail = "off", ""
-        self.roles = {"monitor": None, "roles": {}, "reasons": {}, "unavailable": ""}
-        self.vif = None
-        self.monitor = None
+        self.roles = {"monitor": None, "monitors": [], "roles": {}, "reasons": {}, "unavailable": ""}
+        self.listeners = {}
+        self.steps = {}
+        self.all_mode = False
+        self.cap = START_CAP
+        self.ceiling = LISTEN_CAP
+        self._calm, self._calm_need = 0, CALM
+        self.paused = set()
+        self.held = set()
+        self.joining = {}
+        self._moved = {}
+        self.refused = {}
+        self.dropped = self.joined = 0
+        self.timers = True
         self.tuned = []
         self.tuning = {}
+        self.eased = set()
         self.stats = {}
         self.counts = {"flock": 0, "deauth": 0, "networks": 0}
         self.error = ""
@@ -237,16 +430,29 @@ class DeepScan:
         self.plan = None
         self.sinks = {}
         self.helper_adapters = []
+        self._asked = set()
         self.node_bands = set()
         self._plan_at, self._cycle = 0.0, 3.0
         self._inbox = self._outbox = self._worker = None
         self._forward = queue.Queue(maxsize=FORWARD_QUEUE)
         self.forward_dropped = 0
         self._stop = threading.Event()
+        self._lock = threading.RLock()
         self._threads = []
         self._cpu = {}
         self._cpu_at = None
         self._helper_pid = None
+        self._last_adapters = []
+
+    @property
+    def vif(self):
+        return next(iter(self.listeners), None)
+
+    @property
+    def monitor(self):
+        for vif, entry in list(self.listeners.items()):
+            return dict(entry["adapter"], interface=vif, role="monitor", original=entry["original"])
+        return None
 
     def open(self):
         if not wanted(self.cfg):
@@ -257,7 +463,7 @@ class DeepScan:
         return self.client is not None
 
     def plan_roles(self, adapters, nodes=()):
-        """The adapters that keep scanning normally. The monitor, if any, is left out of them."""
+        """The adapters that keep scanning normally. The monitors, if any, are left out of them."""
         if self.client is None or not self.cfg.get("deep_scan"):
             return list(adapters)
         try:
@@ -267,34 +473,67 @@ class DeepScan:
             return list(adapters)
         self.helper_adapters = helper
         self.node_bands = _node_bands(nodes)
-        self.roles = assign(adapters, nodes, helper, self.cfg.get("deep_scan_adapter", "auto"))
-        if self.roles["monitor"] is None or not keeps_six(adapters, self.roles["roles"]):
-            self.roles["monitor"] = None
+        self._last_adapters = list(adapters)
+        self.all_mode = all_listen(self.cfg, adapters, helper)
+        if self.all_mode:
+            self.roles = assign_all(adapters, helper, self.cap)
+        else:
+            self.roles = assign(adapters, nodes, helper, self.cfg.get("deep_scan_adapter", "auto"))
+            self.roles["monitors"] = [self.roles["monitor"]] if self.roles["monitor"] is not None else []
+        if not self.roles["monitors"] or not keeps_six(adapters, self.roles["roles"]):
+            self.roles.update(monitor=None, monitors=[])
             return list(adapters)
-        return [a for a in adapters if a is not self.roles["monitor"]]
+        return [a for a in adapters if not any(a is m for m in self.roles["monitors"])]
+
+    def managed(self, adapters):
+        """The adapters that scan normally now: not listening, not about to listen and not paused."""
+        busy = {e["original"] for e in self.listeners.values()} | set(self.listeners) | set(self.joining) | \
+            self.paused
+        return [a for a in adapters if a["interface"] not in busy and a.get("type") != "803"]
 
     def start(self, wifi_sink, frame_sink=None, deauth_sink=None, clash_sink=None):
-        """Put the chosen adapter in monitor mode and start listening. False when it could not, and then the adapter
-        must go back to managed scans."""
-        adapter = self.roles.get("monitor")
-        if self.client is None or adapter is None:
-            return False
+        """Put the chosen adapters in monitor mode and start listening. False when none could, and then they must go
+        back to managed scans; `managed` says which adapters scan normally either way."""
+        monitors = list(self.roles.get("monitors") or ())
+        if not monitors and self.roles.get("monitor") is not None:
+            monitors = [self.roles["monitor"]]
         self.sinks = {"networks": wifi_sink, "frame": frame_sink, "deauth": deauth_sink, "clash": clash_sink}
-        try:
-            self.vif = self.client.request("monitor_start", iface=adapter["interface"])["vif"]
-            freqs = next((h.get("freqs") for h in self.helper_adapters
-                          if h.get("interface") == adapter["interface"]), None)
-            self.plan = HopPlan(self.cfg.get("country", "US"), self.cfg.get("deep_scan_plan", "balanced"), freqs)
-            self._send_plan()
-            self._start_worker()
-            self.client.frames = self._receive
-            self.client.request("capture", vif=self.vif)
-        except (radio_helper.HelperError, OSError) as exc:
-            self.error = "Monitor failed: %s. Scanning normally." % str(exc)[:60]
-            self._stop_monitor()
-            self.roles = dict(self.roles, monitor=None)
+        if self.client is None or not monitors:
             return False
-        self.monitor = dict(adapter, interface=self.vif, role="monitor", original=adapter["interface"])
+        failed = None
+        with self._lock:
+            for adapter in monitors:
+                try:
+                    vif = self.client.request("monitor_start", iface=adapter["interface"])["vif"]
+                except (radio_helper.HelperError, OSError) as exc:
+                    failed = exc
+                    self.refused[adapter["interface"]] = self.clock() + RETRY_JOIN
+                    continue
+                self._add(vif, adapter)
+            try:
+                if not self.listeners:
+                    raise radio_helper.HelperError(str(failed))
+                for vif in self._send_plan():
+                    self._drop(vif, "", replan=False)
+                if not self.listeners:
+                    raise radio_helper.HelperError(self.error or "hop plan refused")
+                self._start_worker()
+                self.client.frames = self._receive
+                for vif in list(self.listeners):
+                    try:
+                        self._capture(vif)
+                    except (radio_helper.HelperError, OSError) as exc:
+                        failed = exc
+                        self._drop(vif, "", replan=False)
+                if not self.listeners:
+                    raise radio_helper.HelperError(str(failed))
+            except (radio_helper.HelperError, OSError) as exc:
+                self.error = "Monitor failed: %s. Scanning normally." % str(exc)[:60]
+                self._stop_monitor()
+                self.roles = dict(self.roles, monitor=None, monitors=[])
+                return False
+            if len(self.listeners) < len(monitors):
+                self._replan()
         self._threads = [threading.Thread(target=self._dispatch, daemon=True, name="deepscan"),
                          threading.Thread(target=self._pump, daemon=True, name="deepscan-feed")]
         for thread in self._threads:
@@ -302,15 +541,72 @@ class DeepScan:
         self._total_cpu(0.0)
         return True
 
+    def _add(self, vif, adapter):
+        freqs = next((h.get("freqs") for h in self.helper_adapters
+                      if h.get("interface") == adapter["interface"]), None)
+        self.listeners[vif] = {"adapter": adapter, "original": adapter["interface"], "freqs": freqs}
+        self._make_plan()
+
+    def _six_kept(self):
+        """Whether a 6 GHz radio still sweeps normally, so the monitors may also listen on 6 GHz."""
+        busy = {e["original"] for e in self.listeners.values()} | set(self.joining) | self.paused | self.held
+        managed = [a for a in self._last_adapters if a["interface"] not in busy]
+        return any("6" in (a.get("bands") or ()) for a in managed)
+
+    def _make_plan(self):
+        """The plan for the monitors there are now, keeping what the last plan learned."""
+        old = self.plan
+        country, mode = self.cfg.get("country", "US"), self.cfg.get("deep_scan_plan", "balanced")
+        if not self.listeners:
+            self.plan = None
+            return
+        if len(self.listeners) == 1:
+            plan = HopPlan(country, mode, self.listeners[self.vif]["freqs"])
+        else:
+            radios = [(vif, e["adapter"].get("bands") or (), e["freqs"]) for vif, e in self.listeners.items()]
+            plan = SplitPlan(country, mode, radios, self._six_kept())
+        if old is not None:
+            plan.rates2, plan.rates5, plan.rates6 = old.rates2, old.rates5, old.rates6
+            plan.min_dwell, plan.quiet_next, plan.mode = old.min_dwell, old.quiet_next, old.mode
+        self.plan = plan
+
     def _send_plan(self):
-        steps = [[freq, 20, dwell] for freq, dwell in self.plan.build()][:64]
-        reply = self.client.request("hop_plan", vif=self.vif, plan=steps)
+        """Each monitor's steps to the helper. Returns the monitors whose plan was refused."""
+        if self.plan is None:
+            return []
+        if isinstance(self.plan, SplitPlan):
+            plans = self.plan.build_all()
+        else:
+            plans = {self.vif: self.plan.build()}
+        failed, cycles = [], []
+        for vif, built in plans.items():
+            steps = [[freq, 20, dwell] for freq, dwell in built][:MAX_STEPS]
+            if not steps:
+                continue
+            try:
+                reply = self.client.request("hop_plan", vif=vif, plan=steps)
+            except radio_helper.HelperError as exc:
+                self.error = str(exc)[:80]
+                failed.append(vif)
+                continue
+            self.steps[vif] = steps
+            measured = reply.get("cycle_ms") if isinstance(reply, dict) else None
+            cycles.append(max(HopPlan.cycle_seconds([(f, d) for f, _, d in steps]),
+                              measured / 1000.0 if isinstance(measured, (int, float)) else 0.0))
         self._plan_at = time.monotonic()
-        measured = reply.get("cycle_ms") if isinstance(reply, dict) else None
-        self._cycle = max(HopPlan.cycle_seconds([(f, d) for f, _, d in steps]),
-                          measured / 1000.0 if isinstance(measured, (int, float)) else 0.0)
+        if cycles:
+            self._cycle = max(cycles)
+        return failed
+
+    def _capture(self, vif):
+        if self.level >= 1:
+            self.client.request("capture", vif=vif, mgmt_only=True)
+        else:
+            self.client.request("capture", vif=vif)
 
     def _start_worker(self):
+        if self._worker is not None:
+            return
         if self._process is not None:
             self._inbox, self._outbox, self._worker = self._process(self.vif, self.cfg.get("rssi_step", 4))
             return
@@ -364,7 +660,8 @@ class DeepScan:
         if kind == "stats":
             payload = dict(payload, worker_cpu=payload.get("cpu"), cpu=self._total_cpu(payload.get("cpu")))
             self.stats = payload
-            self._degrade(payload)
+            released = self._limit(payload) if self.all_mode else False
+            self._degrade(payload, released)
             if self.plan is not None:
                 self.plan.heard(payload.get("channels", {}))
             return
@@ -382,6 +679,38 @@ class DeepScan:
         else:
             sink(payload)
 
+    def _limit(self, found):
+        """With All adapters listen: as many monitors as the measured cost per frame allows, and never more than the
+        whole CPU cost allowed last time it ran high. True when one was let go."""
+        cap = listen_cap(found, len(self.listeners))
+        if cap is None:
+            return False
+        self.cap = min(cap, self.ceiling)
+        if len(self.listeners) <= max(1, self.cap) or not self._lock.acquire(blocking=False):
+            return False
+        try:
+            while len(self.listeners) > max(1, self.cap):
+                self._release_last("Busy CPU: %s scans normally again" % self._last_name())
+        finally:
+            self._lock.release()
+        return True
+
+    def _settle(self, cpu):
+        """After the whole CPU cost ran high, one more adapter may listen only once it has stayed low long enough,
+        and low enough to take one more; each time it runs high again, it waits twice as long."""
+        count = len(self.listeners)
+        if self.ceiling >= LISTEN_CAP or not count or cpu * (count + 1) / count > CPU_LIMIT * 0.8:
+            self._calm = 0
+            return
+        self._calm += 1
+        if self._calm >= self._calm_need and self.ceiling <= count:
+            self.ceiling += 1
+            self._calm = 0
+
+    def _last_name(self):
+        vif = next(reversed(self.listeners), None)
+        return self.listeners[vif]["original"] if vif is not None else ""
+
     def _total_cpu(self, worker):
         """The share of one core Deep scan costs: the frame reader, the helper, and its threads in this process."""
         now = time.monotonic()
@@ -396,33 +725,55 @@ class DeepScan:
         return isinstance(closed, threading.Event) and closed.is_set()
 
     def _upkeep(self):
-        if self.vif is not None and self._helper_gone():
+        if self.listeners and self._helper_gone():
             self.release("The radio helper stopped. Scanning normally.")
             return
-        if self.plan is None or self.client is None or self.vif is None or self.plan.mode != "balanced":
+        if self.plan is None or self.client is None or not self.listeners or self.plan.mode != "balanced":
             return
         if time.monotonic() - self._plan_at >= max(3.0, self._cycle):
+            if not self._lock.acquire(blocking=False):
+                return
             try:
-                self._send_plan()
-            except radio_helper.HelperError as exc:
-                self.error = str(exc)[:80]
+                for vif in self._send_plan():
+                    if len(self.listeners) > 1:
+                        self._drop(vif, self.error)
+            finally:
+                self._lock.release()
 
-    def _degrade(self, found):
+    def _degrade(self, found, released=False):
         gap = found.get("switch_gap_ms")
         if gap is not None and gap > SLOW_SWITCH_MS and self.plan is not None:
             self.plan.slower()
-        if (found.get("cpu") or 0) <= CPU_LIMIT:
+        cpu = found.get("cpu") or 0
+        if cpu <= CPU_LIMIT:
+            if self.all_mode:
+                self._settle(cpu)
+            return
+        if len(self.listeners) > 1 or released:
+            self._calm = 0
+            if released:
+                self.ceiling = min(self.ceiling, max(1, len(self.listeners)))
+            elif self._lock.acquire(blocking=False):
+                try:
+                    self._release_last("Busy CPU: %s scans normally again" % self._last_name())
+                    self.ceiling = max(1, len(self.listeners))
+                finally:
+                    self._lock.release()
+            self.cap = min(self.cap, self.ceiling)
+            self._calm_need = min(CALM_MOST, self._calm_need * 2)
             return
         self.level += 1
         try:
             if self.level == 1:
-                self.client.request("capture", vif=self.vif, mgmt_only=True)
+                for vif in list(self.listeners):
+                    self.client.request("capture", vif=vif, mgmt_only=True)
             elif self.level == 2:
                 self._forward.put_nowait(b"S")
             elif self.level == 3 and self.plan is not None:
                 self.plan.mode = "flock"
                 self._send_plan()
             elif self.level >= 4:
+                self.cap = 0
                 self.release("Busy CPU: Deep scan stopped. Scanning normally.")
         except (radio_helper.HelperError, queue.Full):
             pass
@@ -431,13 +782,54 @@ class DeepScan:
         if self.client is None or not self.cfg.get("radio_tuning"):
             return
         for a in adapters:
-            if not a.get("external") or a.get("interface") == self.vif:
+            name = a.get("interface")
+            if not a.get("external") or name in self.listeners or name in self.eased:
                 continue
             try:
-                self.tuning[a["interface"]] = self.client.request("tune", iface=a["interface"])
-                self.tuned.append(a["interface"])
+                self.tuning[name] = self.client.request("tune", iface=name)
+                if name not in self.tuned:
+                    self.tuned.append(name)
             except radio_helper.HelperError as exc:
-                self.tuning[a["interface"]] = {"error": str(exc)[:60]}
+                self.tuning[name] = {"error": str(exc)[:60]}
+
+    def ease(self, name):
+        """Undo Radio tuning on one adapter while it stays plugged in, as USB power runs short."""
+        if self.client is None or name not in self.tuned:
+            return False
+        try:
+            self.client.request("untune", iface=name)
+        except radio_helper.HelperError:
+            return False
+        self.tuned.remove(name)
+        self.eased.add(name)
+        self.tuning[name] = {"eased": True}
+        return True
+
+    def forget(self, name):
+        """An eased adapter left, or another took its name: whatever has that name now is tuned as usual."""
+        if name in self.eased:
+            self.eased.discard(name)
+            self.tuning.pop(name, None)
+
+    def shed(self, why="USB power ran short: an adapter stopped listening"):
+        """One listening adapter stops, and stays paused while it is plugged in, as USB power or the USB port runs
+        short. The first monitor, which hears the Flock channels, stays. Returns its name, or None."""
+        with self._lock:
+            if len(self.listeners) < 2:
+                return None
+            name = self._last_name()
+            self._release_last(why)
+            self.paused.add(name)
+            return name
+
+    def watched(self):
+        """(adapter, monitor interface) of each listening adapter, for Power guard to keep in view."""
+        return [(e["adapter"], vif) for vif, e in list(self.listeners.items())]
+
+    def moving(self):
+        """Adapters Deep scan itself is moving between listening and normal scans, which are briefly in neither, so
+        Power guard does not take that for an adapter that went away and came back."""
+        return set(self.joining) | set(self._moved)
 
     def scanners(self, adapters):
         """The adapters as the Wi-Fi fleet should get them: with the helper for direct scans when that is on."""
@@ -445,55 +837,209 @@ class DeepScan:
             return adapters
         return [dict(a, helper=self.client) if a.get("external") else a for a in adapters]
 
-    def follow(self, adapters, present=None, nodes=None):
-        """Adapters plugged in or pulled out during the drive: the monitor stays out of the managed scans, a new
-        adapter gets tuned like the others. A monitor that went away, or whose helper stopped, is let go, so its
-        adapter scans again once it is back. present: every Wi-Fi interface there is now; nodes: the bands of the
-        nodes in use now."""
+    def follow(self, adapters, present=None, nodes=None, held=()):
+        """Adapters plugged in or pulled out during the drive: the monitors stay out of the managed scans, a new
+        adapter gets tuned like the others. present: every Wi-Fi interface there is now; nodes: the bands of the
+        nodes in use now; held: adapters Power guard paused.
+
+        One monitor: when it went away, or its helper stopped, it is let go, so its adapter scans again once it is
+        back. With All adapters listen: a monitor that dropped out hands its channels to the others at once, and an
+        adapter that may listen does so STAGGER seconds after it shows up, also when it comes back."""
         if nodes is not None:
             self.node_bands = _node_bands(nodes)
-        if self.vif is not None:
-            names = {a["interface"] for a in (adapters if present is None else present)}
-            if self.vif not in names or self._helper_gone():
-                self.release("The monitor adapter went away. Scanning normally.")
-        managed = [a for a in adapters if a["interface"] != self.vif and a.get("type") != "803"]
-        chosen = self.roles.get("monitor")
-        if self.vif is not None and chosen is not None and not _covered(chosen, managed + [chosen], self.node_bands):
-            self.release("Monitor handed back: another adapter left, so it scans its bands again.")
+        names = {a["interface"] for a in (adapters if present is None else present)}
+        now = self.clock()
+        with self._lock:
+            self.held = set(held)
+            gone = [vif for vif in self.listeners if vif not in names]
+            self._moved = {name: at for name, at in self._moved.items()
+                           if name not in names and now - at < MOVED_FOR}
+            if not self.all_mode:
+                if self.listeners and (gone or self._helper_gone()):
+                    self.release("The monitor adapter went away. Scanning normally.", moved=not gone)
+            elif self.listeners and self._helper_gone():
+                self.release("The radio helper stopped. Scanning normally.")
+            else:
+                for vif in gone:
+                    self.dropped += 1
+                    self._drop(vif, "%s dropped out: its channels went to the other adapters" %
+                               self.listeners[vif]["original"], replan=False, moved=False)
+                if gone and self.listeners:
+                    self._replan()
+            self.paused = {name for name in self.paused if name in names}
+            self.refused = {name: until for name, until in self.refused.items() if name in names and until > now}
+            managed = [a for a in adapters if a["interface"] not in self.listeners and a.get("type") != "803"]
+            self._last_adapters = managed + [e["adapter"] for e in self.listeners.values()]
+            if not self.all_mode:
+                chosen = self.roles.get("monitor")
+                if self.vif is not None and chosen is not None and \
+                        not _covered(chosen, managed + [chosen], self.node_bands):
+                    self.release("Monitor handed back: another adapter left, so it scans its bands again.")
+            elif self.client is not None and not self._helper_gone():
+                self._balance(managed, set(held), now)
+            managed = self.managed(managed)
         self.tune([a for a in managed if a["interface"] not in self.tuning])
         return self.scanners(managed)
 
-    def radio_status(self):
-        if self.monitor is None:
-            return []
-        stats = self.stats
-        return [{"interface": self.vif, "method": "monitor", "sweeps": 0, "sweep_seconds": None,
-                 "error": self.error, "label": self.monitor.get("label", ""), "bands": [],
-                 "frames_per_s": stats.get("frames_per_s"), "flock": self.counts["flock"],
-                 "original": self.monitor.get("original")}]
+    def _learn(self, adapters):
+        """What the helper knows of adapters seen for the first time in this drive: their allowed channels and
+        whether they are on a network. What it said of the others is kept, as a listening adapter has no managed
+        interface to list."""
+        known = {h.get("interface") for h in self.helper_adapters} | self._asked
+        new = {a["interface"] for a in adapters} - known
+        if not new:
+            return
+        self._asked |= new
+        try:
+            found = self.client.request("adapters")["adapters"]
+        except (radio_helper.HelperError, OSError, KeyError, TypeError):
+            return
+        fresh = {h.get("interface") for h in found}
+        self.helper_adapters = [h for h in self.helper_adapters if h.get("interface") not in fresh] + list(found)
 
-    def release(self, why):
-        """Hand the monitor adapter back to normal scans; the next look at the adapters picks it up."""
-        self.error = why
-        self._stop_monitor()
-        self.monitor = None
-        self.plan = None
-        self.roles = dict(self.roles, monitor=None)
+    def _balance(self, managed, held, now):
+        listening = {e["original"]: vif for vif, e in self.listeners.items()}
+        pool = managed + [e["adapter"] for e in self.listeners.values()]
+        self._learn(pool)
+        roles = assign_all(pool, self.helper_adapters, self.cap, held | self.paused, set(listening),
+                           set(self.refused))
+        want = {a["interface"] for a in roles["monitors"]}
+        handed = False
+        for original, vif in listening.items():
+            if original not in want:
+                why = "Monitor handed back: %s scans its bands again." % original
+                if roles["reasons"].get(original) == REASONS["cap"]:
+                    why = "%s scans normally again: listen limit for this CPU." % original
+                self._drop(vif, why, replan=False)
+                handed = True
+        if handed and self.listeners:
+            self._replan()
+        self.joining = {name: item for name, item in self.joining.items() if name in want}
+        for adapter in roles["monitors"]:
+            name = adapter["interface"]
+            if name in listening:
+                continue
+            if name not in self.joining:
+                self.joining[name] = (adapter, now)
+                if self.timers:
+                    timer = threading.Timer(STAGGER, self._join_due, args=(name,))
+                    timer.daemon = True
+                    timer.start()
+            elif now - self.joining[name][1] >= STAGGER:
+                self._join(name)
+        adapters = [e["adapter"] for e in self.listeners.values()]
+        self.roles = dict(roles, monitor=adapters[0] if adapters else None, monitors=adapters)
 
-    def _stop_monitor(self):
-        if self.client is not None and self.vif is not None:
-            self.client.frames = None
+    def _join_due(self, name):
+        with self._lock:
+            if name in self.joining and not self._stop.is_set():
+                self._join(name)
+
+    def _join(self, name):
+        adapter, _ = self.joining.pop(name)
+        self._moved[name] = self.clock()
+        if self.client is None or self._stop.is_set() or len(self.listeners) >= self.cap:
+            return
+        try:
+            vif = self.client.request("monitor_start", iface=name)["vif"]
+        except (radio_helper.HelperError, OSError) as exc:
+            self.refused[name] = self.clock() + RETRY_JOIN
+            self.error = "%s could not listen: %s" % (name, str(exc)[:50])
+            return
+        self._add(vif, adapter)
+        try:
+            if vif in self._send_plan():
+                raise radio_helper.HelperError(self.error)
+            if self._worker is None:
+                self._start_worker()
+                self._threads = [threading.Thread(target=self._dispatch, daemon=True, name="deepscan"),
+                                 threading.Thread(target=self._pump, daemon=True, name="deepscan-feed")]
+                for thread in self._threads:
+                    thread.start()
+            self.client.frames = self._receive
+            self._capture(vif)
+        except (radio_helper.HelperError, OSError) as exc:
+            self.refused[name] = self.clock() + RETRY_JOIN
+            self._drop(vif, "%s could not listen: %s" % (name, str(exc)[:50]))
+            return
+        self._moved.pop(name, None)
+        self.joined += 1
+
+    def _replan(self):
+        self._make_plan()
+        for vif in self._send_plan():
+            if len(self.listeners) > 1:
+                self._drop(vif, self.error, replan=False)
+
+    def _drop(self, vif, why, replan=True, moved=True):
+        """One monitor back to managed: the helper puts its adapter back, or forgets it when it went away."""
+        entry = self.listeners.pop(vif, None)
+        self.steps.pop(vif, None)
+        if entry is None:
+            return
+        if moved:
+            self._moved[entry["original"]] = self.clock()
+        if why:
+            self.error = why
+        if self.client is not None:
             try:
-                self.client.request("monitor_stop", vif=self.vif)
+                self.client.request("monitor_stop", vif=vif)
             except radio_helper.HelperError:
                 pass
-        self.vif = None
+        if not self.listeners:
+            if self.client is not None:
+                self.client.frames = None
+            self.plan = None
+            self.roles = dict(self.roles, monitor=None, monitors=[])
+        elif replan:
+            self._replan()
+
+    def _release_last(self, why):
+        vif = next(reversed(self.listeners), None)
+        if vif is not None:
+            self._drop(vif, why)
+
+    def radio_status(self):
+        stats, out = self.stats, []
+        for vif, entry in list(self.listeners.items()):
+            adapter = entry["adapter"]
+            out.append({"interface": vif, "method": "monitor", "sweeps": 0, "sweep_seconds": None,
+                        "error": self.error if vif == self.vif else "", "label": adapter.get("label", ""),
+                        "bands": [], "frames_per_s": stats.get("frames_per_s") if vif == self.vif else None,
+                        "flock": self.counts["flock"] if vif == self.vif else 0, "original": entry["original"],
+                        "channels": len({step[0] for step in self.steps.get(vif, ())})})
+        return out
+
+    def release(self, why, moved=True):
+        """Hand every monitor adapter back to normal scans; the next look at the adapters picks them up."""
+        self.error = why
+        if moved:
+            at = self.clock()
+            for entry in list(self.listeners.values()):
+                self._moved[entry["original"]] = at
+        self._stop_monitor()
+        self.plan = None
+        self.roles = dict(self.roles, monitor=None, monitors=[])
+
+    def _stop_monitor(self):
+        with self._lock:
+            if self.client is not None and self.listeners:
+                self.client.frames = None
+            for vif in list(self.listeners)[::-1]:
+                if self.client is not None:
+                    try:
+                        self.client.request("monitor_stop", vif=vif)
+                    except radio_helper.HelperError:
+                        pass
+                self.listeners.pop(vif, None)
+                self.steps.pop(vif, None)
 
     def stop(self):
-        """Put everything back: monitor to managed, tuning undone, then close. The helper also does this by itself
+        """Put everything back: monitors to managed, tuning undone, then close. The helper also does this by itself
         when the connection closes, so a crash leaves nothing behind."""
         self._stop.set()
         self._stop_monitor()
+        self.joining = {}
         for name in self.tuned[::-1]:
             try:
                 self.client.request("untune", iface=name)
@@ -519,11 +1065,16 @@ class DeepScan:
         if self.client is not None:
             self.client.close()
             self.client = None
-        self.monitor = None
 
     def status(self):
+        listeners = [{"interface": vif, "original": e["original"], "label": e["adapter"].get("label", ""),
+                      "bands": list(e["adapter"].get("bands") or ()),
+                      "channels": len({step[0] for step in self.steps.get(vif, ())})}
+                     for vif, e in list(self.listeners.items())]
         return {"state": self.state, "detail": self.detail, "monitor": self.monitor, "vif": self.vif,
                 "reasons": dict(self.roles.get("reasons", {})), "unavailable": self.roles.get("unavailable", ""),
                 "stats": dict(self.stats), "counts": dict(self.counts), "error": self.error,
                 "tuning": dict(self.tuning), "plan": self.cfg.get("deep_scan_plan", "balanced"),
-                "level": self.level}
+                "level": self.level, "all": self.all_mode, "listeners": listeners, "cap": self.cap,
+                "paused": sorted(self.paused), "joining": sorted(self.joining), "dropped": self.dropped,
+                "joined": self.joined}

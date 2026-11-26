@@ -8,6 +8,7 @@ what a crash left behind is put back at the next start.
 """
 
 import array
+import fcntl
 import grp
 import json
 import os
@@ -27,10 +28,12 @@ SOCKET_PATH = "/run/quartermaster/radio.sock"
 GROUP = "quartermaster-radio"
 SYS_NET = "/sys/class/net"
 SYS_PHY = "/sys/class/ieee80211"
+SYS_USB = "/sys/bus/usb/devices"
+DEV_USB = "/dev/bus/usb"
 PROC_ROUTE = "/proc/net/route"
 MAX_MESSAGE = 4096
 MAX_CLIENTS = 2
-MAX_MONITORS = 2
+MAX_MONITORS = 6
 MAX_SCANS = 4
 MAX_ID = 2 ** 31 - 1
 MAX_PLAN = 64
@@ -41,15 +44,19 @@ CHUNK = 60 * 1024
 BATCH_BYTES, BATCH_SECONDS = 64 * 1024, 0.02
 RCVBUF = 4 * 1024 * 1024
 DRIVERS = frozenset({"mt7921u", "mt7925u", "mt76x2u", "mt76x0u", "rtw88_8822bu", "rtw88_8821cu", "ath9k_htc"})
+RESET_IDS = frozenset({"0e8d:7961", "0e8d:7925", "0e8d:7612", "0e8d:7610", "0bda:b812", "0bda:c811", "0cf3:9271"})
+RESET_GAP, RESET_MAX, RESET_WINDOW = 5.0, 3, 600.0
+USBDEVFS_RESET = 0x5514
 COMMANDS = {"hello": (), "adapters": (), "scan": ("iface", "freqs"), "tune": ("iface",), "untune": ("iface",),
             "monitor_start": ("iface",), "hop_plan": ("vif", "plan"), "capture": ("vif", "mgmt_only"),
-            "monitor_stop": ("vif",)}
+            "monitor_stop": ("vif",), "usb_reset": ("port",)}
 REQUIRED = {"scan": ("iface",), "tune": ("iface",), "untune": ("iface",), "monitor_start": ("iface",),
-            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",)}
+            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",)}
 TOOLS = {"iw": ("/usr/sbin/iw", "/sbin/iw", "/usr/bin/iw"), "ip": ("/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip")}
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
 _VIF = re.compile(r"qmmon[0-9]")
 _MAC = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}")
+_PORT = re.compile(r"[1-9][0-9]{0,2}-[1-9][0-9]{0,2}(?:\.[1-9][0-9]{0,2}){0,5}")
 
 FLOCK_OUIS = (
     0x70c94e, 0x3c9180, 0xd8f3bc, 0x803049, 0xb83532, 0x145afc, 0x744ca1, 0x083a88, 0x9c2f9d, 0xc03532,
@@ -316,8 +323,10 @@ class Capture:
 class System:
     """What the helper reads and runs. Every command is a fixed tool with a list of checked words: never a shell."""
 
-    def __init__(self, sys_net=SYS_NET, route=PROC_ROUTE, runner=subprocess.run, sys_phy=SYS_PHY):
+    def __init__(self, sys_net=SYS_NET, route=PROC_ROUTE, runner=subprocess.run, sys_phy=SYS_PHY, sys_usb=SYS_USB,
+                 dev_usb=DEV_USB):
         self.sys_net, self.route, self.runner, self.sys_phy = sys_net, route, runner, sys_phy
+        self.sys_usb, self.dev_usb = sys_usb, dev_usb
         self._nl = None
         self._nl_lock = threading.Lock()
 
@@ -416,6 +425,30 @@ class System:
 
     def capture(self, vif, mgmt_only):
         return Capture(vif, bpf_program(mgmt_only=mgmt_only))
+
+    def usb_device(self, port):
+        """(vendor:product, bus number, device number, has a network interface) of a USB device, or None."""
+        node = os.path.join(self.sys_usb, port)
+        usb_id = "%s:%s" % (_read(os.path.join(node, "idVendor")).lower(),
+                            _read(os.path.join(node, "idProduct")).lower())
+        bus, dev = _read(os.path.join(node, "busnum")), _read(os.path.join(node, "devnum"))
+        if not bus.isdigit() or not dev.isdigit():
+            return None
+        try:
+            parts = [p for p in os.listdir(node) if p.startswith(port + ":")]
+        except OSError:
+            return None
+        working = any(os.path.isdir(os.path.join(node, p, sub)) and os.listdir(os.path.join(node, p, sub))
+                      for p in parts for sub in ("net", "ieee80211"))
+        return usb_id, int(bus), int(dev), working
+
+    def usb_reset(self, bus, dev):
+        """USBDEVFS_RESET on the device's own node, which the udev rule lets this helper's group write."""
+        fd = os.open(os.path.join(self.dev_usb, "%03d" % bus, "%03d" % dev), os.O_WRONLY | os.O_CLOEXEC)
+        try:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+        finally:
+            os.close(fd)
 
 
 class Hopper(threading.Thread):
@@ -645,6 +678,27 @@ class Session:
         relay.start()
         return {}
 
+    def do_usb_reset(self, port):
+        """Reset a known USB Wi-Fi adapter that is on the bus but has no network interface: what a brownout leaves.
+        A working adapter, any other device and the built-in radio are refused, and resets are spaced out."""
+        port = check_port(port)
+        found = self.system.usb_device(port)
+        if found is None:
+            raise Refused("no USB device there")
+        usb_id, bus, dev, working = found
+        if usb_id not in RESET_IDS:
+            raise Refused("not a known Wi-Fi adapter")
+        if working:
+            raise Refused("the adapter is working")
+        now = self.helper.clock()
+        with self.helper.lock:
+            done = [at for at in self.helper.resets.get(port, ()) if now - at < RESET_WINDOW]
+            if done and now - done[-1] < RESET_GAP or len(done) >= RESET_MAX:
+                raise Refused("reset again later")
+            self.helper.resets[port] = done + [now]
+        self.system.usb_reset(bus, dev)
+        return {}
+
     def do_monitor_stop(self, vif):
         vif, _ = self._owned(vif)
         self._monitor_stop(vif)
@@ -755,6 +809,12 @@ class Relay(threading.Thread):
         self.stopped.set()
 
 
+def check_port(value):
+    if not isinstance(value, str) or not _PORT.fullmatch(value):
+        raise Refused("bad USB port")
+    return value
+
+
 def check_name(value):
     if not isinstance(value, str) or not _NAME.fullmatch(value):
         raise Refused("bad interface name")
@@ -854,8 +914,17 @@ class Helper:
         self.system = system or System()
         self.state_path = state_path
         self.sessions = []
+        self.resets = {}
+        self.clock = time.monotonic
         self.lock = threading.RLock()
         self.last_client = time.monotonic()
+
+    def resetting(self):
+        """Whether a USB reset is recent enough to count against its port's limit: the helper stays up until none
+        is, so the limit holds even with no client."""
+        now = self.clock()
+        with self.lock:
+            return any(now - at < RESET_WINDOW for done in self.resets.values() for at in done)
 
     def monitor_count(self):
         return sum(len(s.monitors) for s in self.sessions)
@@ -962,7 +1031,7 @@ class Helper:
         threads = []
         while True:
             threads = [t for t in threads if t.is_alive()]
-            if not threads and time.monotonic() - self.last_client > IDLE_EXIT:
+            if not threads and time.monotonic() - self.last_client > IDLE_EXIT and not self.resetting():
                 return
             try:
                 conn, _ = listener.accept()

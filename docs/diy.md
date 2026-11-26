@@ -24,7 +24,35 @@ Photos by Waveshare show the bare HATs. See [First drive](#first-drive) for what
 
 The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For 6 GHz, add a Linux-supported tri-band adapter and check the bands shown under **Hardware**. The Cardputer's Cap LoRa-1262, Grove port and power rails are specific to the M5Stack hardware. Use USB GPS or gpsd on a Pi. Battery percentage requires a power supply that reports a system battery to Linux. [Pi Zero specifications](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) · [Quartermaster adapter list](https://github.com/valleytechsolutions/Quartermaster#wi-fi-adapters)
 
-## Assemble and install
+## Easiest way: flash a ready image
+
+Each Raspberry Pi release has two ready SD card images, one for each HAT. They boot straight into Quartermaster. You do not need to type any commands.
+
+1. Open the newest [Quartermaster release for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases?q=pi-v&expanded=true). Under **Assets**, download the image for your HAT. You do not need to unzip it.
+
+| Your HAT | Download |
+| --- | --- |
+| 1.44″ HAT (128×128) | `quartermaster-pi-<version>-st7735-128.img.xz` |
+| 1.3″ HAT (240×240) | `quartermaster-pi-<version>-st7789-240.img.xz` |
+
+2. Install and open [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Choose your Pi model. For the operating system, scroll to the bottom and choose **Use custom**. Pick the file you downloaded.
+3. Choose your microSD card.
+4. Imager offers to customise the OS. This is optional. Quartermaster works without it. We recommend you set your Wi-Fi country here, so the Pi uses the right Wi-Fi channels for where you live. Set a username and password, your Wi-Fi and SSH here too if you want to log in to the Pi later.
+5. Write the card. With the Pi powered off, seat the HAT on the GPIO header with pin 1 lined up, and plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
+6. Put the card in the Pi and power it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu appears on the HAT.
+
+Good to know:
+
+- **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the `display=` line to `st7735-128` for the 1.44″ HAT or `st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
+- Without a Wi-Fi country, Wi-Fi still works for scanning. It uses the safe worldwide channel settings, which can hide a few channels.
+- The image has no password and SSH is off, unless you set them in Imager. Quartermaster runs under its own built-in `quartermaster` account, so it starts whether or not you made a user.
+- If Imager does not offer to customise the OS for the file, set up Wi-Fi and SSH later from the Pi, or use the `quartermaster-imager.json` link from the same release in Imager under **App Options > Content Repository > Use custom URL**. The images then appear in Imager's list with customisation.
+- The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates. To update, flash the newest image, or install a newer package as shown below.
+- Saved drives are in `/var/lib/quartermaster/quartermaster/logs/`. Over SSH, list them with `sudo ls /var/lib/quartermaster/quartermaster/logs`. The app's own log is `journalctl -b -u quartermaster@quartermaster.service`.
+
+Use the steps below instead if you want to install Quartermaster on a card you already use.
+
+## Assemble and install manually
 
 1. With the Pi powered off, align pin 1 and seat the HAT on the GPIO header. Plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
 2. For a new build, write Raspberry Pi OS Lite (Trixie) to the microSD. Zero 2 W, 3B, 3B+ and 4B can use 32-bit or 64-bit. The original Zero W needs 32-bit. RaspyJack's DIY guide uses the 32-bit edition. In Raspberry Pi Imager configure a username, network and SSH. If your existing build runs Raspberry Pi OS Bookworm with the standard Raspberry Pi repositories, you can install on that card starting at step 3.
@@ -69,5 +97,5 @@ The Pi now opens Quartermaster on the HAT. To launch it manually instead, leave 
 ## Checking a build
 
 - `quartermaster --probe` reports the selected profile and detected adapters and GPS ports. The profile is the configured choice. To verify the panel, look for readable text, correct colors, and all four edges of the menu.
-- If the screen stays blank, check the profile in `/etc/quartermaster/display`, verify `/dev/spidev0.0` exists, and read `journalctl -b -u "quartermaster@$USER.service"`. Both HATs use SPI0 CE0. The backlight, display and joystick need access to the Pi's GPIO.
+- If the screen stays blank, check the profile in `/etc/quartermaster/display`, verify `/dev/spidev0.0` exists, and read `journalctl -b -u "quartermaster@$USER.service"`. On a ready image the service is `quartermaster@quartermaster.service`, and `quartermaster.txt` on the boot partition sets the profile at every start. Both HATs use SPI0 CE0. The backlight, display and joystick need access to the Pi's GPIO.
 - A physical acceptance check for each HAT includes every joystick direction, the center press, K1–K3, a GPS fix, a saved drive and a reboot back to the menu. Frame rendering and simulated I/O tests cover both profiles. Panel orientation, radio reception and runtime on battery require an assembled unit.

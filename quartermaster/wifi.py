@@ -297,13 +297,20 @@ class WifiFleet:
     """One scan thread per adapter; results are pushed to `sink(networks, adapter)`.
 
     `refresh()` may be called at any time with the adapters now present: new ones start
-    scanning at once and unplugged ones drop out without disturbing the rest."""
+    scanning at once and unplugged ones drop out without disturbing the rest. With `stagger` set, the first sweeps of
+    USB adapters start that many seconds apart, and one plugged in later waits that long, so that their power spikes
+    do not land together."""
 
-    def __init__(self, adapters, sink, interval=0.0, scanner=AdapterScanner):
+    def __init__(self, adapters, sink, interval=0.0, scanner=AdapterScanner, clock=time.monotonic):
         self.adapters = list(adapters)
         self.sink = sink
         self.interval = interval
         self.scanner_class = scanner
+        self.clock = clock
+        self.stagger = 0.0
+        self.spacing = {}
+        self._next_start = None
+        self._began = False
         self.stopped = threading.Event()
         self.lock = threading.Lock()
         self.running = {}      # interface -> (scanner, stop event, thread)
@@ -325,12 +332,31 @@ class WifiFleet:
                 if name in self.running or self.stopped.is_set():
                     continue
                 scanner, gone = self.scanner_class(adapter), threading.Event()
-                thread = threading.Thread(target=self._loop, args=(scanner, gone), daemon=True, name="wifi-" + name)
+                thread = threading.Thread(target=self._loop, args=(scanner, gone, self._delay(adapter)), daemon=True,
+                                          name="wifi-" + name)
                 self.running[name] = (scanner, gone, thread)
                 thread.start()
+            self._began = True
 
-    def _loop(self, scanner, gone):
+    def _delay(self, adapter):
+        """How long a new adapter waits before its first sweep. Call this with the lock held."""
+        if not self.stagger or not adapter.get("external"):
+            return 0.0
+        now = self.clock()
+        delay = max(0.0, (self._next_start or now) - now)
+        if self._began:
+            delay = max(delay, self.stagger)
+        self._next_start = now + delay + self.stagger
+        return delay
+
+    def space(self, interface, seconds):
+        """A longer pause between the sweeps of one adapter, to spread out the power it draws."""
+        self.spacing[interface] = seconds
+
+    def _loop(self, scanner, gone, delay=0.0):
         failures = 0
+        if delay and gone.wait(delay):
+            return
         while not self.stopped.is_set() and not gone.is_set():
             try:
                 networks = scanner.scan()
@@ -338,7 +364,7 @@ class WifiFleet:
                 scanner.last_error = ""
                 if not gone.is_set():
                     self.sink(networks, scanner.adapter)
-                gone.wait(self.interval)
+                gone.wait(self.interval + self.spacing.get(scanner.interface, 0.0))
             except Exception as exc:
                 known = isinstance(exc, (ScanUnavailable, OSError, subprocess.SubprocessError))
                 if not known:

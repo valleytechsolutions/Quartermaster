@@ -1155,7 +1155,7 @@ def test_the_plan_is_sent_again_only_after_the_helper_finished_a_round():
 
 def test_a_monitor_that_went_away_is_let_go_and_its_name_scans_again():
     client = FakeClient()
-    deep = started_deep(client)
+    deep = started_deep(client, deep_scan_all=False)
     try:
         monitor_vif = dict(AC1200, interface="qmmon0", type="803")
         now = deep.follow([ALFA, BUILTIN], present=[ALFA, monitor_vif, BUILTIN])

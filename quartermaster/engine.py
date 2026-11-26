@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import adsb, deepscan, faults, hardware, lora, mesh, radios, wigle
+from . import adsb, deepscan, faults, hardware, lora, mesh, powerguard, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .drive_watch import DriveWatch
@@ -162,9 +162,13 @@ def _record(device):
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
                  nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
-                 player=None, deep=deepscan.DeepScan, *, display_profile="cardputer"):
+                 player=None, deep=deepscan.DeepScan, guard=powerguard.PowerGuard, *, display_profile="cardputer"):
         self.cfg = dict(cfg)
         self.display_profile = display_profile
+        self.guard_class, self.guard = guard, None
+        self._scanning = []
+        self._staged = threading.Lock()
+        self._sky_waiting = False
         self.deep_class, self.deep = deep, None
         self.alerts, self.player = alerts, player
         self.watch = None
@@ -246,6 +250,8 @@ class Wardrive:
         except BaseException:
             if self.state != "running":
                 _writing.discard(os.path.realpath(str(self.logs)))
+                if self.guard is not None:
+                    self.guard.stop()
             raise
 
     def _begin(self):
@@ -263,18 +269,22 @@ class Wardrive:
         self._stop.clear()
         self._started, self._stopped = None, None
         self.waiting, self._waited_at = True, None
-        chosen = self._deep_scan(chosen)
+        plan = self._guard_on(chosen)
+        chosen = self._scanning = self._deep_scan(chosen)
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
+        if plan["stagger"] and hasattr(self.fleet, "stagger"):
+            self.fleet.stagger = plan["stagger"]
         self.state = "running"
         self._watch_on()
         self.fleet.start()
+        self._sky_waiting = False
         if self._sky_wanted():
-            self._listen_sky()
+            self._sky_waiting = bool(plan["sky"])
+            self._later(plan["sky"], self._sky_turn)
         if self._mesh_wanted():
             self._listen_mesh()
         if self.nodes is not None:
-            self.nodes.attach(self, self._wifi_sink, self._node_ble, ble=self.cfg.get("ble", True),
-                              bands=self._bands)
+            self._later(plan["nodes"], self._attach_nodes)
         self._threads = [threading.Thread(target=self._housekeeping, daemon=True, name="wardrive-housekeeping")]
         if self.cfg.get("ble", True):
             if self.ble is None:
@@ -282,6 +292,98 @@ class Wardrive:
             self._threads.append(threading.Thread(target=self._ble_loop, daemon=True, name="ble"))
         for thread in self._threads:
             thread.start()
+
+    def _sky_turn(self):
+        try:
+            self._listen_sky()
+        finally:
+            self._sky_waiting = False
+
+    def _attach_nodes(self):
+        self.nodes.attach(self, self._wifi_sink, self._node_ble, ble=self.cfg.get("ble", True), bands=self._bands)
+
+    def _later(self, delay, start):
+        """Start a radio now, or after a delay so that its power spike does not land on top of the others'."""
+        if not delay:
+            start()
+            return
+
+        def wait():
+            if self._stop.wait(delay):
+                return
+            with self._staged:
+                if not self._stop.is_set():
+                    try:
+                        start()
+                    except Exception:
+                        faults.note("Starting a radio")
+        threading.Thread(target=wait, daemon=True, name="wardrive-stagger").start()
+
+    def _guard_on(self, chosen):
+        """With Power guard on: what is plugged in, and how far apart the radios start."""
+        self.guard = None
+        plan = {"stagger": 0.0, "sky": 0.0, "nodes": 0.0}
+        if self.guard_class is None or not self.cfg.get("power_guard", True):
+            return plan
+        try:
+            self.guard = self.guard_class(self.cfg)
+            plan.update(self.guard.start(chosen))
+        except Exception:
+            faults.note("Starting the power guard")
+            self.guard = None
+        return plan
+
+    def _guard_power(self):
+        """Look for signs that USB power runs short and ease the extra adapters while it does."""
+        guard = self.guard
+        if guard is None:
+            return
+        deep = self.deep
+        if hasattr(deep, "watched"):
+            guard.listening = deep.watched()
+        if hasattr(deep, "moving"):
+            guard.moving = deep.moving()
+        actions = guard.check(self._scanning, self._node_bands(), list(getattr(deep, "tuned", ()) or ()),
+                              hasattr(self.fleet, "space"))
+        refresh = False
+        for name in guard.forget():
+            if deep is not None and hasattr(deep, "forget"):
+                deep.forget(name)
+            getattr(self.fleet, "spacing", {}).pop(name, None)
+            refresh = True
+        for action in actions:
+            if action[0] in ("untune", "park") and deep is not None and hasattr(deep, "ease"):
+                deep.ease(action[1])
+            if action[0] == "space":
+                self.fleet.space(action[1], action[2])
+            if action[0] in ("park", "unpark"):
+                refresh = True
+        if refresh and hasattr(self.fleet, "refresh"):
+            self.fleet.refresh(self._unparked(self._scanning))
+        if getattr(guard, "stuck", False):
+            guard.stuck = False
+            if deep is not None and hasattr(deep, "shed"):
+                deep.shed()
+        if hasattr(guard, "revive_stalled"):
+            guard.revive_stalled(self._reset_port)
+
+    def _reset_port(self, port):
+        """A USB port reset through the radio helper: True when done, False when refused, None when the helper is
+        not there to do it."""
+        client = getattr(self.deep, "client", None)
+        if client is None:
+            return None
+        try:
+            client.request("usb_reset", port=port)
+        except deepscan.radio_helper.HelperError as exc:
+            return None if "unknown command" in str(exc) else False
+        return True
+
+    def _unparked(self, adapters):
+        guard = self.guard
+        if guard is None or not guard.parked:
+            return adapters
+        return [a for a in adapters if a["interface"] not in guard.parked]
 
     def _deep_scan(self, chosen):
         """With Deep scan, Direct scans or Radio tuning on: the radio helper session. Returns the adapters that scan
@@ -293,10 +395,9 @@ class Wardrive:
             deep = self.deep = self.deep_class(self.cfg)
             if not deep.open():
                 return chosen
-            managed = deep.plan_roles(chosen, self._node_bands())
-            if len(managed) < len(chosen) and not deep.start(self._wifi_sink, self._deep_frames, self._deep_flood,
-                                                              self._deep_clash):
-                managed = chosen
+            deep.plan_roles(chosen, self._node_bands())
+            deep.start(self._wifi_sink, self._deep_frames, self._deep_flood, self._deep_clash)
+            managed = deep.managed(chosen)
             deep.tune(managed)
             return deep.scanners(managed)
         except Exception:
@@ -373,8 +474,8 @@ class Wardrive:
 
     def _follow_sky(self):
         """With Aircraft on Auto, a stick plugged in during the wardrive starts listening."""
-        if self.aircraft is None and self.cfg.get("adsb", "auto") == "auto" and not self._stop.is_set() and \
-                self._sky_wanted():
+        if self.aircraft is None and not self._sky_waiting and self.cfg.get("adsb", "auto") == "auto" and \
+                not self._stop.is_set() and self._sky_wanted():
             self._listen_sky()
 
     def _mesh_wanted(self, checked=True):
@@ -428,6 +529,7 @@ class Wardrive:
                 self._position()
                 self._sync()
                 self._follow_adapters()
+                self._guard_power()
                 self._follow_sky()
                 self._follow_mesh()
                 if ticks % 15 == 0:
@@ -554,8 +656,10 @@ class Wardrive:
                 self.adapters = hardware.wifi_adapters()
                 chosen = self._chosen_adapters()
                 if self.deep is not None:
-                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands())
-                self.fleet.refresh(chosen)
+                    held = list(self.guard.parked) if self.guard is not None else []
+                    chosen = self.deep.follow(chosen, self.adapters, self._node_bands(), held=held)
+                self._scanning = chosen
+                self.fleet.refresh(self._unparked(chosen))
             except OSError:
                 pass
 
@@ -575,6 +679,10 @@ class Wardrive:
         if self.state != "running":
             return
         self._stop.set()
+        with self._staged:
+            pass
+        if self.guard is not None:
+            self.guard.stop()
         if self.nodes is not None:
             self.nodes.detach(self)
         if self.fleet is not None:
@@ -845,10 +953,22 @@ class Wardrive:
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        watch=self.watch.status() if self.watch is not None else None,
                        deep=self.deep.status() if self.deep is not None else None,
+                       power=self._power_status(),
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
                        gps_weak=bool(fix.get("valid") and limit and isinstance(hdop, (int, float)) and hdop > limit))
         return summary
+
+    def _power_status(self):
+        guard = self.guard
+        if guard is None:
+            return None
+        found = guard.status()
+        if hasattr(guard, "adapters_line"):
+            deep = self.deep.status() if self.deep is not None else None
+            listening = [item["interface"] for item in (deep or {}).get("listeners") or ()]
+            found["line"] = guard.adapters_line(list(self._scanning or ()), listening)
+        return found
 
     def radio_status(self):
         """The radios of the wardrive: the Wi-Fi adapters, then the nodes."""
