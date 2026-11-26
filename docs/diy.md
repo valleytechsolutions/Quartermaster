@@ -12,10 +12,15 @@ Use a Raspberry Pi, either of Raspyjack's joystick HATs, and a GPS to build a ha
 | Position | A USB GPS that outputs NMEA, or a receiver available through local `gpsd`. Quartermaster waits for a valid fix and clock before it writes WiGLE rows. |
 | Optional radios | A supported USB Wi-Fi adapter for additional bands, USB Quartermaster nodes, or an RTL-SDR for aircraft. A Zero has one USB OTG data port. Use an OTG hub when connecting multiple USB peripherals and provide enough power for the radios. |
 
-| Waveshare LCD HAT | Controller | Profile |
-| --- | --- | --- |
-| [1.44″ joystick HAT, 128×128](https://www.waveshare.com/1.44inch-lcd-hat.htm) | ST7735S | `st7735-128` |
-| [1.3″ IPS joystick HAT, 240×240](https://www.waveshare.com/wiki/1.3inch_LCD_HAT) | ST7789 | `st7789-240` |
+### Which HAT do you have?
+
+| 1.44″ LCD HAT | 1.3″ IPS LCD HAT |
+| --- | --- |
+| [![Front of the 1.44-inch Waveshare LCD HAT, with the joystick to the left of the display and three buttons to the right](https://www.waveshare.com/media/catalog/product/1/_/1.44inch-lcd-hat-1.jpg)](https://www.waveshare.com/1.44inch-lcd-hat.htm) | [![Front of the 1.3-inch Waveshare IPS LCD HAT, with three buttons to the left of the display and the joystick to the right](https://www.waveshare.com/media/catalog/product/1/_/1.3inch-lcd-hat-1.jpg)](https://www.waveshare.com/1.3inch-lcd-hat.htm) |
+| **128×128 · ST7735S** · `st7735-128` (default) | **240×240 · ST7789** · `st7789-240` |
+| [1.44″ product gallery](https://www.waveshare.com/1.44inch-lcd-hat.htm) | [1.3″ product gallery](https://www.waveshare.com/1.3inch-lcd-hat.htm) · [1.3″ hardware guide](https://www.waveshare.com/wiki/1.3inch_LCD_HAT) |
+
+Photos by Waveshare show the bare HATs. See [First drive](#first-drive) for what the Quartermaster interface looks like on each screen size.
 
 The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For 6 GHz, add a Linux-supported tri-band adapter and check the bands shown under **Hardware**. The Cardputer's Cap LoRa-1262, Grove port and power rails are specific to the M5Stack hardware. Use USB GPS or gpsd on a Pi. Battery percentage requires a power supply that reports a system battery to Linux. [Pi Zero specifications](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) · [Quartermaster adapter list](https://github.com/valleytechsolutions/Quartermaster#wi-fi-adapters)
 
@@ -52,7 +57,7 @@ The Pi now opens Quartermaster on the HAT. To launch it manually instead, leave 
 
 ## First drive
 
-The top row shows the 128×128 display and the bottom row shows the 240×240 display. These previews use sample observations.
+**Quartermaster screen previews:** 1.44″ (128×128) on top, 1.3″ (240×240) on the bottom. These are software-rendered previews with sample data, not photos of a running build.
 
 ![Menu, scanning settings, wardrive, stop confirmation and hardware on both Waveshare HATs](screens/waveshare-preview.png)
 
