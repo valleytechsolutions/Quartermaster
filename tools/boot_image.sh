@@ -4,8 +4,8 @@
 #   tools/boot_image.sh --image build/images/quartermaster-pi-<version>-<hat>.img.xz
 #
 # Options: --imager (first set the card up the way Raspberry Pi Imager does: its own user, password, name and
-# Wi-Fi country), --work <dir> (default: a temporary folder), --port <local port for SSH, default 5555>,
-# --wait <minutes to wait for a start, default 30>.
+# Wi-Fi country), --hat <the HAT the card must be set for>, --work <dir> (default: a temporary folder),
+# --port <local port for SSH, default 5555>, --wait <minutes to wait for a start, default 30>.
 # Needs qemu-system-aarch64, qemu-img, mtools, partx, sshpass, xz and openssl. Root is not needed.
 # The emulated Pi has no HAT, no Wi-Fi and no Bluetooth, so the app stops as soon as it looks for its screen. What is
 # checked: the card starts, grows to the card size, takes the login (the default one or Imager's), has SSH on, starts
@@ -14,7 +14,7 @@
 # The emulator restarts the moment the Pi's watchdog is switched on, so the emulated Pi is started without one.
 set -euo pipefail
 
-image='' work='' port=5555 wait_minutes=30 imager=no
+image='' work='' port=5555 wait_minutes=30 imager=no wanted_hat=''
 service_user=_quartermaster
 data=/var/lib/quartermaster/quartermaster
 user=pi password=pi name=quartermaster
@@ -27,11 +27,12 @@ usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
     case $1 in
         --imager) imager=yes; shift; continue ;;
-        --image|--work|--port|--wait) [ $# -ge 2 ] || usage ;;
+        --image|--hat|--work|--port|--wait) [ $# -ge 2 ] || usage ;;
         *) usage ;;
     esac
     case $1 in
         --image) image=$2 ;;
+        --hat) wanted_hat=$2 ;;
         --work) work=$2 ;;
         --port) port=$2 ;;
         --wait) wait_minutes=$2 ;;
@@ -169,6 +170,7 @@ fi
 take_boot_files
 hat=$(mcopy -n -i "$disk@@$(partition 1)" ::quartermaster.txt - | tr -d '\r' | sed -n 's/^display=//p' | tail -n 1)
 [ -n "$hat" ] || die "the card's quartermaster.txt names no HAT"
+[ -z "$wanted_hat" ] || [ "$hat" = "$wanted_hat" ] || die "the card is set for $hat, not for $wanted_hat"
 qemu-img resize -q -f raw "$disk" 8G
 
 start_emulator() {

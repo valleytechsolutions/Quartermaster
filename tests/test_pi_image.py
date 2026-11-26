@@ -899,11 +899,12 @@ def test_the_image_workflow_builds_both_hats_on_tags_monthly_and_on_request():
     build = steps.index("sudo tools/build_image.sh")
     assert build < steps.index('sudo chown -R "$(id -u):$(id -g)" build/images') < steps.index('> "$IMAGE.sha256"')
     assert "gh release" not in steps.replace("gh release download", "")
-    publish = workflow["jobs"]["publish"]
-    assert publish["needs"] == ["release", "image"] and "imager-list" not in workflow["jobs"]
+    publish, boot = workflow["jobs"]["publish"], workflow["jobs"]["boot"]
+    assert publish["needs"] == ["release", "image", "boot"] and "imager-list" not in workflow["jobs"]
     tagged = "${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}"
-    for job in (image, publish):
+    for job in (image, boot, publish):
         assert job["steps"][0]["uses"].startswith("actions/checkout@") and job["steps"][0]["with"] == {"ref": tagged}
+    for job in (image, publish):
         assert job["env"]["TAG"] == "${{ needs.release.outputs.tag }}"
     assert workflow["jobs"]["release"]["outputs"] == {"tag": "${{ steps.pick.outputs.tag }}"}
     listing = "\n".join(step.get("run", "") for step in publish["steps"])
@@ -937,12 +938,90 @@ def test_a_practice_run_builds_the_images_from_the_branch_and_publishes_nothing(
     assert wait.index("if gh release download") < wait.index('[ -s "build/pi/quartermaster-pi_${version}_all.deb" ] &&') < \
         wait.index("sha256sum --check --ignore-missing --strict SHA256SUMS); then") < wait.index("break")
     assert wait.count("sha256sum") == 1 and wait.rstrip().endswith('echo "VERSION=$version" >> "$GITHUB_ENV"')
-    assert set(workflow["jobs"]) == {"release", "image", "publish"}
+    assert set(workflow["jobs"]) == {"release", "image", "boot", "publish"} and "if" not in jobs["boot"]
     named = steps["Name the package and the image"]
     assert "if" not in named and 'test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"' in named["run"]
     order = [step.get("name") for step in jobs["image"]["steps"]]
     assert order.index("Wait for the Pi package") < order.index("Name the package and the image") < \
         order.index("Build the image")
+
+
+def test_no_image_is_published_before_it_started_in_an_emulated_pi():
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())["jobs"]
+    boot = jobs["boot"]
+    assert boot["needs"] == ["release", "image"] and "boot" in jobs["publish"]["needs"]
+    assert boot["runs-on"] == "ubuntu-24.04" and 60 <= boot["timeout-minutes"] <= 150
+    rows = boot["strategy"]["matrix"]["include"]
+    assert tuple(row["hat"] for row in rows) == boot_config.PROFILES
+    assert sorted(row["options"] for row in rows) == ["", "--imager"]
+    assert boot["env"]["HAT"] == "${{ matrix.hat }}" and boot["env"]["OPTIONS"] == "${{ matrix.options }}"
+    steps = {step.get("name"): step.get("run", "") for step in boot["steps"]}
+    for tool in ("qemu-system-arm", "qemu-utils", "mtools", "sshpass", "xz-utils"):
+        assert tool in steps["Install the emulator"].split(), tool
+    upload = [step for step in jobs["image"]["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
+    assert upload[0]["with"]["name"] == "image-${{ matrix.hat }}"
+    assert steps["Fetch the image"] == 'gh run download "$GITHUB_RUN_ID" --name "image-$HAT" --dir build/boot'
+    start = steps["Start the image in an emulated Pi and log in over SSH"]
+    assert start.count('tools/boot_image.sh --image build/boot/*.img.xz --hat "$HAT" $OPTIONS') == 2
+    assert "sudo" not in start and "--work" not in start
+    script = BOOT.read_text()
+    assert "--hat) wanted_hat=$2 ;;" in script and 'die "the card is set for $hat, not for $wanted_hat"' in script
+
+
+RELEASE_CASES = [
+    ("workflow_dispatch", "behind", True, 1, "already exists on another commit", None),
+    ("workflow_dispatch", "behind", False, 1, "already exists on another commit", None),
+    ("workflow_dispatch", "here", True, 0, "already has its Pi package", None),
+    ("workflow_dispatch", "none", False, 0, "", "--target"),
+    ("push", "here", False, 0, "", "--verify-tag"),
+    ("push", "here", True, 0, "already has its Pi package", None),
+]
+
+
+@pytest.mark.skipif(not all(shutil.which(tool) for tool in ("bash", "git", "jq")), reason="needs bash, git and jq")
+@pytest.mark.parametrize("event, tag_at, released, status, message, created_with", RELEASE_CASES)
+def test_a_pi_release_is_only_made_or_reused_for_the_commit_that_was_tested(
+        tmp_path, event, tag_at, released, status, message, created_with):
+    yaml = pytest.importorskip("yaml")
+    steps = yaml.safe_load((WORKFLOWS / "release-pi.yml").read_text())["jobs"]["release"]["steps"]
+    publish = next(step["run"] for step in steps if step.get("name") == "Publish the Pi prerelease")
+
+    def git(*args, cwd):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+                               "-c", "tag.gpgsign=false", *args], cwd=cwd, check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    origin, work, tools = tmp_path / "origin.git", tmp_path / "work", tmp_path / "tools"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
+    git("remote", "add", "origin", str(origin), cwd=work)
+    git("commit", "-q", "--allow-empty", "-m", "first", cwd=work)
+    if tag_at == "behind":
+        git("push", "-q", "origin", "HEAD:refs/tags/pi-v9.9.9", cwd=work)
+    git("commit", "-q", "--allow-empty", "-m", "second", cwd=work)
+    if tag_at == "here":
+        git("push", "-q", "origin", "HEAD:refs/tags/pi-v9.9.9", cwd=work)
+    head = git("rev-parse", "HEAD", cwd=work)
+    tools.mkdir()
+    calls = tmp_path / "calls"
+    view = ('{"isPrerelease": true, "isDraft": false, "assets": [{"name": "quartermaster-pi_9.9.9_all.deb"},'
+            ' {"name": "SHA256SUMS"}]}')
+    (tools / "gh").write_text("#!/bin/sh\necho \"$1 $2 $*\" >> %s\n"
+                              "[ \"$1 $2\" != 'release view' ] || { %s; }\n"
+                              % (calls, "echo '%s'" % view if released else "exit 1"))
+    (tools / "gh").chmod(0o755)
+    env = {"PATH": "%s:/usr/bin:/bin" % tools, "HOME": str(tmp_path), "GITHUB_EVENT_NAME": event,
+           "TAG": "pi-v9.9.9", "VERSION": "9.9.9", "GITHUB_REPOSITORY": "owner/repo"}
+    result = subprocess.run(["bash", "-e", "-c", publish], cwd=work, env=env, capture_output=True, text=True)
+    made = [line for line in calls.read_text().splitlines() if line.startswith("release create")] if calls.exists() else []
+    assert result.returncode == status, result.stdout + result.stderr
+    assert message in result.stdout
+    if created_with is None:
+        assert not made
+    else:
+        assert len(made) == 1 and " %s" % created_with in made[0] and "--prerelease --latest=false" in made[0]
+        assert (head in made[0]) == (created_with == "--target")
 
 
 def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
@@ -971,7 +1050,9 @@ def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
                  "user \\`pi\\` with password \\`pi\\`", "Change the password with \\`passwd\\`",
                  "blob/$TAG/docs/diy.md"):
         assert text in notes, text
-    assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish and "already exists on another commit" in publish
+    assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish
+    assert publish.index("already exists on another commit") < publish.index('gh release view "$TAG"')
+    assert "pyyaml" in steps[names.index("Test the app and build the Pi package")]["run"].split()
     start = steps[-1]
     assert start["if"] == "github.event_name == 'workflow_dispatch'"
     assert start["run"] == 'gh workflow run pi-images.yml --ref "$TAG" -f tag="$TAG"'
