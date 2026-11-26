@@ -10,6 +10,37 @@ permissions:
   contents: read
 
 jobs:
+  boot:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        setup: [default, imager]
+    name: First start (${{ matrix.setup }})
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install the emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-utils sshpass xz-utils
+      - name: Fetch a practice image
+        run: gh run download 45787783091 --name image-st7735-128 --dir build/boot
+      - name: Start the image and check its first start
+        run: tools/boot_image.sh --image build/boot/*.img.xz --work build/boot/work ${{ matrix.setup == 'imager' && '--imager' || '' }}
+      - name: Keep the console output
+        if: always()
+        run: |
+          for file in build/boot/work/serial*.log; do
+            echo "=================== $file"; tail -n 150 "$file" || true
+          done
   test:
     runs-on: ubuntu-24.04
     strategy:
