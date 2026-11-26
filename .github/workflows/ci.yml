@@ -33,37 +33,29 @@ jobs:
               if sudo test -d "$f"; then sudo ls -la "$f"; else sudo cat "$f" 2>&1 || true; fi
             done
           }
-          show usr/lib/python3/dist-packages/cloudinit/distros/raspberry_pi_os.py \
-            usr/lib/python3/dist-packages/cloudinit/config/cc_raspberry_pi.py
-          echo "=================== create_user"
-          sudo grep -n "def create_user" -A 125 usr/lib/python3/dist-packages/cloudinit/distros/__init__.py || true
-          echo "=================== enable_ssh mentions"
-          sudo grep -rn "enable_ssh\|rename-user\|cancel-rename\|userconf" usr/lib/python3/dist-packages/cloudinit --include='*.py' | cut -c1-220 || true
-          echo "=================== rpi-cloud-init-mods files"
-          sudo cat var/lib/dpkg/info/rpi-cloud-init-mods.list || true
-          for f in $(sudo cat var/lib/dpkg/info/rpi-cloud-init-mods.list); do
-            f=${f#/}
-            if sudo test -f "$f" && [ "$(sudo stat -c %s "$f")" -lt 30000 ]; then
-              case $f in usr/share/doc/*|*.pyc) continue ;; esac
-              echo "=================== $f"; sudo cat "$f"
-            fi
-          done
-          show usr/lib/raspberrypi-sys-mods/imager_custom usr/lib/raspberrypi-sys-mods/sshswitch \
-            usr/lib/raspberrypi-sys-mods/get_fw_loc usr/share/userconf-pi/sshd_banner \
-            etc/update-motd.d/10-uname etc/update-motd.d/99-rpi-usb-gadget boot/firmware/config.txt etc/fstab \
-            usr/lib/systemd/system-preset usr/lib/systemd/system-preset/* etc/NetworkManager/NetworkManager.conf \
-            etc/systemd/system/cloud-config.target.wants etc/systemd/system/graphical.target.wants \
-            etc/systemd/system/network-online.target.wants etc/systemd/system/bluetooth.target.wants \
-            etc/systemd/system/ssh.service.wants etc/default/useradd etc/adduser.conf etc/rpi-issue \
-            var/lib/dpkg/info/userconf-pi.postinst usr/lib/systemd/system/first-boot-complete.target \
-            usr/lib/systemd/system/systemd-growfs-root.service usr/lib/systemd/system/rpi-eeprom-update.service
-          echo "=================== raspi-config boot functions"
-          sudo grep -n "^get_boot_cli\|^get_autologin\|^do_boot_behaviour\|^get_boot_wait\|^is_pi \|^is_pi()" -A 45 usr/bin/raspi-config | cut -c1-200 || true
-          echo "=================== getty"
-          sudo grep -n "Install" -A 4 usr/lib/systemd/system/getty@.service || true
-          sudo ls -la etc/systemd/system/getty@tty1.service.d 2>&1 || true
-          echo "=================== fstab and partitions"
-          sudo sfdisk -l "$OLDPWD/base.img" || true
+          show var/lib/NetworkManager var/lib/NetworkManager/NetworkManager.state etc/NetworkManager \
+            etc/NetworkManager/NetworkManager.conf usr/lib/NetworkManager/conf.d usr/lib/NetworkManager/conf.d/* \
+            etc/modprobe.d etc/modprobe.d/* usr/lib/modprobe.d etc/profile.d etc/profile.d/wifi-check.sh \
+            etc/profile.d/sshpwd.sh etc/modules-load.d usr/lib/modules
+          echo "=================== rfkill mentions"
+          sudo grep -rn -i "rfkill" etc/modprobe.d usr/lib/modprobe.d etc/modules-load.d usr/lib/modules-load.d \
+            etc/udev/rules.d usr/lib/udev/rules.d etc/profile.d usr/lib/raspberrypi-sys-mods boot/firmware/cmdline.txt \
+            boot/firmware/config.txt etc/NetworkManager usr/lib/NetworkManager usr/lib/systemd/system \
+            etc/systemd/system 2>/dev/null | cut -c1-220 || true
+          echo "=================== rfkill built in"
+          sudo grep -h "rfkill\|cfg80211\|brcmfmac" usr/lib/modules/*/modules.builtin | sort | uniq -c || true
+          sudo find usr/lib/modules -name 'rfkill*.ko*' | head -5 || true
+          echo "=================== saved rfkill states"
+          for f in var/lib/systemd/rfkill/*; do echo "$f: $(sudo cat "$f")"; done
+          echo "=================== raspi-config wifi country"
+          sudo grep -n "^do_wifi_country\|^get_wifi_country\|^do_wifi_ssid_passphrase\|^do_net_names" -A 60 usr/bin/raspi-config | cut -c1-200 | head -260 || true
+          echo "=================== imager_custom"
+          sudo cat usr/lib/raspberrypi-sys-mods/imager_custom || true
+          echo "=================== regulatory"
+          sudo ls -la usr/lib/firmware/regulatory.db* usr/lib/crda 2>&1 | head || true
+          sudo grep -rn "ccode\|regrev" usr/lib/firmware/brcm/brcmfmac43430-sdio.txt usr/lib/firmware/brcm/brcmfmac43436-sdio.txt \
+            usr/lib/firmware/brcm/brcmfmac43455-sdio.txt usr/lib/firmware/cypress/*.txt 2>/dev/null | head -20 || true
+          sudo ls -la usr/lib/firmware/brcm | head -60 || true
 
   test:
     runs-on: ubuntu-24.04
