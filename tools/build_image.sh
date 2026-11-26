@@ -123,14 +123,14 @@ print(parts[0]["start"], parts[0]["size"], parts[1]["start"], parts[1]["size"])'
 }
 
 fetch_base() {
-    local url file
-    url=$(curl -fsSIL --retry 3 -o /dev/null -w '%{url_effective}' "$base_url")
+    local url file fetch=(curl -fsSL --retry 3 --connect-timeout 30 --speed-limit 20000 --speed-time 60)
+    url=$("${fetch[@]}" -I -o /dev/null -w '%{url_effective}' "$base_url")
     file=${url##*/}
     [[ $file =~ ^[0-9-]+raspios-trixie-armhf-lite\.img\.xz$ ]] || die "unexpected base image $url"
     log "Downloading $file"
     mkdir "$work/base"
-    curl -fsSL --retry 3 -o "$work/base/$file" "$url"
-    curl -fsSL --retry 3 -o "$work/base/$file.sha256" "$url.sha256"
+    "${fetch[@]}" -o "$work/base/$file" "$url"
+    "${fetch[@]}" -o "$work/base/$file.sha256" "$url.sha256"
     (cd "$work/base" && sha256sum --check --strict "$file.sha256")
     base=$work/base/$file
 }

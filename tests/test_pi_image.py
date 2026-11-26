@@ -135,6 +135,9 @@ def test_the_image_script_is_strict_cleans_up_and_keeps_imager_customisation_wor
         assert forbidden not in script, forbidden
     assert not re.search(r"(>|sed -i[^\n]*)\s*\"?\$mnt/boot/firmware/(cmdline\.txt|user-data|network-config)", script)
     assert 'check "cmdline.txt and cloud-init seed" "$(seeds)" "$seed_before"' in script
+    fetch = re.search(r"fetch=\((curl [^)]*)\)", script).group(1).split()
+    assert {"-fsSL", "--connect-timeout", "--speed-limit", "--speed-time", "--retry"} <= set(fetch)
+    assert script.count('"${fetch[@]}"') == 3 and script.count("curl -") == 1
 
 
 @pytest.mark.parametrize("name", ["first_user", "probe"])
@@ -905,6 +908,15 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
                  "8 GB or more", "switched on from the first start", "does not choose a country for you",
                  "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login"):
         assert text in section, text
+
+
+def test_every_pi_release_link_in_the_guide_and_the_readme_is_for_this_version():
+    version = json.loads((ROOT / "app-builder.json").read_text())["version"]
+    for name in ("docs/diy.md", "README.md"):
+        text = (ROOT / name).read_text()
+        assert set(re.findall(r"pi-v\d+\.\d+\.\d+", text)) == {"pi-v" + version}, name
+        assert set(re.findall(r"quartermaster-pi[_-](\d+\.\d+\.\d+)", text)) <= {version}, name
+    assert "Quartermaster Pi %s release" % version in (ROOT / "docs" / "diy.md").read_text()
 
 
 def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password():
