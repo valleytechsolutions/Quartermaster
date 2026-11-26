@@ -1,9 +1,11 @@
+import ast
 import importlib.util
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -474,6 +476,20 @@ def test_the_folder_is_watched_again_before_the_logs_rule_takes_its_last_look():
     assert "quartermaster-logs-changed.service" not in shell_list(script, "units")
 
 
+def test_a_restart_of_the_logs_rule_during_its_pause_is_a_clean_stop_and_the_first_start_test_proves_it():
+    service = settings((IMAGE / "quartermaster-logs.service").read_text())
+    changed = settings((IMAGE / "quartermaster-logs-changed.service").read_text())
+    assert changed["ExecStart"][-1].split()[-2:] == ["restart", "quartermaster-logs.service"]
+    assert service["Type"] == ["oneshot"] and service["SuccessExitStatus"] == ["SIGTERM"]
+    script = re.sub(r"\s*\\\n\s*", " ", BOOT.read_text())
+    wait = re.search(r'\n    sleep (\d+)\n    check "\$when: saving a log leaves no warning in the journal" '
+                     r'"\$\(as_root "journalctl -b -q -p warning -o cat --no-pager -u quartermaster-logs\.service '
+                     r'-u quartermaster-logs-changed\.service && echo none"\)" none\n', script)
+    assert wait and script.index("a newly saved log opens to the login") < wait.start()
+    chain = float(changed["ExecStart"][0].split()[-1]) + float(service["ExecStart"][1].split()[-1])
+    assert int(wait.group(1)) >= 2 * chain
+
+
 def test_the_image_check_finds_every_program_the_units_start():
     script = SCRIPT.read_text()
     pattern = re.search(r"done < <\(sed -n '([^']+)' ", script).group(1)
@@ -483,6 +499,23 @@ def test_the_image_check_finds_every_program_the_units_start():
     found = subprocess.run(["sed", "-n", pattern, *map(str, units)], capture_output=True, text=True, check=True)
     assert set(found.stdout.split()) == {"/usr/bin/python3", "/usr/bin/quartermaster", "/usr/bin/find",
                                          "/usr/bin/sleep", "/usr/bin/ssh-keygen", "/usr/bin/systemctl"}
+
+
+def test_the_image_check_loads_every_screen_and_button_module_the_hat_code_imports():
+    imports = set()
+    for node in ast.walk(ast.parse((ROOT / "quartermaster" / "ui" / "hat.py").read_text())):
+        if isinstance(node, ast.Import):
+            imports |= {"import " + alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            imports.add("from %s import %s" % (node.module, ", ".join(alias.name for alias in node.names)))
+    outside = {line for line in imports if line.split()[1].split(".")[0] not in sys.stdlib_module_names}
+    assert "import RPi.GPIO" in outside and len(outside) > 1
+    check = re.search(r'check "the screen and button modules load as \$service_user" "\$\(in_chroot runuser -u '
+                      r'"\$service_user" -- python3 -c \'\n(.*?)\' 2>&1 \| tail -n 1\)" ok\n', SCRIPT.read_text(),
+                      re.S)
+    lines = check.group(1).splitlines()
+    assert outside - {"import RPi.GPIO"} <= set(lines)
+    assert 'print("ok" if importlib.util.find_spec("RPi.GPIO") else "RPi.GPIO is missing")' in lines
 
 
 @pytest.mark.skipif(not shutil.which("find"), reason="needs find")
@@ -569,6 +602,16 @@ def test_the_first_start_test_checks_the_names_the_image_really_uses():
     assert 'grep -c "^Cannot open $hat display or controls: "' in script
     assert "grep -q 'Permission denied'" in script and "<<< 'exit 0'" in script
     assert script.count('"$(refused ') == 3 and "&& echo open || echo refused" not in script
+
+
+def test_a_failed_first_start_test_ends_with_its_failed_checks_and_never_asks_for_a_password():
+    script = BOOT.read_text()
+    assert 'failures+=("$1: expected \'$3\', got \'$2\'")' in script
+    assert 'printf \'FAIL  %s\\n\' "${failures[@]}"' in script
+    halt = re.search(r"^halted\(\) \{ grep -aqE '([^']+)' ", script, re.M).group(1)
+    assert "sed -nE '1,/%s/p' \"$console\"" % halt in script
+    assert '[ "$starts" -gt 0 ] && [ "$booted" = no ] && [ -f "$disk" ] && show_card_journal' in script
+    assert not re.search(r"\bsudo (?!-n |-S -p '' )", script.replace("command -v sudo >", ""))
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")

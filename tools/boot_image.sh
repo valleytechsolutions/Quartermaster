@@ -56,6 +56,7 @@ mkdir -p "$work"
 work=$(cd "$work" && pwd)
 disk=$work/card.img
 loop='' mounted='' failed=0 booted=no starts=0 console=$work/console-0.log
+failures=()
 
 running() {
     local pid
@@ -82,13 +83,24 @@ stop_emulator() {
 
 show_card_journal() {
     command -v sudo >/dev/null || return 0
-    loop=$(sudo losetup --find --show --read-only --offset "$(partition 2)" "$disk") || return 0
+    loop=$(sudo -n losetup --find --show --read-only --offset "$(partition 2)" "$disk") || return 0
     mkdir -p "$work/root"
-    if sudo mount -o ro,noload "$loop" "$work/root" 2>/dev/null; then
+    if sudo -n mount -o ro,noload "$loop" "$work/root" 2>/dev/null; then
         mounted=$work/root
         log "The card's own journal"
-        sudo journalctl --no-pager -o short-monotonic -D "$work/root/var/log/journal" 2>/dev/null | tail -n 200 || true
-        sudo tail -n 60 "$work/root/var/log/cloud-init-output.log" 2>/dev/null || true
+        sudo -n journalctl --no-pager -o short-monotonic -D "$work/root/var/log/journal" 2>/dev/null |
+            tail -n 200 || true
+        sudo -n tail -n 60 "$work/root/var/log/cloud-init-output.log" 2>/dev/null || true
+    fi
+}
+
+show_console() {
+    log "Last lines of the console of start $starts"
+    if halted; then
+        sed -nE '1,/reboot: (Power down|System halted|Power off not available)/p' "$console" | tail -n 150
+        echo "(The emulated Pi switched off here. It always prints a kernel panic next, which is normal.)"
+    else
+        tail -n 150 "$console"
     fi
 }
 
@@ -97,11 +109,12 @@ cleanup() {
     set +e
     stop_emulator
     if [ "$rc" != 0 ] || [ "$failed" != 0 ]; then
-        [ -s "$console" ] && { log "Last lines of the console of start $starts"; tail -n 150 "$console"; }
-        [ "$booted" = no ] && [ -f "$disk" ] && show_card_journal
+        [ -s "$console" ] && show_console
+        [ "$starts" -gt 0 ] && [ "$booted" = no ] && [ -f "$disk" ] && show_card_journal
+        [ "${#failures[@]}" = 0 ] || { log "Failed checks"; printf 'FAIL  %s\n' "${failures[@]}"; }
     fi
-    [ -n "$mounted" ] && sudo umount "$mounted"
-    [ -n "$loop" ] && sudo losetup -d "$loop" 2>/dev/null
+    [ -n "$mounted" ] && sudo -n umount "$mounted"
+    [ -n "$loop" ] && sudo -n losetup -d "$loop" 2>/dev/null
     [ -n "$made" ] && rm -rf "$made"
     exit "$rc"
 }
@@ -231,6 +244,7 @@ check() {
     else
         echo "FAIL  $1: expected '$3', got '$2'"
         failed=1
+        failures+=("$1: expected '$3', got '$2'")
     fi
 }
 
@@ -266,6 +280,9 @@ checks() {
     done
     check "$when: a newly saved log opens to the login" \
         "$(on_pi cat quartermaster/logs/boot-check.wigle.csv 2>&1)" saved
+    sleep 6
+    check "$when: saving a log leaves no warning in the journal" "$(as_root "journalctl -b -q -p warning -o cat \
+        --no-pager -u quartermaster-logs.service -u quartermaster-logs-changed.service && echo none")" none
     as_root "rm -f $data/logs/boot-check.wigle.csv" || true
 }
 

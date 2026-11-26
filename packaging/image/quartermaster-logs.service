@@ -6,6 +6,7 @@ StartLimitIntervalSec=0
 Type=oneshot
 User=_quartermaster
 LogLevelMax=notice
+SuccessExitStatus=SIGTERM
 ExecStart=-/usr/bin/find /var/lib/quartermaster/quartermaster/logs -ignore_readdir_race ( -type d ! -perm -050 -o -type f ! -perm -040 ) -exec chmod -f g+rX {} +
 ExecStart=/usr/bin/sleep 2
 ExecStart=-/usr/bin/find /var/lib/quartermaster/quartermaster/logs -ignore_readdir_race ( -type d ! -perm -050 -o -type f ! -perm -040 ) -exec chmod -f g+rX {} +

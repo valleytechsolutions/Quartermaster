@@ -348,6 +348,13 @@ done
 check "app import as $service_user" "$(in_chroot runuser -u "$service_user" -- /bin/sh -c \
     'cd /usr/lib/quartermaster/app && exec python3 -c "import quartermaster; print(quartermaster.__version__)"')" \
     "$version"
+check "the screen and button modules load as $service_user" "$(in_chroot runuser -u "$service_user" -- python3 -c '
+import importlib.util
+from spidev import SpiDev
+from luma.core.interface.serial import spi
+from luma.lcd.device import st7735, st7789
+from gpiozero import Button
+print("ok" if importlib.util.find_spec("RPi.GPIO") else "RPi.GPIO is missing")' 2>&1 | tail -n 1)" ok
 check "$service_user uid and group" "$(in_chroot id -u "$service_user"):$(in_chroot id -gn "$service_user")" \
     "$service_id:$service_user"
 check "the name quartermaster is free for a login" \
