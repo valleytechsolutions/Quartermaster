@@ -10,6 +10,7 @@
 # The emulated Pi has no HAT, no Wi-Fi and no Bluetooth, so the app itself cannot run there. What is checked: the
 # card starts, grows to the card size, takes the login (the default one or Imager's), has SSH on, opens newly saved
 # logs to the login, and still does all of that after a restart.
+# The emulator restarts the moment the Pi's watchdog is switched on, so the emulated Pi is started without one.
 set -euo pipefail
 
 image='' work='' port=5555 wait_minutes=30 imager=no
@@ -20,7 +21,7 @@ imager_user=kal-test imager_password=Imager-set-1 imager_name=qm-imager imager_c
 
 die() { echo "boot_image: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -47,14 +48,15 @@ fi
 mkdir -p "$work/boot"
 work=$(cd "$work" && pwd)
 disk=$work/card.img
-loop='' mounted='' failed=0 booted=no
+loop='' mounted='' failed=0 booted=no starts=0 console=$work/console-0.log
 
 running() { [ -f "$work/qemu.pid" ] && kill -0 "$(cat "$work/qemu.pid")" 2>/dev/null; }
+halted() { grep -aqE 'reboot: (Power down|System halted|Power off not available)' "$console" 2>/dev/null; }
 
 stop_emulator() {
     local patience=${1:-0}
     for _ in $(seq 1 "$patience"); do
-        running || break
+        if ! running || halted; then break; fi
         sleep 1
     done
     if running; then
@@ -82,13 +84,11 @@ show_card_journal() {
 }
 
 cleanup() {
-    local rc=$? file
+    local rc=$?
     set +e
     stop_emulator
     if [ "$rc" != 0 ] || [ "$failed" != 0 ]; then
-        for file in serial0.log serial1.log; do
-            [ -s "$work/$file" ] && { log "Last lines of $file"; tail -n 80 "$work/$file"; }
-        done
+        [ -s "$console" ] && { log "Last lines of the console of start $starts"; tail -n 150 "$console"; }
         [ "$booted" = no ] && [ -f "$disk" ] && show_card_journal
     fi
     [ -n "$mounted" ] && sudo umount "$mounted"
@@ -98,23 +98,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
+attach() {
+    loop=$(sudo losetup --find --show --partscan "$@" "$disk")
+    sudo udevadm settle 2>/dev/null || true
+    for _ in 1 2 3 4 5; do [ -b "${loop}p1" ] && break; sleep 1; done
+}
+
+detach() {
+    [ -z "$mounted" ] || sudo umount "$mounted"
+    mounted=''
+    [ -z "$loop" ] || sudo losetup -d "$loop"
+    loop=''
+}
+
+take_boot_files() {
+    local file
+    for file in kernel8.img initramfs8 bcm2710-rpi-3-b.dtb cmdline.txt; do
+        [ -f "$work/boot/$file" ] || die "the card has no $file"
+    done
+    cp "$work/boot/kernel8.img" "$work/boot/initramfs8" "$work/boot/bcm2710-rpi-3-b.dtb" "$work/"
+    cmdline=$(tr -d '\n' < "$work/boot/cmdline.txt" | sed -E 's/(^| )console=[^ ]*//g')
+    cmdline="console=tty1 console=ttyAMA0,115200 console=ttyAMA1,115200 ${cmdline# } dwc_otg.lpm_enable=0"
+    cmdline="$cmdline earlycon=pl011,mmio32,0x3f201000"
+    cmdline="$cmdline initcall_blacklist=bcm2835_wdt_driver_init module_blacklist=bcm2835_wdt"
+}
+
 log "Unpacking $(basename "$image")"
 case $image in
     *.xz) xz -dc "$image" > "$disk" ;;
     *) cp --sparse=always "$image" "$disk" ;;
 esac
 
-loop=$(sudo losetup --find --show --partscan "$disk")
-sudo udevadm settle 2>/dev/null || true
-for _ in 1 2 3 4 5; do [ -b "${loop}p1" ] && break; sleep 1; done
+attach
 sudo mount -o "uid=$(id -u),gid=$(id -g)" "${loop}p1" "$work/boot"
 mounted=$work/boot
-for file in kernel8.img initramfs8 bcm2710-rpi-3-b.dtb cmdline.txt; do
-    [ -f "$work/boot/$file" ] || die "the image has no $file"
-done
-cp "$work/boot/kernel8.img" "$work/boot/initramfs8" "$work/boot/bcm2710-rpi-3-b.dtb" "$work/"
-cmdline=$(tr -d '\n' < "$work/boot/cmdline.txt")
-
 if [ "$imager" = yes ]; then
     log "Setting the card up as Raspberry Pi Imager does: user $imager_user, name $imager_name, country $imager_country"
     user=$imager_user password=$imager_password name=$imager_name
@@ -152,26 +169,24 @@ runcmd:
   - [ rfkill, unblock, wifi ]
   - [ sh, -c, "for f in /var/lib/systemd/rfkill/*:wlan; do echo 0 > \"\$f\"; done" ]
 EOF
-    cmdline="$cmdline cfg80211.ieee80211_regdom=$imager_country"
-    printf '%s\n' "$cmdline" > "$work/boot/cmdline.txt"
+    printf '%s\n' "$(tr -d '\n' < "$work/boot/cmdline.txt") cfg80211.ieee80211_regdom=$imager_country" \
+        > "$work/cmdline.txt"
+    cp "$work/cmdline.txt" "$work/boot/cmdline.txt"
 fi
-sudo umount "$work/boot"
-mounted=''
-sudo losetup -d "$loop"
-loop=''
+take_boot_files
+detach
 qemu-img resize -q -f raw "$disk" 8G
 
-cmdline=${cmdline/console=serial0,115200/console=ttyAMA1,115200 console=ttyAMA0,115200}
-cmdline="$cmdline dwc_otg.lpm_enable=0 earlycon=pl011,mmio32,0x3f201000"
-
 start_emulator() {
+    starts=$((starts + 1))
+    console=$work/console-$starts.log
     log "Starting the emulated Raspberry Pi 3"
     qemu-system-aarch64 -machine raspi3b -cpu cortex-a53 -smp 4 -m 1G \
         -kernel "$work/kernel8.img" -initrd "$work/initramfs8" -dtb "$work/bcm2710-rpi-3-b.dtb" \
         -append "$cmdline" -drive "file=$disk,format=raw,if=sd" \
         -device usb-net,netdev=net0 -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
-        -display none -monitor none -serial "file:$work/serial0.log" -serial "file:$work/serial1.log" \
-        -daemonize -pidfile "$work/qemu.pid"
+        -display none -monitor none -serial "file:$console" \
+        -no-reboot -daemonize -pidfile "$work/qemu.pid"
 }
 
 ssh_options=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
@@ -288,7 +303,13 @@ fi
 log "Switching off and starting again"
 before=$(on_pi cat /proc/sys/kernel/random/boot_id) || true
 as_root "systemctl poweroff" >/dev/null 2>&1 || true
-stop_emulator 180
+stop_emulator 600
+check "the first start switches off by itself" "$(halted && echo yes || echo no)" yes
+attach --read-only
+sudo mount -o ro "${loop}p1" "$work/boot"
+mounted=$work/boot
+take_boot_files
+detach
 start_emulator
 settle
 check "second start is a new start" \
@@ -299,6 +320,7 @@ check "first login is not set up again" \
     "$(on_pi systemctl show -p ConditionResult --value quartermaster-first-login.service)" no
 
 as_root "systemctl poweroff" >/dev/null 2>&1 || true
-stop_emulator 120
+stop_emulator 600
+check "the second start switches off by itself" "$(halted && echo yes || echo no)" yes
 [ "$failed" = 0 ] || die "the image did not pass every check"
 log "The image starts, takes its login over SSH and keeps it after a restart"

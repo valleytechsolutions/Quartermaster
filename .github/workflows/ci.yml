@@ -38,8 +38,8 @@ jobs:
       - name: Keep the console output
         if: always()
         run: |
-          for file in build/boot/work/serial*.log; do
-            echo "=================== $file"; tail -n 150 "$file" || true
+          for file in build/boot/work/console-*.log; do
+            echo "=================== $file"; tail -n 250 "$file" || true
           done
   test:
     runs-on: ubuntu-24.04

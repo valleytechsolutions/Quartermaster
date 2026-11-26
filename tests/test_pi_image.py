@@ -12,6 +12,7 @@ from tools import imager_os_list
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = ROOT / "packaging" / "image"
 SCRIPT = ROOT / "tools" / "build_image.sh"
+BOOT = ROOT / "tools" / "boot_image.sh"
 WORKFLOWS = ROOT / ".github" / "workflows"
 SHA = "ab" * 32
 
@@ -510,6 +511,44 @@ def test_the_image_script_parses_and_refuses_bad_arguments():
         assert result.returncode == 2 and "--hat st7735-128" in result.stderr
     if shutil.which("shellcheck"):
         subprocess.run(["shellcheck", str(SCRIPT)], check=True)
+
+
+def test_the_first_start_test_checks_the_names_the_image_really_uses():
+    script, build = BOOT.read_text(), SCRIPT.read_text()
+    assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
+    assert BOOT.stat().st_mode & 0o111
+    assert "trap cleanup EXIT" in script and "losetup -d" in script and "umount" in script
+    assert re.search(r"^service_user=(\S+)$", script, re.M).group(1) == SERVICE_USER
+    assert re.search(r"^data=(\S+)$", script, re.M).group(1) == first_login.DATA
+    login = re.search(r"^login_user=(\S+) login_password=(\S+) login_id=\d+ host_name=(\S+)$", build, re.M)
+    assert "\nuser=%s password=%s name=%s\n" % login.groups() in script
+    assert first_login.STAMP in script
+    notice = "still has the default password"
+    assert notice in (IMAGE / "default_password_notice.sh").read_text() and "grep -c '%s'" % notice in script
+    for unit in ("quartermaster-logs.path", "quartermaster-first-login.service", "quartermaster-boot-config.service",
+                 "quartermaster-logs.service"):
+        assert unit in script and (IMAGE / unit).is_file(), unit
+    assert 'is-enabled "quartermaster@$service_user.service"' in script
+    for name in ("kernel8.img", "initramfs8", "bcm2710-rpi-3-b.dtb", "cmdline.txt"):
+        assert name in script
+    assert "-machine raspi3b" in script and "-no-reboot" in script
+    assert 'hostfwd=tcp:127.0.0.1:$port-:22' in script and "0.0.0.0" not in script
+    assert script.count("\ntake_boot_files\n") == 2 and "attach --read-only" in script
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_the_first_start_test_parses_and_refuses_bad_arguments(tmp_path):
+    subprocess.run(["bash", "-n", str(BOOT)], check=True)
+    result = subprocess.run(["bash", str(BOOT), "--wat"], capture_output=True, text=True)
+    assert result.returncode == 2 and "--image build/images/" in result.stderr
+    for args, message in (([], "no image at ''"), (["--image", str(tmp_path / "none.img.xz")], "no image at"),
+                          (["--image", str(BOOT), "--port", "ssh"], "whole numbers"),
+                          (["--image", str(BOOT), "--wait", "1.5"], "whole numbers")):
+        result = subprocess.run(["bash", str(BOOT), *args], capture_output=True, text=True)
+        assert result.returncode == 1 and message in result.stderr, args
+    assert not list(tmp_path.iterdir())
+    if shutil.which("shellcheck"):
+        subprocess.run(["shellcheck", str(BOOT)], check=True)
 
 
 def test_the_service_account_is_one_the_radio_helper_accepts_and_leaves_room_for_login_users():
