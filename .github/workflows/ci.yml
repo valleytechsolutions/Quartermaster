@@ -32,16 +32,31 @@ jobs:
         run: python -m pip install ${{ matrix.packages }} pyserial pytest pyflakes
       - name: Lint
         run: python -m pyflakes quartermaster tests tools
+      - name: Load the CardputerZero AppStore install policy
+        run: |
+          mkdir -p tests/vendor
+          curl -fsSL --retry 3 'https://raw.githubusercontent.com/CardputerZero/packages/5d55615e69cda109bdf20ea4a8e69c528bc19374/.github/scripts/install_path_policy.py' -o tests/vendor/install_path_policy.py
+          python -c 'from tests.vendor.install_path_policy import rejected_paths'
+      - name: Build the Cardputer package to check
+        run: |
+          package=$(python tools/build_deb.py --out build)
+          echo "QUARTERMASTER_STORE_DEB=$package" >> "$GITHUB_ENV"
       - name: Tests
         run: python -m pytest -q tests
       - name: Render every screen
         run: python tools/render_screens.py --out build/screenshots
-      - name: Build the package
-        run: python tools/build_deb.py --out build
+      - name: Build the Raspberry Pi package
+        run: python tools/build_deb.py --target pi --out build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: matrix.python == '3.13'
         with:
           name: quartermaster
           path: |
-            build/*.deb
+            build/quartermaster_*.deb
             build/screenshots/*.png
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.python == '3.13'
+        with:
+          name: quartermaster-pi
+          path: build/quartermaster-pi_*.deb
+          if-no-files-found: error

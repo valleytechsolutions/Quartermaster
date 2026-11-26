@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.8
+
+- New: Quartermaster also runs on a Raspberry Pi with either Waveshare joystick screen that Raspyjack uses, the 1.44 inch and the 1.3 inch. It has its own package, quartermaster-pi, and a build guide in docs/diy.md.
+- This version also has everything from 1.2.6 (Power guard) and 1.2.7 (All adapters listen) below.
+
 ## 1.2.7
 
 - New: All adapters listen, in Settings > Deep scan. It is on Auto, so it works when Deep scan is on and two or more USB adapters can listen. Turn it Off to keep one listening adapter, as in 1.2.6.

@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
@@ -39,21 +40,41 @@ jobs:
           version=$(python -c "import json; print(json.load(open('app-builder.json'))['version'])")
           test "$TAG" = "v$version" || { echo "Tag $TAG does not match app version $version"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      - name: Tests
-        run: python -m pytest -q tests
-      - name: Build the package
+      - name: Check the Cardputer release package
         run: |
-          python tools/build_deb.py --out build
-          cp "build/quartermaster_${VERSION}_all.deb" build/quartermaster.deb
-          (cd build && sha256sum *.deb > SHA256SUMS)
+          mkdir -p tests/vendor
+          curl -fsSL --retry 3 'https://raw.githubusercontent.com/CardputerZero/packages/5d55615e69cda109bdf20ea4a8e69c528bc19374/.github/scripts/install_path_policy.py' -o tests/vendor/install_path_policy.py
+          python -c 'from tests.vendor.install_path_policy import rejected_paths'
+          package=$(python tools/build_deb.py --out build/cardputer)
+          QUARTERMASTER_STORE_DEB="$package" python -m pytest -q tests
+      - name: Prepare the release assets
+        run: |
+          cd build/cardputer
+          cp "quartermaster_${VERSION}_all.deb" quartermaster.deb
+          sha256sum quartermaster.deb "quartermaster_${VERSION}_all.deb" > SHA256SUMS
       - name: Release notes for this version
         run: |
           awk -v version="$VERSION" '$1 == "##" { on = ($2 == version) ; next } on' CHANGELOG.md > build/notes.md
           test -s build/notes.md
-      - name: Create or update the GitHub release
+      - name: Publish the Cardputer package
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          files=(build/cardputer/quartermaster.deb "build/cardputer/quartermaster_${VERSION}_all.deb" build/cardputer/SHA256SUMS)
+          if ! names=$(gh release view "$TAG" --json assets --jq '.assets[].name'); then
             gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "Quartermaster $VERSION" \
-              --notes-file build/notes.md
+              --notes-file build/notes.md "${files[@]}"
+            exit 0
           fi
-          gh release upload "$TAG" build/*.deb build/SHA256SUMS --clobber
+          found=0
+          for file in "${files[@]}"; do
+            if grep -Fxq "${file##*/}" <<< "$names"; then found=$((found + 1)); fi
+          done
+          if (( found == ${#files[@]} )); then
+            echo "$TAG already has its Cardputer packages and checksums."
+          elif (( found )); then
+            echo "::error::$TAG already contains part of the Cardputer release. Check its published checksums."
+            exit 1
+          else
+            git fetch --no-tags origin "refs/tags/$TAG"
+            test "$(git rev-parse HEAD)" = "$(git rev-parse 'FETCH_HEAD^{commit}')"
+            gh release upload "$TAG" "${files[@]}"
+          fi

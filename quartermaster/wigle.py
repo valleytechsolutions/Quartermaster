@@ -25,12 +25,22 @@ MIN_EPOCH = 1704067200  # 2024-01-01: an unset clock must never reach a log
 LOG_GLOB = "quartermaster_*.wigle.csv"
 JOURNAL_GLOB = ".quartermaster_*.wigle.csv.part"
 SYNC_SECONDS = 5.0
+DEVICE_TREE_MODEL = Path("/proc/device-tree/model")
+DISPLAY_SIZES = {"cardputer": "320x170", "st7735-128": "128x128", "st7789-240": "240x240"}
 
 
-def pre_header(os_version=""):
-    return ["WigleWifi-1.6", "appRelease=%s %s" % (APP_NAME, __version__), "model=CardputerZero",
-            "release=%s" % (os_version or "unknown"), "device=%s" % APP_NAME, "display=320x170",
-            "board=M5Stack CardputerZero", "brand=Valleytech Solutions", "star=Sol", "body=3", "subBody=0"]
+def pre_header(os_version="", *, display_profile="cardputer"):
+    display = DISPLAY_SIZES[display_profile]
+    model, board = "CardputerZero", "M5Stack CardputerZero"
+    if display_profile != "cardputer":
+        try:
+            board = one_line(DEVICE_TREE_MODEL.read_text(errors="replace")).strip() or "Raspberry Pi"
+        except OSError:
+            board = "Raspberry Pi"
+        model = board
+    return ["WigleWifi-1.6", "appRelease=%s %s" % (APP_NAME, __version__), "model=%s" % model,
+            "release=%s" % (os_version or "unknown"), "device=%s" % APP_NAME, "display=%s" % display,
+            "board=%s" % board, "brand=Valleytech Solutions", "star=Sol", "body=3", "subBody=0"]
 
 
 def _text(value):
@@ -252,18 +262,19 @@ def cut(path, size):
 
 
 class WigleWriter:
-    def __init__(self, path, os_version="", sync_every=SYNC_SECONDS):
+    def __init__(self, path, os_version="", sync_every=SYNC_SECONDS, *, display_profile="cardputer"):
         self.path = Path(path)
         self.size = self.path.stat().st_size if self.path.exists() else 0
+        header = pre_header(os_version, display_profile=display_profile) if not self.size else None
         fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self.file = os.fdopen(fd, "a", encoding="utf-8", newline="")
         self.rows = 0
         self.sync_every = sync_every
         self._synced, self._waiting = time.monotonic(), False
         self._emitted, self._safe, self._dropped = 0, (self.size, 0), False
-        if self.size == 0:
+        if header is not None:
             try:
-                self._emit(pre_header(os_version))
+                self._emit(header)
                 self._emit(COLUMNS)
                 self.sync(force=True)
             except OSError:

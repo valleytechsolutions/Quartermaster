@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the CardputerZero package: python3 tools/build_deb.py [--out build]
+"""Build Quartermaster for CardputerZero (default) or Raspberry Pi (--target pi).
 
 The layout follows the CardputerZero AppBuilder convention, so the result installs with apt
 and publishes to the store with: czdev publish --deb build/quartermaster_<version>_all.deb
@@ -33,55 +33,91 @@ DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python
            "firmware-realtek, firmware-mediatek, firmware-atheros")
 
 
-def build(out):
+def cardputer_layout(stage, manifest):
+    pkg = manifest["package_name"]
+    launcher = stage / PREFIX / "bin" / manifest["bin_name"]
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\ncd /%s/apps/%s || exit 1\nexec python3 -m quartermaster \"$@\"\n"
+                        % (PREFIX, pkg))
+    launcher.chmod(0o755)
+    images = stage / PREFIX / "share" / "images"
+    images.mkdir(parents=True)
+    shutil.copy2(HERE / "packaging" / "icon-launcher.png", images / (pkg + ".png"))
+    applications = stage / PREFIX / "applications"
+    applications.mkdir(parents=True)
+    (applications / (pkg + ".desktop")).write_text(
+        "[Desktop Entry]\nName=%s\nExec=/%s/bin/%s\nTerminal=false\nSysplause=true\n"
+        "Icon=share/images/%s.png\nType=Application\n" % (manifest["app_name"], PREFIX, manifest["bin_name"], pkg))
+    return stage / PREFIX / "apps" / pkg
+
+
+def pi_layout(stage):
+    launcher = stage / "usr/bin/quartermaster"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\nset -e\nIFS= read -r display < /etc/quartermaster/display\n'
+                        'cd /usr/lib/quartermaster/app\nexec /usr/bin/python3 -m quartermaster --display "$display" "$@"\n')
+    launcher.chmod(0o755)
+    profile = stage / "etc/quartermaster/display"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("st7735-128\n")
+    return stage / "usr/lib/quartermaster/app"
+
+
+def build(out, target="cardputer"):
     manifest = json.loads((HERE / "app-builder.json").read_text())
     pkg, version = manifest["package_name"], manifest["version"]
+    pi = target == "pi"
+    deb_name = "quartermaster-pi" if pi else pkg
     stage = Path(tempfile.mkdtemp(prefix="deb-"))
     stage.chmod(0o755)
     try:
-        app_dir = stage / PREFIX / "apps" / pkg
+        app_dir = pi_layout(stage) if pi else cardputer_layout(stage, manifest)
+        excluded = ["__pycache__", "*.pyc"]
+        if not pi:
+            excluded.extend(("hat.py", "square.py"))
         shutil.copytree(HERE / "quartermaster", app_dir / "quartermaster",
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        launcher = stage / PREFIX / "bin" / manifest["bin_name"]
-        launcher.parent.mkdir(parents=True)
-        launcher.write_text("#!/bin/sh\ncd /%s/apps/%s || exit 1\nexec python3 -m quartermaster \"$@\"\n"
-                            % (PREFIX, pkg))
-        launcher.chmod(0o755)
-        images = stage / PREFIX / "share" / "images"
-        images.mkdir(parents=True)
-        shutil.copy2(HERE / "packaging" / "icon-launcher.png", images / (pkg + ".png"))
-        applications = stage / PREFIX / "applications"
-        applications.mkdir(parents=True)
-        (applications / (pkg + ".desktop")).write_text(
-            "[Desktop Entry]\nName=%s\nExec=/%s/bin/%s\nTerminal=false\nSysplause=true\n"
-            "Icon=share/images/%s.png\nType=Application\n" % (manifest["app_name"], PREFIX, manifest["bin_name"], pkg))
+                        ignore=shutil.ignore_patterns(*excluded))
         helper = stage / "usr/lib" / pkg / "radiod.py"
-        helper.parent.mkdir(parents=True)
+        helper.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / "packaging" / "radiod.py", helper)
         units = stage / "usr/lib/systemd/system"
         units.mkdir(parents=True)
         for unit in UNITS:
             shutil.copy2(HERE / "packaging" / unit, units / unit)
+        if pi:
+            shutil.copy2(HERE / "packaging/quartermaster@.service", units)
         rules = stage / "usr/lib/udev/rules.d" / ("70-%s.rules" % pkg)
         rules.parent.mkdir(parents=True)
         shutil.copy2(HERE / "packaging" / "70-quartermaster.rules", rules)
-        tmpfiles = stage / "usr/lib/tmpfiles.d" / (pkg + ".conf")
-        tmpfiles.parent.mkdir(parents=True)
-        shutil.copy2(HERE / "packaging" / "quartermaster.tmpfiles", tmpfiles)
-        doc = stage / "usr/share/doc" / pkg
+        if not pi:
+            tmpfiles = stage / "usr/lib/tmpfiles.d" / (pkg + ".conf")
+            tmpfiles.parent.mkdir(parents=True)
+            shutil.copy2(HERE / "packaging" / "quartermaster.tmpfiles", tmpfiles)
+        doc = stage / "usr/share/doc" / deb_name
         doc.mkdir(parents=True)
         notices = HERE / "quartermaster" / "assets" / "node-firmware-notices.txt"
         (doc / "copyright").write_text(COPYRIGHT + (HERE / "LICENSE").read_text(encoding="utf-8") + "\n\n" +
                                        notices.read_text(encoding="utf-8"), encoding="utf-8")
         control = stage / "DEBIAN"
         control.mkdir()
+        if pi:
+            shutil.copy2(HERE / "docs/diy.md", doc / "diy.md")
+            (doc / "screens").mkdir()
+            shutil.copy2(HERE / "docs/screens/waveshare-preview.png", doc / "screens")
+            (control / "conffiles").write_text("/etc/quartermaster/display\n")
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
+        depends = DEPENDS
+        if pi:
+            depends += ", python3-luma.lcd, python3-rpi-lgpio | python3-rpi.gpio, python3-gpiozero"
         (control / "control").write_text(
             "Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: %s\nInstalled-Size: %d\n"
-            "Depends: %s\nSection: APPLaunch\nPriority: optional\n"
+            "Depends: %s\n%sSection: %s\nPriority: optional\n"
             "Homepage: https://github.com/valleytechsolutions/Quartermaster\n"
-            "Description: %s\n Wi-Fi and Bluetooth wardriver for the M5Stack CardputerZero.\n"
-            % (pkg, version, MAINTAINER, size, DEPENDS, manifest["description"]))
+            "Description: %s\n Wi-Fi and Bluetooth wardriver for %s.\n"
+            % (deb_name, version, MAINTAINER, size, depends, "Conflicts: quartermaster\n" if pi else "",
+               "net" if pi else "APPLaunch",
+               "GPS wardriver for Waveshare LCD HATs with WiGLE logs and uploads" if pi else manifest["description"],
+               "Raspberry Pi with a Waveshare LCD HAT" if pi else "the M5Stack CardputerZero"))
         for script in ("postinst", "prerm"):
             shutil.copy2(HERE / "packaging" / script, control / script)
             (control / script).chmod(0o755)
@@ -91,8 +127,9 @@ def build(out):
             elif path.parent.name != "DEBIAN" and not os.access(path, os.X_OK):
                 path.chmod(0o644)
         out.mkdir(parents=True, exist_ok=True)
-        deb = out / ("%s_%s_all.deb" % (pkg, version))
-        subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "-b", str(stage), str(deb)], check=True,
+        deb = out / ("%s_%s_all.deb" % (deb_name, version))
+        compression = ["--threads-max=1", "-z3"] if pi else []
+        subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", *compression, "-b", str(stage), str(deb)], check=True,
                        stdout=subprocess.DEVNULL)
         return deb
     finally:
@@ -102,8 +139,9 @@ def build(out):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(HERE / "build"))
+    parser.add_argument("--target", choices=("cardputer", "pi"), default="cardputer")
     args = parser.parse_args()
-    deb = build(Path(args.out))
+    deb = build(Path(args.out), args.target)
     print(deb)
 
 

@@ -8,7 +8,7 @@
 <h1 align="center">Quartermaster</h1>
 
 <p align="center">
-  <b>The wardriver for the M5Stack CardputerZero.</b><br>
+  <b>The wardriver for the M5Stack CardputerZero and DIY Raspberry Pi handhelds.</b><br>
   Wi-Fi, Bluetooth, nodes, aircraft and LoRa mesh. Every radio at once.<br>
   Clean WiGLE logs. Automatic uploads. Drive Alerts. Recon.
 </p>
@@ -28,6 +28,7 @@
 <p align="center">
   <a href="docs/guide/README.md">User guide</a> ·
   <a href="#install">Install</a> ·
+  <a href="https://github.com/valleytechsolutions/Quartermaster/wiki">User guide</a> ·
   <a href="#what-it-does">What it does</a> ·
   <a href="#your-first-wardrive">First wardrive</a> ·
   <a href="#nodes">Nodes</a> ·
@@ -49,6 +50,13 @@ New to Quartermaster? The [user guide](docs/guide/README.md) explains everything
 
 ## Install
 
+### Build a Raspberry Pi handheld
+
+A Raspberry Pi with a 40-pin header can run Quartermaster with either of Raspyjack's Waveshare LCD HATs.
+Choose the 1.44″ 128×128 ST7735S or the 1.3″ 240×240 ST7789. Both have a five-way joystick and three buttons.
+The Pi package includes a native square dashboard, a joystick keyboard and an optional start-at-boot service.
+Follow the [DIY build guide](docs/diy.md) for the parts, Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer and checksum](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.5).
+
 ### From the CardputerZero AppStore
 
 <p align="center">
@@ -58,6 +66,8 @@ New to Quartermaster? The [user guide](docs/guide/README.md) explains everything
 Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Cardputer and search for **Quartermaster**, or enter the share code **WARD**.
 
 Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
+
+For a fresh or replacement SD card, follow the [CardputerZero flashing and installation guide](https://github.com/valleytechsolutions/Quartermaster/wiki/CardputerZero-installation).
 
 ### With one command
 
@@ -554,7 +564,7 @@ Everything is kept in the `quartermaster` folder in your home directory.
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.7,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.8,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 By default each device has at most two rows in a log: its strongest sighting, the closest pass, and its weakest, the far edge of its range, each with its own position and time. A weak sighting below -92 dBm, or with a position less sure than 25 m, is not used as the far edge. One row is written when there is nothing better. Until the wardrive stops, the rows wait in a hidden file next to the log, so the log appears in Logs and goes to the upload sites once the wardrive stops. After a crash or a power cut, Quartermaster finishes that log the next time it opens.

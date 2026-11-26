@@ -1,6 +1,6 @@
 # Quartermaster user guide
 
-This guide explains how to use Quartermaster 1.2.7 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
+This guide explains how to use Quartermaster 1.2.8 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
 
 A few words used everywhere in this guide:
 
@@ -28,6 +28,7 @@ A few words used everywhere in this guide:
 - [Uploads](uploads.md): WiGLE, WDGWars and Wardrift keys, and the phone setup page.
 - [Files and logs](files.md): where everything is kept.
 - [Troubleshooting](troubleshooting.md): every Hardware screen message, and common problems.
+- [Build a DIY Quartermaster](../diy.md): a Raspberry Pi with a Waveshare joystick screen, the same parts as Raspyjack.
 - [License and credits](license.md)
 
 ## Good to know

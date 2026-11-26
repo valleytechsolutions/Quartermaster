@@ -222,6 +222,16 @@ def gps_text(fix):
     return "Searching for a fix"
 
 
+def gps_help(app):
+    if app.square:
+        return "Plug in a USB GPS or connect a receiver through gpsd."
+    return "Plug in a USB GPS, the LoRa cap or a Grove GPS."
+
+
+def supported_alerts(app, names):
+    return [name for name in names if name != "lorawan"] if app.square else names
+
+
 def gps_wait(app, s):
     """What the GPS is doing while a wardrive waits for its first usable fix, and what to do about it."""
     fix = s["gps"]
@@ -244,7 +254,7 @@ def gps_wait(app, s):
         return detail, "Give it a clear view of the sky."
     if plugged:
         return plugged[0]["label"] + " found", "Waiting for it to send a position."
-    return "No GPS found", "Plug in a USB GPS, the LoRa cap or a Grove GPS."
+    return "No GPS found", gps_help(app)
 
 
 class Splash(Screen):
@@ -418,9 +428,9 @@ class Wardrive(Screen):
             return "%s paused to save USB power. Use a powered hub." % parked[0], AMBER
         if s["ble_error"]:
             return s["ble_error"], AMBER
-        if (s.get("lora") or {}).get("state") == mesh.FAILED:
+        if not app.square and (s.get("lora") or {}).get("state") == mesh.FAILED:
             return "The LoRa cap stopped listening. See Hardware.", AMBER
-        if s.get("lora") is not None and not app.cfg.get("country_set"):
+        if not app.square and s.get("lora") is not None and not app.cfg.get("country_set"):
             return "LoRa uses the %s band. Set your country in Settings." % lora.region_name(
                 app.cfg.get("country", "US")), AMBER
         return None
@@ -694,7 +704,7 @@ class Hardware(Screen):
         elif plugged:
             title, detail = plugged[0]["label"] + " found", "Waiting for it to send a position."
         else:
-            title, detail = "No GPS found", "Plug in a USB GPS, the LoRa cap or a Grove GPS."
+            title, detail = "No GPS found", gps_help(app)
         cards.append({"tag": "GPS", "color": GREEN if fix.get("valid") else AMBER, "title": title, "detail": detail,
                       "right": "HDOP %.1f" % fix["hdop"] if fix.get("valid") and isinstance(
                           fix.get("hdop"), (int, float)) else ""})
@@ -857,6 +867,8 @@ class Hardware(Screen):
     @staticmethod
     def lora_card(app, status):
         """The Cap LoRa-1262: on On always, on Off and Auto once it was found."""
+        if app.square:
+            return None
         cap, on = app.cap, app.cfg.get("lora", "auto")
         live = status.get("lora") if status is not None else None
         if live is None and not cap.found and on is not True:
@@ -1121,7 +1133,7 @@ class LogDetail(Details):
             if self.entry["path"] == app.active_log():
                 app.toast("Stop the wardrive before deleting its log", AMBER)
             else:
-                app.confirm("Delete this log?", "The file is removed from the Cardputer. Sites that already have "
+                app.confirm("Delete this log?", "The file is removed from this device. Sites that already have "
                             "it keep their copy.", "Delete", lambda: app.delete_log(self.entry), danger=True)
         else:
             return super().handle(key, app)
@@ -1265,7 +1277,7 @@ class Keys(Screen, ListMixin):
         service = FIELD_SERVICE[field]
         if key == "ENTER":
             app.push(TextInput(label, lambda value: app.save_key(field, value), hint="Find it at " + where,
-                               limit=accounts.MAX_LENGTH))
+                               limit=accounts.MAX_LENGTH, secret=bool(app.square)))
         elif key == "T":
             if accounts.configured(app.accounts(), service):
                 app.test_key(service)
@@ -1273,7 +1285,7 @@ class Keys(Screen, ListMixin):
                 app.toast("Save the %s key first" % accounts.SERVICE_NAMES[service], AMBER)
         elif key == "D":
             if app.accounts().get(field):
-                app.confirm("Remove this key?", "%s is erased from the Cardputer." % label, "Remove",
+                app.confirm("Remove this key?", "%s is erased from this device." % label, "Remove",
                             lambda: app.save_key(field, ""), danger=True)
         else:
             return super().handle(key, app)
@@ -1356,14 +1368,27 @@ class Settings(Screen, ListMixin):
                       if section in ("SCANNING", "DEEP SCAN", "LOGGING", "GPS")
                       for key, _, _, _ in entries} - {"ignore"}
     HELPER_EVERY = 5.0
+    PI_HELP = {"gps_source": "Auto finds a USB receiver or uses gpsd.",
+               "country": "Nodes use the Wi-Fi channels allowed in this country.",
+               "check_updates": "Checks GitHub for a newer DIY package.",
+               "auto_upload": "Automatic sends finished logs whenever the Pi is online.",
+               "alert_place": "Where alerts appear. K3 opens the alert controls."}
 
-    def __init__(self):
+    def __init__(self, diy=False):
         self.index, self.top = 1, 0
         self._helper = None
         self.items = []
         for section, entries in config.SECTIONS:
             self.items.append((None, section, None, ""))
-            self.items.extend(entries)
+            if not diy:
+                self.items.extend(entries)
+                continue
+            for key, label, choices, help_line in entries:
+                if key in ("lora", "gps_power"):
+                    continue
+                if key == "gps_source":
+                    choices = [(value, name) for value, name in choices if value != "/dev/ttyS0"]
+                self.items.append((key, label, choices, self.PI_HELP.get(key, help_line)))
 
     def hints(self, app):
         return [("OK", "Change"), ("Z/C", "Step"), ("F/X", "Move"), ("Esc", "Back")]
@@ -1376,7 +1401,10 @@ class Settings(Screen, ListMixin):
             return "%d of %d" % (len(app.cfg.get(key, ())), len(recon.CATEGORIES))
         if key == "drive_alert_types":
             from ..drive_watch import TYPES
-            return "%d of %d" % (len(app.cfg.get(key, ())), len(TYPES))
+            names = supported_alerts(app, TYPES)
+            return "%d of %d" % (sum(name in app.cfg.get(key, ()) for name in names), len(names))
+        if key == "gps_source" and app.square and app.cfg.get(key) == "/dev/ttyS0":
+            return "/dev/ttyS0"
         if key == "drive_alert_skip":
             return plural(len(app.cfg.get(key, ())), "device")
         if key == "drive_watch":
@@ -2070,8 +2098,9 @@ class Updates(Screen):
             color = self.COLORS.get(state, AMBER)
         for i, line in enumerate(c.wrap(text, W - 20, font("ui", 10))[:3]):
             c.text((10, TOP + 24 + i * 14), line, font("ui", 10), color)
-        note = c.wrap("Apps never update by themselves. Use the AppStore on the Cardputer. Quartermaster only asks, "
-                      "and never downloads anything.", W - 20, font("ui", 8))[:3]
+        install = "Use the DIY package to update your Pi." if app.square else "Use the AppStore on the Cardputer."
+        note = c.wrap("Apps never update by themselves. %s Quartermaster only asks, and never downloads anything."
+                      % install, W - 20, font("ui", 8))[:3]
         for i, line in enumerate(note):
             c.text((10, CONTENT_BOTTOM - 2 - (len(note) - i) * 11), line, font("ui", 8), FAINT)
 
@@ -2093,7 +2122,7 @@ class About(Screen):
         c.text((126, TOP + 2), "Quartermaster", font("display", 17), GOLD)
         c.text((126, TOP + 23), "Version %s" % __version__, font("ui", 10), TEXT)
         c.text((126, TOP + 36), "Wardriver for every radio", font("ui", 9), MUTED)
-        c.text((126, TOP + 47), "for the CardputerZero", font("ui", 9), MUTED)
+        c.text((126, TOP + 47), "for the Raspberry Pi" if app.square else "for the CardputerZero", font("ui", 9), MUTED)
         c.text((126, TOP + 60), REPO, font("ui", 7), FAINT)
         for i, line in enumerate(c.wrap(THANKS, W - 134, font("ui", 7))[:3]):
             c.text((126, TOP + 69 + i * 8), line, font("ui", 7), MUTED)
@@ -2116,24 +2145,34 @@ class Tips(Details):
         super().__init__("TIPS")
 
     def rows(self, app):
-        return [
-            ("", "Keys", GOLD),
+        controls = [
             ("F  X  Z  C", "Up, down, left, right. The arrow keys work too."),
             ("OK", "Open or confirm"),
             ("Esc", "Back"),
             ("Sym", "Then a key: the symbol printed on it"),
             ("Tab", "In a text box: lists every symbol"),
             ("Space", "Start or stop a wardrive from the menu"),
+        ]
+        battery_help = ("When the battery is almost empty, a running wardrive is saved and Quartermaster closes, "
+                        "so that the Cardputer can switch off safely.")
+        if app.square:
+            battery_help = ("When a system battery gauge reports an almost empty battery, a running wardrive is "
+                            "saved and Quartermaster closes.")
+            controls = [("Joystick", "Move through menus. Press the stick or K1 to select."),
+                        ("K2", "Go back."),
+                        ("K3", "Open actions. Choose Pan details to read a wider screen."),
+                        ("Text", "K3 opens the keyboard. Move to a character and press K1. K3 closes it."),
+                        ("USB", "An external keyboard works too.")]
+        return [("", "Keys", GOLD), *controls,
             ("", "Wardrive", GOLD),
             ("", "Every Wi-Fi adapter scans at once, with Bluetooth beside them. Rows are logged only with a GPS "
                  "fix, so WiGLE accepts every one.", MUTED),
             ("", "Each device is listed once. Its strongest and weakest sightings are always written, which is "
                  "the closest and the farthest point you heard it from.", MUTED),
-            ("", "When the battery is almost empty, a running wardrive is saved and Quartermaster closes, so that "
-                 "the Cardputer can switch off safely.", MUTED),
+            ("", battery_help, MUTED),
             ("", "Uploads", GOLD),
             ("", "Add your keys once under Keys. Finished logs are then sent to WiGLE, WDGWars and Wardrift "
-                 "whenever the Cardputer is online.", MUTED),
+                 "whenever the device is online.", MUTED),
             ("", "Recon", GOLD),
             ("", "Watches for cameras, trackers and other surveillance gear. It never runs together with a "
                  "wardrive.", MUTED),
@@ -2228,8 +2267,9 @@ class TextInput(Modal):
     SYMBOLS = "-_.@:/!#$%&*+=?~()[]{}<>'\"`^|\\,;"
     COLUMNS = 16
 
-    def __init__(self, title, on_submit, initial="", hint="", limit=64):
+    def __init__(self, title, on_submit, initial="", hint="", limit=64, secret=False):
         self.title, self.on_submit, self.hint, self.limit = title, on_submit, hint, limit
+        self.secret = secret
         self.value = initial
         self.picking = False
         self.cell = 0
@@ -2248,7 +2288,7 @@ class TextInput(Modal):
         c.rect((x0, y0, x1, y1), fill=SURFACE, outline=GOLD_DIM, radius=8)
         c.text((x0 + 12, y0 + 8), self.title, font("bold", 11), GOLD, width=x1 - x0 - 24)
         c.rect((x0 + 10, y0 + 28, x1 - 10, y0 + 48), fill=BG, outline=LINE, radius=4)
-        shown = self.value[-41:]
+        shown = self.display_value()[-41:]
         width = c.text((x0 + 16, y0 + 32), shown, font("mono", 10), TEXT)
         if int(time.monotonic() * 2) % 2 == 0:
             c.rect((x0 + 17 + width, y0 + 32, x0 + 18 + width, y0 + 44), fill=GOLD)
@@ -2266,6 +2306,9 @@ class TextInput(Modal):
     def insert(self, text):
         if len(self.value) < self.limit:
             self.value += text
+
+    def display_value(self):
+        return "•" * len(self.value) if self.secret else self.value
 
     def handle(self, key, app):
         if self.picking:

@@ -380,10 +380,11 @@ class Cap:
     touched but a file test: the supply, the antenna switch and the radio are only reached when /dev/spidev0.1 is
     there."""
 
-    def __init__(self, rails=None, spi=SPI_DEVICE, supply=power.RAILS[0], mux=MUX, radio=CapRadio):
+    def __init__(self, rails=None, spi=SPI_DEVICE, supply=power.RAILS[0], mux=MUX, radio=CapRadio, *, cardputer=True):
         self.rails = rails if rails is not None else power.Rails()
         self.spi, self.supply, self.mux, self.radio_class = Path(spi), Path(supply), Path(mux), radio
-        self.state = CHECKING
+        self.cardputer = cardputer
+        self.state = CHECKING if cardputer else ABSENT
         self._thread = None
 
     @property
@@ -391,6 +392,8 @@ class Cap:
         return self.state == FOUND
 
     def start(self, wanted=True):
+        if not self.cardputer:
+            return
         if not wanted:
             self.state = OFF
             return
@@ -423,4 +426,6 @@ class Cap:
             self._thread.join(seconds)
 
     def radio(self):
+        if not self.cardputer:
+            raise RadioError(ABSENT)
         return self.radio_class(self.rails, self.supply, self.spi, self.mux)

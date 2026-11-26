@@ -6,7 +6,7 @@ from .. import config, drive_watch, recon, tones
 from . import icons
 from .gfx import (AMBER, BG, CONTENT_BOTTOM, CYAN, FAINT, GOLD, GOLD_INK, GREEN, LINE, MUTED, RED, SURFACE, SURFACE_2,
                   TEXT, VIOLET, W, ago, bearing, clock, compass, distance_m, font, human_distance, rssi_color)
-from .screens import TOP, Details, ListMixin, Screen, TextInput, empty_state, fmt_rssi, gps_text, plural
+from .screens import TOP, Details, ListMixin, Screen, TextInput, empty_state, fmt_rssi, gps_text, plural, supported_alerts
 
 PINK = (255, 120, 200)
 CATEGORY_COLOR = {
@@ -85,7 +85,8 @@ class Recon(Screen, ListMixin):
         radios = len(app.hw.adapters)
         rows = [("Radios", "%s + Bluetooth" % plural(radios, "Wi-Fi adapter") if radios else "Bluetooth only", TEXT),
                 ("Watching", "%d of %d kinds, %d Wardrive only" % (
-                    len(watching), len(recon.CATEGORIES), len(drive_watch.SQUACHWATCH_ORDER) - len(recon.CATEGORIES)),
+                    len(watching), len(recon.CATEGORIES),
+                    len(supported_alerts(app, drive_watch.SQUACHWATCH_ORDER)) - len(recon.CATEGORIES)),
                  TEXT),
                 ("Show", "%s and stronger" % recon.CONFIDENCE_NAMES[r.display_min()].lower(), TEXT),
                 ("Alert", "%s and stronger%s" % (recon.CONFIDENCE_NAMES[r.alert_min()].lower(),
@@ -351,7 +352,7 @@ class Categories(Screen, ListMixin):
 
     def render(self, c, app):
         enabled = set(app.cfg.get("recon_categories", recon.CATEGORIES))
-        names = list(drive_watch.SQUACHWATCH_ORDER)
+        names = supported_alerts(app, drive_watch.SQUACHWATCH_ORDER)
         self.clamp(len(names), self.VISIBLE)
         for row, name in enumerate(names[self.top:self.top + self.VISIBLE]):
             y = TOP + row * 16
@@ -370,7 +371,7 @@ class Categories(Screen, ListMixin):
         self.scrollbar(c, len(names), self.VISIBLE)
 
     def handle(self, key, app):
-        names = list(drive_watch.SQUACHWATCH_ORDER)
+        names = supported_alerts(app, drive_watch.SQUACHWATCH_ORDER)
         if self.move(key, len(names), self.VISIBLE):
             return True
         enabled = app.cfg.get("recon_categories", recon.CATEGORIES)
@@ -459,7 +460,7 @@ class AlertTypes(Screen, ListMixin):
         enabled = set(app.cfg.get("drive_alert_types", drive_watch.DEFAULT_TYPES))
         muted = set(app.cfg.get("drive_alert_mute", ()))
         sounding = app.cfg.get("drive_alert_tones", True)
-        names = drive_watch.TYPES
+        names = supported_alerts(app, drive_watch.TYPES)
         self.clamp(len(names), self.VISIBLE)
         for row, name in enumerate(names[self.top:self.top + self.VISIBLE]):
             y = TOP + row * 16
@@ -479,13 +480,13 @@ class AlertTypes(Screen, ListMixin):
         self.scrollbar(c, len(names), self.VISIBLE)
 
     def handle(self, key, app):
-        names = drive_watch.TYPES
+        names = supported_alerts(app, drive_watch.TYPES)
         if self.move(key, len(names), self.VISIBLE):
             return True
         chosen = names[self.index]
         enabled = app.cfg.get("drive_alert_types", drive_watch.DEFAULT_TYPES)
         if key in ("ENTER", "SPACE"):
-            app.change("drive_alert_types", [k for k in names if (k in enabled) != (k == chosen)])
+            app.change("drive_alert_types", [k for k in drive_watch.TYPES if (k in enabled) != (k == chosen)])
         elif key.name in ("LEFT", "RIGHT"):
             order = tones.ORDER
             current = tone_of(app, chosen)
@@ -495,7 +496,7 @@ class AlertTypes(Screen, ListMixin):
             app.preview(tone)
         elif key == "T":
             muted = app.cfg.get("drive_alert_mute", [])
-            app.change("drive_alert_mute", [k for k in names if (k in muted) != (k == chosen)])
+            app.change("drive_alert_mute", [k for k in drive_watch.TYPES if (k in muted) != (k == chosen)])
         elif key == "P":
             app.preview(tone_of(app, chosen))
         elif key == "D":

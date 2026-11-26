@@ -88,9 +88,10 @@ def _stamp(f, text, anchor, fx, fy):
 class Canvas:
     """A PIL image with the handful of primitives the screens need."""
 
-    def __init__(self):
-        self.image = Image.new("RGB", (W, H), BG)
+    def __init__(self, size=(W, H)):
+        self.image = Image.new("RGB", size, BG)
         self.draw = ImageDraw.Draw(self.image)
+        self.selected_row = None
 
     def text_width(self, text, f):
         return _length(f, one_line(text))
@@ -166,6 +167,7 @@ class Canvas:
 
     def select(self, y, height=15, x0=4, x1=W - 8):
         """Highlight behind the chosen row of a list."""
+        self.selected_row = (y, y + height)
         self.rect((x0, y, x1, y + height), fill=SURFACE_2, radius=3)
         self.rect((x0, y + 2, x0 + 1, y + height - 2), fill=GOLD)
 
