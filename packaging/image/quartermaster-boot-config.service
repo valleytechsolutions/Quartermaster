@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply the Quartermaster display chosen in quartermaster.txt
+ConditionPathExists=/boot/firmware/quartermaster.txt
+RequiresMountsFor=/boot/firmware
+Before=quartermaster@quartermaster.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/quartermaster-image/boot_config.py
+
+[Install]
+WantedBy=multi-user.target
