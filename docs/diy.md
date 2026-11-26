@@ -28,18 +28,26 @@ The Zero 2 W's onboard Wi-Fi covers 2.4 GHz. A 3B+ or 4B adds onboard 5 GHz. For
 
 Each Raspberry Pi release has two ready SD card images, one for each HAT. They boot straight into Quartermaster. You do not need to type any commands.
 
-1. Open the newest [Quartermaster release for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases?q=pi-v&expanded=true). Under **Assets**, download the image for your HAT. You do not need to unzip it.
+1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer. Use version 2 or newer.
+2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.8/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
 
-| Your HAT | Download |
+   If opening the file does not start Imager, open Imager yourself. Click **App Options**, then **Edit** beside **Content Repository**. Choose **Use custom file**, pick the file you downloaded and click **Apply & Restart**.
+3. Choose your Pi model and click **Next**.
+4. Click **Quartermaster 1.2.8**, choose the image for your HAT and click **Next**. Imager downloads the image for you.
+
+| Your HAT | Image to choose |
 | --- | --- |
-| 1.44″ HAT (128×128) | `quartermaster-pi-<version>-st7735-128.img.xz` |
-| 1.3″ HAT (240×240) | `quartermaster-pi-<version>-st7789-240.img.xz` |
+| 1.44″ HAT (128×128) | Quartermaster for the Waveshare 1.44-inch LCD HAT |
+| 1.3″ HAT (240×240) | Quartermaster for the Waveshare 1.3-inch LCD HAT |
 
-2. Install and open [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Choose your Pi model. For the operating system, scroll to the bottom and choose **Use custom**. Pick the file you downloaded.
-3. Choose your microSD card. Use one of 8 GB or more.
-4. Imager offers to customise the OS. This is optional. Quartermaster works without it. We recommend you set your Wi-Fi country here, so the Pi scans every Wi-Fi channel your country allows. Set your Wi-Fi here too if you want to log in to the Pi over your network. A username and password set here replace the default login below.
-5. Write the card. With the Pi powered off, seat the HAT on the GPIO header with pin 1 lined up, and plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
-6. Put the card in the Pi and power it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu appears on the HAT.
+5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
+6. Imager shows its set-up pages. All of them are optional, and Quartermaster works without them: **Skip customisation** goes straight to writing. We recommend two of them.
+   - **Localisation**: choose your capital city. This sets your Wi-Fi country, so the Pi scans every Wi-Fi channel your country allows.
+   - **Wi-Fi**: enter your network if you want to log in to the Pi over your network.
+
+   A username and password set on the **User** page replace the default login below.
+7. Write the card. With the Pi powered off, seat the HAT on the GPIO header with pin 1 lined up, and plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
+8. Put the card in the Pi and power it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu appears on the HAT.
 
 ### Log in
 
@@ -54,9 +62,9 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 ### Good to know
 
 - **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the `display=` line to `st7735-128` for the 1.44″ HAT or `st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
-- **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it in Imager in step 4, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
+- **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on Imager's **Localisation** page in step 6, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
-- If Imager does not offer to customise the OS for the file, set up Wi-Fi later from the Pi with `sudo nmtui`, or use the `quartermaster-imager.json` link from the same release in Imager under **App Options > Content Repository > Use custom URL**. The images then appear in Imager's list with customisation.
+- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.8) also has the two image files under **Assets**: `quartermaster-pi-1.2.8-st7735-128.img.xz` for the 1.44″ HAT and `quartermaster-pi-1.2.8-st7789-240.img.xz` for the 1.3″ HAT. Write one with **Use custom** in Imager or with any other SD card tool. You do not need to unzip it. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network later from the Pi with `sudo nmtui`.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates. To update, flash the newest image, or install a newer package as shown below.
 - To start faster, the image does not check for system updates in the background. Run `sudo apt update && sudo apt full-upgrade` when you want them.
 - The first start grows the card's file system to the full size of the card. You do not need to do anything.

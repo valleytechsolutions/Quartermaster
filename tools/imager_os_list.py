@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Write a Raspberry Pi Imager repository (os_list JSON) for the image metadata files build_image.sh writes.
+"""Write the two Raspberry Pi Imager files of a Pi release.
 
-    python3 tools/imager_os_list.py --repo owner/name --tag pi-v1.2.8 build/images/*.json > os_list.json
+    python3 tools/imager_os_list.py --repo owner/name --tag pi-v1.2.8 build/images/*.json > quartermaster-imager.json
+    python3 tools/imager_os_list.py --repo owner/name --tag pi-v1.2.8 --manifest > quartermaster.rpi-imager-manifest
 
-In Imager, App Options > Content Repository > Use custom URL takes the published file's address."""
+The first is the list of the images, from the metadata files build_image.sh writes. The second is what a user opens:
+Raspberry Pi Imager 2 starts with it on a double-click, takes its Pi models from it and fetches the list of images
+through it, so a manifest saved earlier still matches images that were rebuilt later. Imager only offers its Wi-Fi,
+country and user set-up for an image picked from a list."""
 
 import argparse
 import json
@@ -12,10 +16,17 @@ import re
 import sys
 
 HATS = {"st7735-128": "1.44-inch LCD HAT (128x128)", "st7789-240": "1.3-inch LCD HAT (240x240)"}
-DEVICES = ["pi4-32bit", "pi3-32bit", "pi1-32bit"]
+BOARDS = (
+    ("Raspberry Pi Zero 2 W", "Zero 2 W or Zero 2 WH", "pi3-32bit"),
+    ("Raspberry Pi 3", "Model 3B or 3B+", "pi3-32bit"),
+    ("Raspberry Pi 4", "Model 4B", "pi4-32bit"),
+    ("Raspberry Pi Zero W", "The original Zero W or Zero WH", "pi1-32bit"),
+)
+LIST = "quartermaster-imager.json"
 ICON = "https://raw.githubusercontent.com/{repo}/{tag}/packaging/icon.png"
 URL = "https://github.com/{repo}/releases/download/{tag}/{file}"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TAG = re.compile(r"^pi-v(\d+\.\d+\.\d+)$")
 
 
 def entry(meta, repo, tag):
@@ -41,26 +52,52 @@ def entry(meta, repo, tag):
         "image_download_sha256": meta["image_download_sha256"],
         "release_date": meta["release_date"],
         "init_format": meta["init_format"],
-        "devices": DEVICES,
+        "devices": sorted({board for _, _, board in BOARDS}),
         "website": "https://github.com/%s/blob/%s/docs/diy.md" % (repo, tag),
     }
 
 
 def os_list(metas, repo, tag):
     entries = sorted((entry(meta, repo, tag) for meta in metas), key=lambda item: item["url"])
+    if not entries:
+        raise ValueError("no image to list")
     if len({item["url"] for item in entries}) != len(entries):
         raise ValueError("the same image is listed twice")
     return {"os_list": entries}
+
+
+def manifest(repo, tag):
+    version = TAG.match(tag)
+    if not version:
+        raise ValueError("%s is not a Pi release tag" % tag)
+    return {
+        "imager": {
+            "devices": [{"name": name, "description": models, "tags": [board]} for name, models, board in BOARDS],
+        },
+        "os_list": [{
+            "name": "Quartermaster %s" % version.group(1),
+            "description": "Wardriving on a Raspberry Pi with a Waveshare LCD HAT. Open this and choose the image"
+                           " for your HAT.",
+            "icon": ICON.format(repo=repo, tag=tag),
+            "subitems_url": URL.format(repo=repo, tag=tag, file=LIST),
+        }],
+    }
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("metadata", nargs="+", type=Path)
+    parser.add_argument("--manifest", action="store_true")
+    parser.add_argument("metadata", nargs="*", type=Path)
     args = parser.parse_args(argv)
-    metas = [json.loads(path.read_text()) for path in args.metadata]
-    json.dump(os_list(metas, args.repo, args.tag), sys.stdout, indent=2)
+    if args.manifest == bool(args.metadata):
+        parser.error("give the image metadata files, or --manifest alone")
+    if args.manifest:
+        found = manifest(args.repo, args.tag)
+    else:
+        found = os_list([json.loads(path.read_text()) for path in args.metadata], args.repo, args.tag)
+    json.dump(found, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
 

@@ -417,7 +417,20 @@ def test_pi_reaches_the_logs_through_the_group_and_a_link_in_its_home():
     service = settings((IMAGE / "quartermaster-logs.service").read_text())
     assert service["User"] == [SERVICE_USER] and service["Type"] == ["oneshot"]
     command = service["ExecStart"][0].split()
-    assert command[:2] == ["/usr/bin/find", first_login.DATA + "/logs"] and command[-5:] == "-exec chmod g+rX {} +".split()
+    assert command[:2] == ["-/usr/bin/find", first_login.DATA + "/logs"]
+    assert command[-6:] == "-exec chmod -f g+rX {} +".split()
+    assert 'check "$login_user reads a newly saved log"' in script
+
+
+def test_a_log_saved_while_nothing_watched_or_in_a_burst_still_opens_to_the_group():
+    service = settings((IMAGE / "quartermaster-logs.service").read_text())
+    first, pause, second = service["ExecStart"]
+    assert first == second and first.startswith("-/usr/bin/find ") and "-ignore_readdir_race" in first.split()
+    assert pause == "/usr/bin/sleep 2"
+    assert service["StartLimitIntervalSec"] == ["0"] and "WantedBy" not in service
+    path = settings((IMAGE / "quartermaster-logs.path").read_text())
+    assert path["Wants"] == ["quartermaster-logs.service"] and path["WantedBy"] == ["multi-user.target"]
+    script = SCRIPT.read_text()
     assert "quartermaster-logs.path" in shell_list(script, "units") and "quartermaster-logs.service" in script
 
 
@@ -431,11 +444,12 @@ def test_the_logs_rule_opens_new_logs_to_the_group_and_then_changes_nothing(tmp_
         (logs / name).chmod(0o600)
     (logs / "sub").chmod(0o700)
     logs.chmod(0o700)
-    command = [str(logs) if part == first_login.DATA + "/logs" else part for part in service["ExecStart"][0].split()]
+    command = [str(logs) if part == first_login.DATA + "/logs" else part
+               for part in service["ExecStart"][0].lstrip("-").split()]
     subprocess.run(command, check=True)
     assert [(logs / name).stat().st_mode & 0o777 for name in (".", "sub", "a.wigle.csv", "sub/b.json")] == \
         [0o750, 0o750, 0o640, 0o640]
-    changed = subprocess.run(command[:-5] + ["-print"], capture_output=True, text=True, check=True).stdout
+    changed = subprocess.run(command[:-6] + ["-print"], capture_output=True, text=True, check=True).stdout
     assert changed == ""
 
 
@@ -494,10 +508,11 @@ def test_the_service_account_is_one_the_radio_helper_accepts_and_leaves_room_for
     assert "[UG]ID_MAX" in script and "LAST_[UG]ID" in script and "$((service_id - 1))" in script
 
 
-def test_no_login_can_take_the_name_of_the_account_the_app_runs_as():
+def test_the_app_account_has_a_name_no_login_is_given_by_accident():
     script = SCRIPT.read_text()
     assert SERVICE_USER == first_login.GROUP == "_quartermaster"
-    assert not re.fullmatch(r"[a-z][a-z0-9-]*", SERVICE_USER) and re.fullmatch(r"[a-z_][a-z0-9_]*", SERVICE_USER)
+    assert SERVICE_USER.startswith("_") and re.fullmatch(r"[a-z_][a-z0-9_]*", SERVICE_USER)
+    assert not re.fullmatch(r"[a-z][a-z0-9-]*", SERVICE_USER)
     assert 'groupadd --gid "$service_id" "$service_user"' in script
     assert 'useradd --uid "$service_id" --gid "$service_user" --home-dir /var/lib/quartermaster' in script
     assert 'for taken in "$service_user" quartermaster; do' in script
@@ -696,12 +711,70 @@ def test_the_imager_list_refuses_metadata_that_does_not_match(bad, message):
 def test_the_imager_list_refuses_duplicates_and_writes_json(tmp_path, capsys):
     with pytest.raises(ValueError, match="twice"):
         imager_os_list.os_list([meta("st7735-128"), meta("st7735-128")], "o/r", "pi-v1.2.8")
+    with pytest.raises(ValueError, match="no image"):
+        imager_os_list.os_list([], "o/r", "pi-v1.2.8")
     paths = []
     for hat in boot_config.PROFILES:
         paths.append(tmp_path / (hat + ".json"))
         paths[-1].write_text(json.dumps(meta(hat)))
     assert imager_os_list.main(["--repo", "o/r", "--tag", "pi-v1.2.8", *map(str, paths)]) == 0
     assert len(json.loads(capsys.readouterr().out)["os_list"]) == 2
+    assert imager_os_list.main(["--repo", "o/r", "--tag", "pi-v1.2.8", "--manifest"]) == 0
+    assert json.loads(capsys.readouterr().out) == imager_os_list.manifest("o/r", "pi-v1.2.8")
+    for wrong in ([], ["--manifest", str(paths[0])]):
+        with pytest.raises(SystemExit):
+            imager_os_list.main(["--repo", "o/r", "--tag", "pi-v1.2.8", *wrong])
+    capsys.readouterr()
+
+
+def imager_shows(manifest, fetched, device):
+    """What Raspberry Pi Imager lists for a chosen Pi model: it puts each fetched list in place of the entry that
+    links to it, then keeps the images whose devices share a tag with the model and the folders that still hold one."""
+    def merged(items):
+        return [dict({k: v for k, v in item.items() if k != "subitems_url"},
+                     subitems=fetched[item["subitems_url"]]["os_list"]) if item.get("subitems_url") in fetched
+                else item for item in items]
+
+    def kept(items):
+        found = []
+        for item in items:
+            if "subitems" in item:
+                inside = kept(item["subitems"])
+                if inside:
+                    found.append(dict(item, subitems=inside))
+            elif "devices" in item:
+                if set(item["devices"]) & set(device["tags"]):
+                    found.append(item)
+            elif device.get("matching_type") == "inclusive":
+                found.append(item)
+        return found
+    return kept(merged(manifest["os_list"]))
+
+
+def test_the_imager_manifest_names_the_pi_models_and_fetches_the_image_list():
+    manifest = imager_os_list.manifest("owner/repo", "pi-v1.2.8")
+    assert list(manifest) == ["imager", "os_list"] and list(manifest["imager"]) == ["devices"]
+    devices = manifest["imager"]["devices"]
+    names = [device["name"] for device in devices]
+    assert names == ["Raspberry Pi Zero 2 W", "Raspberry Pi 3", "Raspberry Pi 4", "Raspberry Pi Zero W"]
+    for device in devices:
+        assert set(device) == {"name", "description", "tags"} and device["description"] and device["tags"]
+    folder, = manifest["os_list"]
+    assert folder["name"] == "Quartermaster 1.2.8" and folder["description"] and "subitems" not in folder
+    assert folder["subitems_url"] == ("https://github.com/owner/repo/releases/download/pi-v1.2.8/"
+                                     "quartermaster-imager.json")
+    assert folder["icon"].endswith("/pi-v1.2.8/packaging/icon.png")
+    assert "sha256" not in json.dumps(manifest) and "size" not in json.dumps(manifest)
+    images = imager_os_list.os_list([meta("st7789-240"), meta("st7735-128")], "owner/repo", "pi-v1.2.8")
+    fetched = {folder["subitems_url"]: images}
+    for device in devices:
+        shown, = imager_shows(manifest, fetched, device)
+        assert [item["url"] for item in shown["subitems"]] == [item["url"] for item in images["os_list"]], device
+    assert imager_shows(manifest, {}, devices[0]) == []
+    assert imager_shows(manifest, fetched, {"tags": ["pi5-64bit"]}) == []
+    for tag in ("v1.2.8", "pi-v1.2", "pi-v1.2.8-rc1"):
+        with pytest.raises(ValueError, match="not a Pi release tag"):
+            imager_os_list.manifest("owner/repo", tag)
 
 
 def test_every_workflow_action_is_pinned_by_commit():
@@ -732,8 +805,10 @@ def test_the_image_workflow_builds_both_hats_on_tags_monthly_and_on_request():
     listing = "\n".join(step.get("run", "") for step in publish["steps"])
     assert "tools/imager_os_list.py" in listing and "--clobber" not in listing
     assert listing.index("tools/imager_os_list.py") < listing.index("tools/replace_release_assets.sh")
-    assert re.search(r"replace_release_assets\.sh \"\$TAG\" \*\.img\.xz \*\.img\.xz\.sha256 quartermaster-imager\.json$",
-                     listing, re.M)
+    assert listing.count("tools/imager_os_list.py") == 2 and "--manifest" in listing
+    assert '--manifest \\\n  > build/release/quartermaster.rpi-imager-manifest' in listing
+    assert re.search(r"replace_release_assets\.sh \"\$TAG\" \*\.img\.xz \*\.img\.xz\.sha256 quartermaster-imager\.json"
+                     r" \\\n\s+quartermaster\.rpi-imager-manifest$", listing, re.M)
     release = (WORKFLOWS / "release-pi.yml").read_text()
     assert 'index($package) != null and index("SHA256SUMS") != null' in release
     assert triggers["workflow_dispatch"]["inputs"]["tag"]["required"] is False
@@ -799,7 +874,13 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     easy, manual = guide.index("## Easiest way: flash a ready image"), guide.index("## Assemble and install manually")
     assert easy < manual
     section = guide[easy:manual]
-    for text in ("Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
+    version = json.loads((ROOT / "app-builder.json").read_text())["version"]
+    for text in ("releases/download/pi-v%s/quartermaster.rpi-imager-manifest) and open it" % version,
+                 "version 2 or newer", "Click **Quartermaster %s**" % version, "**Skip customisation**",
+                 "**Localisation**: choose your capital city", "**Use custom file**", "**Apply & Restart**",
+                 "shows no set-up pages for a file chosen this way", "`sudo nmtui`",
+                 "quartermaster-pi-%s-st7735-128.img.xz" % version, "quartermaster-pi-%s-st7789-240.img.xz" % version,
+                 "Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
                  "quartermaster@%s.service" % SERVICE_USER, "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
                  "built-in `%s` account" % SERVICE_USER,
                  "8 GB or more", "switched on from the first start", "does not choose a country for you",

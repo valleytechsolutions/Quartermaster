@@ -1,5 +1,6 @@
 [Unit]
 Description=Watch for new Quartermaster logs
+Wants=quartermaster-logs.service
 
 [Path]
 PathChanged=/var/lib/quartermaster/quartermaster/logs

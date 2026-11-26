@@ -205,7 +205,10 @@ jobs:
         run: |
           python3 tools/imager_os_list.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" build/release/*.json \
             > build/release/quartermaster-imager.json
+          python3 tools/imager_os_list.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --manifest \
+            > build/release/quartermaster.rpi-imager-manifest
       - name: Publish the images and the Imager list together
         run: |
           cd build/release
-          ../../tools/replace_release_assets.sh "$TAG" *.img.xz *.img.xz.sha256 quartermaster-imager.json
+          ../../tools/replace_release_assets.sh "$TAG" *.img.xz *.img.xz.sha256 quartermaster-imager.json \
+            quartermaster.rpi-imager-manifest

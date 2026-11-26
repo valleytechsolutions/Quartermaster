@@ -407,6 +407,13 @@ check "$service_user password locked" "$(shadow_of "$service_user" | cut -c1 | t
 check "$service_user shell" "$(in_chroot getent passwd "$service_user" | cut -d: -f7)" /usr/sbin/nologin
 check "logs link" "$(readlink "$mnt$login_home/quartermaster")" "$data"
 check "$login_user reads the logs" "$(in_chroot runuser -u "$login_user" -- ls "$login_home/quartermaster/logs" 2>&1)" ""
+in_chroot runuser -u "$service_user" -- sh -c "umask 077 && : > $data/logs/probe.wigle.csv"
+share=$(sed -n '/^ExecStart=-/{s///p;q}' "$mnt/etc/systemd/system/quartermaster-logs.service")
+# shellcheck disable=SC2086
+in_chroot runuser -u "$service_user" -- $share
+check "$login_user reads a newly saved log" "$(in_chroot runuser -u "$login_user" -- \
+    cat "$login_home/quartermaster/logs/probe.wigle.csv" 2>&1)" ""
+rm -f "$mnt$data/logs/probe.wigle.csv"
 check "first start keeps the default login" "$(in_chroot python3 -I -c '
 import sys
 sys.path.insert(0, "/usr/local/lib/quartermaster-image")
