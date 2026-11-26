@@ -11,6 +11,10 @@ on:
         description: Pi release to rebuild the images for, like pi-v1.2.8 (empty for the newest)
         required: false
         default: ''
+      practice:
+        description: Practice run. Build both images from this branch and publish nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,10 +35,15 @@ jobs:
       EVENT: ${{ github.event_name }}
       PUSHED: ${{ github.ref_name }}
       REQUESTED: ${{ inputs.tag }}
+      PRACTICE: ${{ inputs.practice }}
     steps:
       - name: Pick the Pi release
         id: pick
         run: |
+          if [ "$PRACTICE" = true ]; then
+            echo "Practice run: the images are built from this branch and nothing is published."
+            exit 0
+          fi
           if [ "$EVENT" = push ]; then
             tag=$PUSHED
           elif [ -n "$REQUESTED" ]; then
@@ -60,6 +69,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.release.outputs.tag }}
       HAT: ${{ matrix.hat }}
+      PRACTICE: ${{ inputs.practice }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Install the image tools
@@ -67,7 +77,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support xz-utils e2fsprogs fdisk
           test -e /proc/sys/fs/binfmt_misc/qemu-arm
+      - name: Build the Pi package from this branch
+        if: inputs.practice
+        run: |
+          python3 tools/build_deb.py --target pi --out build/pi
+          version=$(python3 -c "import json; print(json.load(open('app-builder.json'))['version'])")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Wait for the Pi package
+        if: ${{ !inputs.practice }}
         run: |
           mkdir -p build/pi
           version=${TAG#pi-v}
@@ -81,8 +98,12 @@ jobs:
           done
           cd build/pi
           sha256sum --check --ignore-missing --strict SHA256SUMS
-          echo "DEB=build/pi/quartermaster-pi_${version}_all.deb" >> "$GITHUB_ENV"
-          echo "IMAGE=quartermaster-pi-${version}-${HAT}.img.xz" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Name the package and the image
+        run: |
+          test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"
+          echo "DEB=build/pi/quartermaster-pi_${VERSION}_all.deb" >> "$GITHUB_ENV"
+          echo "IMAGE=quartermaster-pi-${VERSION}-${HAT}.img.xz" >> "$GITHUB_ENV"
       - name: Build the image
         run: |
           sudo tools/build_image.sh --hat "$HAT" --deb "$DEB" --out build/images
@@ -108,6 +129,7 @@ jobs:
 
   publish:
     needs: [release, image]
+    if: ${{ !inputs.practice }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}

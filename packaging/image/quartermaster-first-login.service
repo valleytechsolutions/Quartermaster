@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep one working login: the one set in Raspberry Pi Imager, or the default
+ConditionPathExists=!/var/lib/quartermaster-image/first-login.done
+RequiresMountsFor=/boot/firmware
+After=cloud-init-network.service cloud-init.service
+Before=ssh.service systemd-user-sessions.service userconfig.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/quartermaster-image/first_login.py
+
+[Install]
+WantedBy=multi-user.target

@@ -5,7 +5,9 @@
 #
 # Options: --base <raspios .img.xz or .img> (default: download the latest Lite armhf image and check its sha256),
 # --out <dir> (default build/images), --grow-mb <MiB added to the root partition, default 1536>.
-# Needs root, util-linux, e2fsprogs, xz, curl, python3 and qemu-user-static registered for ARM binaries.
+# Needs root, util-linux, e2fsprogs, xz, curl, openssl, python3 and qemu-user-static registered for ARM binaries.
+# The image logs in as pi with the password pi, has SSH on and is named quartermaster. Each device makes its own
+# SSH host keys on its first start. A user set in Raspberry Pi Imager replaces the default login.
 # Writes quartermaster-pi-<version>-<hat>.img.xz, its Imager metadata (.json) and SHA256SUMS to the out directory.
 set -euo pipefail
 
@@ -14,11 +16,20 @@ base_url=${QM_BASE_URL:-https://downloads.raspberrypi.com/raspios_lite_armhf_lat
 hat='' deb='' base='' out=$here/build/images grow_mb=1536
 service_id=59999
 groups_wanted=(video input render dialout gpio spi i2c bluetooth netdev plugdev audio quartermaster-radio)
-units=(quartermaster-radio.socket quartermaster-boot-config.service quartermaster@quartermaster.service)
+units=(quartermaster-radio.socket quartermaster-boot-config.service quartermaster@quartermaster.service
+       quartermaster-first-login.service quartermaster-ssh-keys.service quartermaster-logs.path)
+login_user=pi login_password=pi login_id=1000 host_name=quartermaster
+login_groups=(adm dialout cdrom audio users sudo video games plugdev input gpio spi i2c netdev render quartermaster)
+unneeded=(ModemManager.service triggerhappy.service triggerhappy.socket man-db.timer apt-daily.timer
+          apt-daily-upgrade.timer e2scrub_all.timer e2scrub_reap.service)
+kept=(NetworkManager.service bluetooth.service systemd-timesyncd.service rpi-resize.service
+      regenerate_ssh_host_keys.service cloud-init-local.service cloud-init-main.service cloud-init-network.service
+      cloud-config.service cloud-final.service)
+data=/var/lib/quartermaster/quartermaster
 
 die() { echo "build_image: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -36,7 +47,7 @@ case $hat in st7735-128|st7789-240) ;; *) usage ;; esac
 [ -f "$deb" ] || die "no package at '$deb'"
 [[ $grow_mb =~ ^[0-9]+$ ]] || die "--grow-mb takes a whole number"
 [ "$(id -u)" = 0 ] || die "run as root (loop devices, mounts and chroot)"
-for tool in losetup sfdisk e2fsck resize2fs mount umount chroot xz sha256sum dpkg-deb curl python3 truncate; do
+for tool in losetup sfdisk e2fsck resize2fs mount umount chroot xz sha256sum dpkg-deb curl python3 truncate openssl; do
     command -v "$tool" >/dev/null || die "missing $tool"
 done
 [ -e /proc/sys/fs/binfmt_misc/qemu-arm ] || die "ARM binaries cannot run here: install qemu-user-static and binfmt-support"
@@ -174,12 +185,15 @@ for path in etc/resolv.conf etc/ld.so.preload etc/machine-id; do
         cp -a "$mnt/$path" "$keep/$path"
     fi
 done
-host_keys_before=$(find "$mnt/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -printf '%f\n' 2>/dev/null || true)
 cloud_state_before=$([ -e "$mnt/var/lib/cloud" ] && echo yes || echo no)
 seeds() {
     (cd "$mnt/boot/firmware" && { sha256sum cmdline.txt user-data network-config meta-data 2>/dev/null; true; })
 }
 seed_before=$(seeds)
+mkdir "$keep/units"
+for unit in "${kept[@]}"; do
+    in_chroot systemctl is-enabled "$unit" > "$keep/units/$unit" 2>/dev/null || true
+done
 rm -f "$mnt/etc/resolv.conf" "$mnt/etc/ld.so.preload"
 cp -L /etc/resolv.conf "$mnt/etc/resolv.conf"
 [ ! -e "$mnt/usr/sbin/policy-rc.d" ] || die "the base image already has a policy-rc.d"
@@ -193,7 +207,7 @@ in_chroot apt-get "${apt_options[@]}" full-upgrade
 
 log "Installing $(basename "$deb")"
 cp "$deb" "$mnt/tmp/quartermaster-pi.deb"
-in_chroot apt-get "${apt_options[@]}" --no-install-recommends install /tmp/quartermaster-pi.deb
+in_chroot apt-get "${apt_options[@]}" --no-install-recommends install /tmp/quartermaster-pi.deb avahi-daemon
 in_chroot apt-get -y autoremove --purge
 
 log "Setting up the quartermaster service user"
@@ -213,6 +227,56 @@ for group in "${groups_wanted[@]}"; do
     fi
 done
 chmod 750 "$mnt/var/lib/quartermaster"
+install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data" "$mnt$data/logs"
+
+log "Setting up the $login_user login, SSH and the name $host_name"
+first_user=$(in_chroot getent passwd "$login_id" | cut -d: -f1)
+if [ -z "$first_user" ]; then
+    in_chroot getent passwd "$login_user" >/dev/null && die "$login_user in the base image is not uid $login_id"
+    in_chroot useradd --uid "$login_id" --user-group --create-home --shell /bin/bash "$login_user"
+elif [ "$first_user" != "$login_user" ]; then
+    die "the first user of the base image is $first_user, not $login_user"
+fi
+in_chroot usermod --shell /bin/bash "$login_user"
+for group in "${login_groups[@]}"; do
+    if in_chroot getent group "$group" >/dev/null; then
+        in_chroot usermod -aG "$group" "$login_user"
+    fi
+done
+login_hash=$(openssl passwd -6 "$login_password")
+in_chroot usermod --password "$login_hash" "$login_user"
+install -d -m 755 "$mnt/usr/local/lib/quartermaster-image"
+(umask 077 && printf '%s\n' "$login_hash" > "$mnt/usr/local/lib/quartermaster-image/default-login")
+login_home=$(in_chroot getent passwd "$login_user" | cut -d: -f6)
+[ -d "$mnt$login_home" ] || die "$login_user has no home directory"
+ln -sfn "$data" "$mnt$login_home/quartermaster"
+in_chroot chown -h "$login_user:" "$login_home/quartermaster"
+install -D -m 644 "$here/packaging/image/first_login.py" "$mnt/usr/local/lib/quartermaster-image/first_login.py"
+for unit in quartermaster-first-login.service quartermaster-ssh-keys.service quartermaster-logs.path \
+            quartermaster-logs.service; do
+    install -D -m 644 "$here/packaging/image/$unit" "$mnt/etc/systemd/system/$unit"
+done
+install -D -m 644 "$here/packaging/image/userconfig-needs-userconf.conf" \
+    "$mnt/etc/systemd/system/userconfig.service.d/quartermaster.conf"
+rm -f "$mnt/etc/ssh/sshd_config.d/rename_user.conf"
+if [ -d "$mnt/etc/cloud/cloud.cfg.d" ]; then
+    install -m 644 "$here/packaging/image/99_zz_quartermaster.cfg" "$mnt/etc/cloud/cloud.cfg.d/99_zz_quartermaster.cfg"
+fi
+install -D -m 755 "$here/packaging/image/default_password_notice.sh" "$mnt/etc/update-motd.d/20-quartermaster-password"
+in_chroot systemctl enable ssh.service avahi-daemon.service getty@tty1.service
+printf '%s\n' "$host_name" > "$mnt/etc/hostname"
+if grep -q '^127\.0\.1\.1[[:space:]]' "$mnt/etc/hosts"; then
+    sed -i -E "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$host_name/" "$mnt/etc/hosts"
+else
+    printf '127.0.1.1\t%s\n' "$host_name" >> "$mnt/etc/hosts"
+fi
+for unit in "${unneeded[@]}"; do
+    case $(in_chroot systemctl is-enabled "$unit" 2>/dev/null || true) in
+        enabled|enabled-runtime) in_chroot systemctl disable "$unit" ;;
+    esac
+done
+mkdir -p "$mnt/etc/systemd/system-preset"
+printf 'disable %s\n' "${unneeded[@]}" > "$mnt/etc/systemd/system-preset/50-quartermaster.preset"
 
 log "Configuring the $hat display and autostart"
 printf '%s\n' "$hat" > "$mnt/etc/quartermaster/display"
@@ -248,10 +312,7 @@ for path in etc/resolv.conf etc/ld.so.preload etc/machine-id; do
         cp -a "$keep/$path" "$mnt/$path"
     fi
 done
-for key in "$mnt"/etc/ssh/ssh_host_*; do
-    [ -e "$key" ] || continue
-    grep -qxF "$(basename "$key")" <<< "$host_keys_before" || rm -f "$key"
-done
+rm -f "$mnt"/etc/ssh/ssh_host_*
 [ "$cloud_state_before" = yes ] || rm -rf "$mnt/var/lib/cloud"
 find "$mnt/var/log" -type f \( -name '*.gz' -o -name '*.[0-9]' \) -delete
 
@@ -290,17 +351,79 @@ for group in video gpio spi dialout netdev bluetooth quartermaster-radio; do
         check "quartermaster in $group" "$([[ $member_of == *" $group "* ]] && echo yes || echo no)" yes
     fi
 done
-check "accounts with a password" "$(awk -F: '$2 !~ /^[!*]/ {print $1}' "$mnt/etc/shadow" | xargs)" ""
-for unit in ssh.service ssh.socket; do
-    state=$(in_chroot systemctl is-enabled "$unit" 2>/dev/null || true)
-    check "$unit off" "$([ "$state" = enabled ] && echo "$state" || echo off)" off
+enabled() {
+    in_chroot systemctl is-enabled "$1" 2>/dev/null || true
+}
+shadow_of() {
+    awk -F: -v user="$1" '$1 == user {print $2}' "$mnt/etc/shadow"
+}
+check "accounts with a password" "$(awk -F: '$2 !~ /^[!*]/ {print $1}' "$mnt/etc/shadow" | xargs)" "$login_user"
+stored=$(shadow_of "$login_user")
+salt=$(cut -d'$' -f3 <<< "$stored")
+check "$login_user password" "$([ "$(openssl passwd -6 -salt "$salt" "$login_password")" = "$stored" ] && echo set || echo wrong)" set
+check "default login record" "$([ "$(cat "$mnt/usr/local/lib/quartermaster-image/default-login")" = "$stored" ] && echo same || echo differs)" same
+check "default login record mode" "$(stat -c %a:%u "$mnt/usr/local/lib/quartermaster-image/default-login")" 600:0
+check "$login_user uid and shell" "$(in_chroot getent passwd "$login_user" | cut -d: -f3,7)" "$login_id:/bin/bash"
+login_member_of=" $(in_chroot id -nG "$login_user") "
+for group in sudo quartermaster; do
+    check "$login_user in $group" "$([[ $login_member_of == *" $group "* ]] && echo yes || echo no)" yes
 done
-check "ssh switch files" "$(find "$mnt/boot/firmware" -maxdepth 1 \( -iname ssh -o -iname ssh.txt \) -printf '%f ')" ""
+check "root password locked" "$(shadow_of root | cut -c1 | tr '*' '!')" '!'
+check "quartermaster password locked" "$(shadow_of quartermaster | cut -c1 | tr '*' '!')" '!'
+check "quartermaster shell" "$(in_chroot getent passwd quartermaster | cut -d: -f7)" /usr/sbin/nologin
+check "logs link" "$(readlink "$mnt$login_home/quartermaster")" "$data"
+check "$login_user reads the logs" "$(in_chroot runuser -u "$login_user" -- ls "$login_home/quartermaster/logs" 2>&1)" ""
+check "first start keeps the default login" "$(in_chroot python3 -I -c '
+import sys
+sys.path.insert(0, "/usr/local/lib/quartermaster-image")
+import first_login
+print(first_login.plan(*first_login.gather()))')" "[]"
+check "ssh.service" "$(enabled ssh.service)" enabled
+check "ssh.socket off" "$([ "$(enabled ssh.socket)" = enabled ] && echo enabled || echo off)" off
+check "ssh password login" "$(in_chroot sh -c 'mkdir -p /run/sshd && ssh-keygen -q -t ed25519 -N "" -f /tmp/probe_key &&
+    /usr/sbin/sshd -T -h /tmp/probe_key' | grep -x 'passwordauthentication yes')" "passwordauthentication yes"
+rm -f "$mnt"/tmp/probe_key*
+check "default password notice" "$(in_chroot /etc/update-motd.d/20-quartermaster-password | xargs)" \
+    "The login $login_user still has the default password. Type passwd to set your own."
+check "the notice is shown at login" "$(grep -c '^session.*pam_motd\.so.*motd=/run/motd\.dynamic' "$mnt/etc/pam.d/sshd")" 1
+check "ssh host keys in the image" "$(find "$mnt/etc/ssh" -name 'ssh_host_*' -printf '%f ')" ""
+check "machine-id as in the base image" "$(cat "$mnt/etc/machine-id" 2>/dev/null)" "$(cat "$keep/etc/machine-id" 2>/dev/null)"
+check "first-start prompt only with userconf.txt" \
+    "$(grep -c '^ConditionPathExists=|/boot/firmware/userconf' "$mnt/etc/systemd/system/userconfig.service.d/quartermaster.conf")" 2
+check "getty@tty1.service" "$(enabled getty@tty1.service)" enabled
+check "ssh rename banner" "$(find "$mnt/etc/ssh/sshd_config.d" -name rename_user.conf -printf '%f' 2>/dev/null)" ""
+check "hostname" "$(cat "$mnt/etc/hostname")" "$host_name"
+check "hostname in hosts" "$(grep -c "^127\.0\.1\.1[[:space:]]$host_name\$" "$mnt/etc/hosts")" 1
+check "avahi-daemon.service" "$(enabled avahi-daemon.service)" enabled
+for unit in "${unneeded[@]}"; do
+    check "$unit off" "$([ "$(enabled "$unit")" = enabled ] && echo enabled || echo off)" off
+    check "$unit stays off" "$(grep -cx "disable $unit" "$mnt/etc/systemd/system-preset/50-quartermaster.preset")" 1
+done
+for unit in "${kept[@]}"; do
+    if [ "$(cat "$keep/units/$unit")" = enabled ]; then
+        check "$unit still on" "$(enabled "$unit")" enabled
+    fi
+done
+if grep -qw resize "$mnt/boot/firmware/cmdline.txt"; then
+    check "root file system grows on first start" "$(enabled rpi-resize.service)" enabled
+    check "host keys are made on first start" "$(enabled regenerate_ssh_host_keys.service)" enabled
+    check "first start marker" "$(cat "$mnt/etc/machine-id")" uninitialized
+fi
 init_format=systemd
 if [ -x "$mnt/usr/bin/cloud-init" ]; then
     init_format=cloudinit-rpi
+    last_cfg=$(find "$mnt/etc/cloud/cloud.cfg.d" -maxdepth 1 -name '*.cfg' -printf '%f\n' | LC_ALL=C sort | tail -n 1)
+    check "our cloud-init settings are read last" "$last_cfg" 99_zz_quartermaster.cfg
+    check "cloud-init keeps SSH password logins" "$(grep -rhiE '^[[:space:]]*ssh_pwauth:[[:space:]]*(false|no|0)' \
+        "$mnt/etc/cloud/cloud.cfg" "$mnt/etc/cloud/cloud.cfg.d" "$mnt/boot/firmware/user-data" 2>/dev/null | tr '\n' ' ')" ""
+    check "the cloud-init seed sets no hostname" "$(cd "$mnt/boot/firmware" &&
+        grep -hE '^[[:space:]]*(hostname|fqdn|local-hostname):' user-data meta-data 2>/dev/null | tr '\n' ' ')" ""
 fi
 check "cmdline.txt and cloud-init seed" "$(seeds)" "$seed_before"
+order=$(in_chroot systemd-analyze verify --man=no cloud-init.target default.target 2>&1) && order_status=0 || order_status=$?
+check "start order was examined" "$([ "$order_status" -le 1 ] && ! grep -qi 'initialize manager' <<< "$order" && echo yes ||
+    echo "no: $(head -n 3 <<< "$order" | tr '\n' ' ')")" yes
+check "start order has no cycle" "$(grep -i -A 3 'ordering cycle' <<< "$order" | tr '\n' ' ')" ""
 echo "ok    Imager customisation: $init_format"
 
 fstrim "$mnt" 2>/dev/null || true

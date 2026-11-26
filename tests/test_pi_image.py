@@ -16,14 +16,15 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 SHA = "ab" * 32
 
 
-def load_boot_config():
-    spec = importlib.util.spec_from_file_location("boot_config", IMAGE / "boot_config.py")
+def load_image_module(name):
+    spec = importlib.util.spec_from_file_location(name, IMAGE / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-boot_config = load_boot_config()
+boot_config = load_image_module("boot_config")
+first_login = load_image_module("first_login")
 
 
 def settings(text):
@@ -128,11 +129,295 @@ def test_the_image_script_is_strict_cleans_up_and_keeps_imager_customisation_wor
     postinst = (ROOT / "packaging" / "postinst").read_text()
     postinst_groups = re.search(r"for grp in ([^;]*); do", postinst).group(1).split()
     assert set(postinst_groups) <= set(groups) and "quartermaster-usbreset" not in groups
-    for forbidden in ("chpasswd", "passwd -d", "systemctl enable ssh", "boot/firmware/ssh", "PermitRootLogin",
-                      "sudoers", "userconf", "cloud-init clean"):
+    for forbidden in ("chpasswd", "passwd -d", "boot/firmware/ssh", "PermitRootLogin", "sudoers", "ssh-keygen -A",
+                      "cloud-init clean", "systemctl mask", "cloud-init.disabled"):
         assert forbidden not in script, forbidden
-    assert not re.search(r"(>|sed -i[^\n]*)\s*\"?\$mnt/boot/firmware/cmdline\.txt", script)
-    assert "accounts with a password" in script and "ssh.service ssh.socket" in script
+    assert not re.search(r"(>|sed -i[^\n]*)\s*\"?\$mnt/boot/firmware/(cmdline\.txt|user-data|network-config)", script)
+    assert 'check "cmdline.txt and cloud-init seed" "$(seeds)" "$seed_before"' in script
+
+
+def shell_list(script, name):
+    return re.search(r"^%s=\(([^)]*)\)" % name, script, re.M).group(1).split()
+
+
+def test_the_image_logs_in_as_pi_with_the_default_password_and_keeps_the_other_accounts_locked():
+    script = SCRIPT.read_text()
+    assert re.search(r"^login_user=pi login_password=pi login_id=1000 host_name=quartermaster$", script, re.M)
+    groups = shell_list(script, "login_groups")
+    assert {"sudo", "adm", "gpio", "spi", "netdev", "quartermaster"} <= set(groups)
+    assert 'login_hash=$(openssl passwd -6 "$login_password")' in script
+    assert 'in_chroot usermod --password "$login_hash" "$login_user"' in script
+    assert 'in_chroot usermod --shell /bin/bash "$login_user"' in script
+    assert 'die "the first user of the base image is $first_user, not $login_user"' in script
+    assert """awk -F: '$2 !~ /^[!*]/ {print $1}' "$mnt/etc/shadow" | xargs)" "$login_user\"""" in script
+    assert 'openssl passwd -6 -salt "$salt" "$login_password")" = "$stored"' in script
+    for label in ('"root password locked"', '"quartermaster password locked"', '"quartermaster shell"',
+                  '"$login_user in $group"', '"$login_user uid and shell"', '"default login record mode"',
+                  '"first start keeps the default login"'):
+        assert "check " + label in script, label
+    assert "print(first_login.plan(*first_login.gather()))')\" \"[]\"" in script
+    assert "umask 077 && printf" in script and first_login.HASH_FILE in script.replace('$mnt', "")
+
+
+@pytest.mark.skipif(not shutil.which("openssl"), reason="needs openssl")
+def test_the_password_check_accepts_the_right_password_only():
+    stored = subprocess.run(["openssl", "passwd", "-6", "pi"], capture_output=True, text=True, check=True).stdout.strip()
+    salt = subprocess.run(["cut", "-d$", "-f3"], input=stored, capture_output=True, text=True, check=True).stdout.strip()
+
+    def again(word):
+        return subprocess.run(["openssl", "passwd", "-6", "-salt", salt, word], capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    assert "salt=$(cut -d'$' -f3 <<< \"$stored\")" in SCRIPT.read_text()
+    assert stored.startswith("$6$") and again("pi") == stored and again("raspberry") != stored
+
+
+def test_the_image_has_ssh_on_and_never_ships_host_keys():
+    script = SCRIPT.read_text()
+    assert "in_chroot systemctl enable ssh.service avahi-daemon.service getty@tty1.service" in script
+    assert 'rm -f "$mnt"/etc/ssh/ssh_host_*' in script
+    clean, checks = script.index('rm -f "$mnt"/etc/ssh/ssh_host_*'), script.index('log "Checking the image"')
+    assert script.index("full-upgrade") < clean < checks
+    for label in ('"ssh.service" "$(enabled ssh.service)" enabled', '"ssh host keys in the image"',
+                  '"host keys are made on first start" "$(enabled regenerate_ssh_host_keys.service)" enabled',
+                  '"first start marker" "$(cat "$mnt/etc/machine-id")" uninitialized', '"ssh password login"',
+                  '"machine-id as in the base image"', '"ssh.socket off"'):
+        assert "check " + label in script, label
+    assert 'rm -f "$mnt"/tmp/probe_key*' in script and "etc/machine-id" in script
+    keys = settings((IMAGE / "quartermaster-ssh-keys.service").read_text())
+    assert keys["ConditionPathExistsGlob"] == ["!/etc/ssh/ssh_host_*_key"] and keys["Before"] == ["ssh.service"]
+    assert keys["ExecStart"] == ["/usr/bin/ssh-keygen -A"] and keys["After"] == ["regenerate_ssh_host_keys.service"]
+    assert "quartermaster-ssh-keys.service" in shell_list(script, "units")
+
+
+def test_the_first_start_never_waits_for_a_user_prompt_but_still_takes_userconf_txt():
+    script = SCRIPT.read_text()
+    condition = settings((IMAGE / "userconfig-needs-userconf.conf").read_text())
+    assert condition == {"ConditionPathExists": ["|/boot/firmware/userconf.txt", "|/boot/firmware/userconf"]}
+    assert '"$mnt/etc/systemd/system/userconfig.service.d/quartermaster.conf"' in script
+    assert 'rm -f "$mnt/etc/ssh/sshd_config.d/rename_user.conf"' in script
+    assert 'check "getty@tty1.service" "$(enabled getty@tty1.service)" enabled' in script
+    assert "systemctl disable userconfig" not in script and "cancel-rename" not in script
+    assert '"$mnt/etc/cloud/cloud.cfg.d/99_zz_quartermaster.cfg"' in script
+    assert 'check "our cloud-init settings are read last" "$last_cfg" 99_zz_quartermaster.cfg' in script
+    assert sorted(["99_raspberry-pi.cfg", "99_zz_quartermaster.cfg", "05_logging.cfg"])[-1] == "99_zz_quartermaster.cfg"
+    for label in ('"cloud-init keeps SSH password logins"', '"the cloud-init seed sets no hostname"',
+                  '"start order was examined"', '"start order has no cycle"'):
+        assert "check " + label in script, label
+    assert "systemd-analyze verify --man=no cloud-init.target default.target" in script
+    cloud = (IMAGE / "99_zz_quartermaster.cfg").read_text()
+    yaml = pytest.importorskip("yaml")
+    assert yaml.safe_load(cloud) == {"users": []}
+
+
+def test_the_first_login_unit_runs_once_after_cloud_init_made_its_users_and_before_ssh():
+    unit = settings((IMAGE / "quartermaster-first-login.service").read_text())
+    assert unit["ConditionPathExists"] == ["!" + first_login.STAMP]
+    assert unit["After"] == ["cloud-init-network.service cloud-init.service"]
+    assert unit["Before"] == ["ssh.service systemd-user-sessions.service userconfig.service"]
+    assert unit["Type"] == ["oneshot"] and unit["WantedBy"] == ["multi-user.target"]
+    installed = unit["ExecStart"][0].split()[-1]
+    assert unit["ExecStart"] == ["/usr/bin/python3 -I " + installed]
+    script = SCRIPT.read_text()
+    assert '"$mnt%s"' % installed in script and "quartermaster-first-login.service" in shell_list(script, "units")
+    service_id = int(re.search(r"^service_id=(\d+)$", script, re.M).group(1))
+    assert (first_login.FIRST_UID, first_login.SERVICE_UID) == (1000, service_id)
+    assert first_login.DATA == re.search(r"^data=(\S+)$", script, re.M).group(1)
+    assert first_login.BANNER == "/etc/ssh/sshd_config.d/rename_user.conf"
+
+
+@pytest.mark.parametrize("text, wanted", [
+    ("", None),
+    ("#cloud-config\n# only comments\n", None),
+    ("hostname: \"qm\"\nmanage_etc_hosts: true\n", None),
+    ("users:\n- default\n", None),
+    ("user:\n  name: \"kal\"\n  shell: /bin/bash\n  lock_passwd: false\n  passwd: \"$6$abc$def\"\n", ("kal", "$6$abc$def")),
+    ("user:\n  name: pi\n  lock_passwd: true\n  ssh_authorized_keys:\n    - \"ssh-ed25519 AAAA\"\n", ("pi", None)),
+    ("user: kal\n", ("kal", None)),
+    ("users:\n- default\n- name: robot\n  hashed_passwd: $6$r$s\n", ("robot", "$6$r$s")),
+    ("users:\n- name: [1]\n", None),
+    ("user: [unclosed\n", None),
+    ("- just\n- a list\n", None),
+])
+def test_the_first_login_reads_the_user_imager_asked_for(text, wanted):
+    pytest.importorskip("yaml")
+    assert first_login.requested(text) == wanted
+
+
+PI = {"pi": (1000, "/home/pi", "/bin/bash"), "root": (0, "/root", "/bin/bash"),
+      "quartermaster": (59999, "/var/lib/quartermaster", "/usr/sbin/nologin"),
+      "nobody": (65534, "/nonexistent", "/usr/sbin/nologin")}
+DEFAULT, OWN = "$6$salt$default", "$6$other$own"
+LOCKED = {"root": "*", "quartermaster": "!"}
+
+
+def login_plan(users, hashes, wanted, members=("pi",), links=("/home/pi/quartermaster",), banner=False):
+    return first_login.plan(users, dict(LOCKED, **hashes), set(members), DEFAULT, wanted, set(links), banner)
+
+
+def test_the_default_login_stays_when_imager_set_no_user():
+    assert login_plan(PI, {"pi": DEFAULT}, None) == []
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, None) == [["usermod", "-U", "pi"]]
+    assert login_plan(PI, {"pi": OWN}, None) == []
+    assert login_plan(PI, {"pi": "!" + OWN}, None) == []
+
+
+def test_a_user_from_imager_switches_the_default_login_off():
+    users = dict(PI, kal=(1001, "/home/kal", "/bin/bash"))
+    steps = login_plan(users, {"pi": DEFAULT, "kal": OWN}, ("kal", OWN))
+    assert steps == [["usermod", "-L", "pi"], ["usermod", "-aG", "quartermaster", "kal"],
+                     ["ln", "-s", first_login.DATA, "/home/kal/quartermaster"],
+                     ["chown", "-h", "kal:", "/home/kal/quartermaster"]]
+    assert login_plan(users, {"pi": DEFAULT, "kal": "!"}, ("kal", None))[0] == ["usermod", "-L", "pi"]
+    assert login_plan(users, {"pi": "!" + DEFAULT, "kal": OWN}, ("kal", OWN), members=("pi", "kal"),
+                      links=("/home/pi/quartermaster", "/home/kal/quartermaster")) == []
+    assert ["usermod", "-L", "pi"] in login_plan(users, {"pi": DEFAULT, "kal": OWN}, None)
+    assert ["usermod", "-L", "pi"] not in login_plan(users, {"pi": OWN, "kal": OWN}, ("kal", OWN))
+
+
+def test_a_renamed_first_user_keeps_its_group_and_link_and_gets_the_chosen_password():
+    users = {name: entry for name, entry in PI.items() if name != "pi"}
+    users["kal"] = (1000, "/home/kal", "/bin/bash")
+    assert login_plan(users, {"kal": OWN}, ("kal", OWN), members=("kal",), links=("/home/kal/quartermaster",)) == []
+    assert login_plan(users, {"kal": DEFAULT}, ("kal", OWN), members=("kal",),
+                      links=("/home/kal/quartermaster",)) == [["usermod", "-p", OWN, "kal"]]
+
+
+def test_a_new_password_for_pi_from_imager_replaces_the_default():
+    assert login_plan(PI, {"pi": DEFAULT}, ("pi", OWN)) == [["usermod", "-p", OWN, "pi"]]
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, ("pi", OWN)) == [["usermod", "-p", OWN, "pi"]]
+    assert login_plan(PI, {"pi": OWN}, ("pi", OWN)) == []
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, ("pi", None)) == []
+    assert login_plan(PI, {"pi": DEFAULT}, ("kal", OWN)) == []
+
+
+def test_the_first_login_ignores_system_accounts_and_tidies_the_rename_banner():
+    users = dict(PI, wizard=(999, "/home/w", "/bin/bash"), ghost=(1001, "/home/ghost", "/usr/sbin/nologin"))
+    assert login_plan(users, {"pi": DEFAULT}, None) == []
+    assert login_plan(PI, {"pi": DEFAULT}, None, banner=True) == [
+        ["rm", "-f", first_login.BANNER], ["systemctl", "enable", "getty@tty1.service"],
+        ["systemctl", "--no-block", "start", "getty@tty1.service"]]
+    assert first_login.plan(PI, dict(LOCKED, pi=""), {"pi"}, "", None) == []
+
+
+def test_the_first_login_marks_itself_done_only_when_every_step_worked(tmp_path, monkeypatch):
+    stamp = tmp_path / "state" / "done"
+    monkeypatch.setattr(first_login, "STAMP", str(stamp))
+    monkeypatch.setattr(first_login, "gather", lambda: (PI, dict(LOCKED, pi="!" + DEFAULT), {"pi"}, DEFAULT, None,
+                                                         {"/home/pi/quartermaster"}, False))
+    ran = []
+    monkeypatch.setattr(first_login.subprocess, "run",
+                        lambda step, check: ran.append(step) or type("r", (), {"returncode": 1})())
+    assert first_login.main() == 1 and ran == [["usermod", "-U", "pi"]] and not stamp.exists()
+    monkeypatch.setattr(first_login.subprocess, "run", lambda step, check: type("r", (), {"returncode": 0})())
+    assert first_login.main() == 0 and stamp.read_text() == "done\n"
+
+
+def test_a_password_hash_is_not_printed(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(first_login, "STAMP", str(tmp_path / "done"))
+    monkeypatch.setattr(first_login, "gather", lambda: (PI, dict(LOCKED, pi=DEFAULT), {"pi"}, DEFAULT, ("pi", OWN),
+                                                         {"/home/pi/quartermaster"}, False))
+    monkeypatch.setattr(first_login.subprocess, "run", lambda step, check: type("r", (), {"returncode": 0})())
+    assert first_login.main() == 0
+    assert capsys.readouterr().out == "usermod -p <hash> pi\n"
+
+
+NOTICE = IMAGE / "default_password_notice.sh"
+
+
+def notice(tmp_path, shadow, record=DEFAULT + "\n"):
+    (tmp_path / "shadow").write_text(shadow)
+    paths = [str(tmp_path / "shadow"), str(tmp_path / "record")]
+    if record is not None:
+        (tmp_path / "record").write_text(record)
+    result = subprocess.run(["sh", str(NOTICE), *paths], capture_output=True, text=True)
+    assert result.returncode == 0 and result.stderr == ""
+    return result.stdout
+
+
+@pytest.mark.skipif(not shutil.which("awk"), reason="needs awk")
+def test_the_login_notice_names_only_logins_that_still_have_the_default_password(tmp_path):
+    rest = ":20000:0:99999:7:::\n"
+    system = "root:*" + rest + "quartermaster:!" + rest
+    assert notice(tmp_path, system + "pi:" + DEFAULT + rest) == \
+        "\nThe login pi still has the default password. Type passwd to set your own.\n\n"
+    assert notice(tmp_path, system + "pi:!" + DEFAULT + rest) == ""
+    assert notice(tmp_path, system + "pi:" + OWN + rest) == ""
+    assert "The login pi kal still has" in notice(tmp_path, "pi:" + DEFAULT + rest + "kal:" + DEFAULT + rest)
+    assert notice(tmp_path, "pi:" + DEFAULT + rest, record="") == ""
+    assert notice(tmp_path, "pi:" + rest, record="\n") == ""
+    (tmp_path / "record").unlink()
+    assert notice(tmp_path, "pi:" + DEFAULT + rest, record=None) == ""
+
+
+def test_the_login_notice_is_installed_where_every_login_shows_it():
+    script = SCRIPT.read_text()
+    assert NOTICE.read_text().startswith("#!/bin/sh\n") and first_login.HASH_FILE in NOTICE.read_text()
+    assert ('install -D -m 755 "$here/packaging/image/default_password_notice.sh" '
+            '"$mnt/etc/update-motd.d/20-quartermaster-password"') in script
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", "20-quartermaster-password")
+    assert 'check "default password notice" "$(in_chroot /etc/update-motd.d/20-quartermaster-password | xargs)"' in script
+    assert '"The login $login_user still has the default password. Type passwd to set your own."' in script
+    assert 'check "the notice is shown at login"' in script and "pam_motd" in script
+
+
+def test_pi_reaches_the_logs_through_the_group_and_a_link_in_its_home():
+    script = SCRIPT.read_text()
+    assert 'install -d -m 750 -o "$service_id" -g "$service_id" "$mnt$data" "$mnt$data/logs"' in script
+    assert 'ln -sfn "$data" "$mnt$login_home/quartermaster"' in script
+    assert 'check "logs link"' in script and 'check "$login_user reads the logs"' in script
+    path = settings((IMAGE / "quartermaster-logs.path").read_text())
+    assert path["PathChanged"] == [first_login.DATA + "/logs"] and path["WantedBy"] == ["multi-user.target"]
+    service = settings((IMAGE / "quartermaster-logs.service").read_text())
+    assert service["User"] == ["quartermaster"] and service["Type"] == ["oneshot"]
+    command = service["ExecStart"][0].split()
+    assert command[:2] == ["/usr/bin/find", first_login.DATA + "/logs"] and command[-5:] == "-exec chmod g+rX {} +".split()
+    assert "quartermaster-logs.path" in shell_list(script, "units") and "quartermaster-logs.service" in script
+
+
+@pytest.mark.skipif(not shutil.which("find"), reason="needs find")
+def test_the_logs_rule_opens_new_logs_to_the_group_and_then_changes_nothing(tmp_path):
+    service = settings((IMAGE / "quartermaster-logs.service").read_text())
+    logs = tmp_path / "logs"
+    (logs / "sub").mkdir(parents=True)
+    for name in ("a.wigle.csv", "sub/b.json"):
+        (logs / name).write_text("x")
+        (logs / name).chmod(0o600)
+    (logs / "sub").chmod(0o700)
+    logs.chmod(0o700)
+    command = [str(logs) if part == first_login.DATA + "/logs" else part for part in service["ExecStart"][0].split()]
+    subprocess.run(command, check=True)
+    assert [(logs / name).stat().st_mode & 0o777 for name in (".", "sub", "a.wigle.csv", "sub/b.json")] == \
+        [0o750, 0o750, 0o640, 0o640]
+    changed = subprocess.run(command[:-5] + ["-print"], capture_output=True, text=True, check=True).stdout
+    assert changed == ""
+
+
+def test_the_image_is_named_quartermaster_and_answers_to_quartermaster_local():
+    script = SCRIPT.read_text()
+    assert """printf '%s\\n' "$host_name" > "$mnt/etc/hostname\"""" in script
+    assert "avahi-daemon" in script.split("--no-install-recommends install /tmp/quartermaster-pi.deb")[1].split("\n")[0]
+    for label in ('"hostname" "$(cat "$mnt/etc/hostname")" "$host_name"', '"hostname in hosts"',
+                  '"avahi-daemon.service" "$(enabled avahi-daemon.service)" enabled'):
+        assert "check " + label in script, label
+
+
+def test_the_image_only_turns_off_units_a_handheld_does_not_need():
+    script = SCRIPT.read_text()
+    unneeded, kept = shell_list(script, "unneeded"), shell_list(script, "kept")
+    assert set(unneeded) == {"ModemManager.service", "triggerhappy.service", "triggerhappy.socket", "man-db.timer",
+                             "apt-daily.timer", "apt-daily-upgrade.timer", "e2scrub_all.timer", "e2scrub_reap.service"}
+    assert {"NetworkManager.service", "bluetooth.service", "systemd-timesyncd.service", "rpi-resize.service",
+            "regenerate_ssh_host_keys.service", "cloud-init-local.service", "cloud-init-network.service",
+            "cloud-config.service", "cloud-final.service"} <= set(kept)
+    assert not set(unneeded) & set(kept)
+    for word in ("NetworkManager", "bluetooth", "timesyncd", "cloud", "resize", "ssh", "avahi", "getty", "quartermaster"):
+        assert not [unit for unit in unneeded if word in unit], word
+    assert re.findall(r"systemctl disable (\S+)", script) == ['"$unit"']
+    assert "printf 'disable %s\\n' \"${unneeded[@]}\" > \"$mnt/etc/systemd/system-preset/50-quartermaster.preset\"" in script
+    assert 'check "$unit still on" "$(enabled "$unit")" enabled' in script
+    assert 'check "root file system grows on first start" "$(enabled rpi-resize.service)" enabled' in script
+    assert "overlay" not in script and "governor" not in script
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
@@ -325,6 +610,62 @@ def test_the_image_workflow_builds_both_hats_on_tags_monthly_and_on_request():
                      listing, re.M)
     release = (WORKFLOWS / "release-pi.yml").read_text()
     assert 'index($package) != null and index("SHA256SUMS") != null' in release
+    assert triggers["workflow_dispatch"]["inputs"]["tag"]["required"] is False
+
+
+def test_a_practice_run_builds_the_images_from_the_branch_and_publishes_nothing():
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())
+    practice = workflow[True]["workflow_dispatch"]["inputs"]["practice"]
+    assert practice["type"] == "boolean" and practice["default"] is False
+    jobs = workflow["jobs"]
+    assert jobs["publish"]["if"] == "${{ !inputs.practice }}" and "if" not in jobs["image"]
+    pick = jobs["release"]["steps"][0]["run"]
+    assert pick.index('[ "$PRACTICE" = true ]') < pick.index("exit 0") < pick.index('[ "$EVENT" = push ]')
+    assert jobs["release"]["env"]["PRACTICE"] == "${{ inputs.practice }}"
+    steps = {step.get("name"): step for step in jobs["image"]["steps"]}
+    own = steps["Build the Pi package from this branch"]
+    assert own["if"] == "inputs.practice" and "tools/build_deb.py --target pi --out build/pi" in own["run"]
+    assert "gh " not in own["run"]
+    assert steps["Wait for the Pi package"]["if"] == "${{ !inputs.practice }}"
+    assert "gh release download" in steps["Wait for the Pi package"]["run"]
+    named = steps["Name the package and the image"]
+    assert "if" not in named and 'test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"' in named["run"]
+    order = [step.get("name") for step in jobs["image"]["steps"]]
+    assert order.index("Wait for the Pi package") < order.index("Name the package and the image") < \
+        order.index("Build the image")
+
+
+def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((WORKFLOWS / "release-pi.yml").read_text())
+    triggers = workflow[True]
+    assert triggers["push"] == {"tags": ["pi-v*"]}
+    tag = triggers["workflow_dispatch"]["inputs"]["tag"]
+    assert tag["required"] is True and "created from this branch if it does not exist" in tag["description"]
+    assert workflow["permissions"] == {"contents": "write", "actions": "write"}
+    assert workflow["concurrency"]["group"] == "release-${{ inputs.tag || github.ref_name }}"
+    job = workflow["jobs"]["release"]
+    assert job["env"]["TAG"] == "${{ inputs.tag || github.ref_name }}"
+    steps = job["steps"]
+    names = [step.get("name") for step in steps]
+    assert names[-3:] == ["Test the app and build the Pi package", "Publish the Pi prerelease", "Start the image build"]
+    check = steps[names.index("Check the Pi release tag")]["run"]
+    assert 'test "$TAG" = "pi-v$version"' in check
+    publish = steps[names.index("Publish the Pi prerelease")]["run"]
+    by_hand, pushed = publish.index('[ "$GITHUB_EVENT_NAME" = workflow_dispatch ]'), publish.index("tag_option=(--verify-tag)")
+    target = publish.index('tag_option=(--target "$(git rev-parse HEAD)")')
+    assert by_hand < target < pushed < publish.index('gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false')
+    assert publish.count("--verify-tag") == 1 and publish.count("gh release create") == 1
+    assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish and "already exists on another commit" in publish
+    start = steps[-1]
+    assert start["if"] == "github.event_name == 'workflow_dispatch'"
+    assert start["run"] == 'gh workflow run pi-images.yml --ref "$TAG" -f tag="$TAG"'
+    assert start["env"] == {"GH_REPO": "${{ github.repository }}"}
+    images = yaml.safe_load((WORKFLOWS / "pi-images.yml").read_text())
+    assert "tag" in images[True]["workflow_dispatch"]["inputs"] and images[True]["push"] == {"tags": ["pi-v*"]}
+    pick = images["jobs"]["release"]["steps"][0]["run"]
+    assert 'elif [ -n "$REQUESTED" ]; then' in pick and images["jobs"]["release"]["env"]["REQUESTED"] == "${{ inputs.tag }}"
 
 
 def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
@@ -335,3 +676,19 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     for text in ("Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
                  "quartermaster@quartermaster.service", "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country"):
         assert text in section, text
+
+
+def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password():
+    guide = (ROOT / "docs" / "diy.md").read_text()
+    section = guide[guide.index("## Easiest way: flash a ready image"):guide.index("## Assemble and install manually")]
+    login = section[section.index("### Log in"):section.index("### Good to know")]
+    for text in ("user `pi` with password `pi`", "SSH is on", "`ssh pi@quartermaster.local`", "`ssh pi@<address>`",
+                 "Change the password right away", "`passwd`", "shared or public Wi-Fi",
+                 "reminds you each time you log in",
+                 "set in Raspberry Pi Imager replace the default", "`~/quartermaster/logs`", "host keys",
+                 "`sudo usermod -aG quartermaster <user>`"):
+        assert text in login, text
+    assert login.index("user `pi` with password `pi`") < login.index("Change the password right away")
+    assert "no password and SSH is off" not in guide
+    script = SCRIPT.read_text()
+    assert "login_user=pi login_password=pi" in script and "host_name=quartermaster" in script
