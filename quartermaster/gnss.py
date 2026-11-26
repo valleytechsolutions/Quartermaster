@@ -114,6 +114,7 @@ class GPS:
         self._fix = {}
         self._extra = {}
         self._updated = 0.0
+        self._told = None
         self._lock = threading.Lock()
 
     def update(self, value, now=None):
@@ -142,6 +143,14 @@ class GPS:
                 fix["utc"] = value["time"][:64]
         with self._lock:
             self._fix, self._updated = fix, now
+            if "utc" in fix:
+                self._told = (fix["utc"], now)
+
+    def told(self):
+        """The UTC time of the last fix that carried one and the monotonic time it came at, or None. It stays after
+        the fix is lost: the CardputerZero has no battery clock, so this is the best time it has."""
+        with self._lock:
+            return self._told
 
     def snapshot(self, now=None):
         now = time.monotonic() if now is None else now

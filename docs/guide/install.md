@@ -2,6 +2,8 @@
 
 [Back to the guide](README.md)
 
+This page is for the CardputerZero. The DIY version for a Raspberry Pi is installed in another way: see [On a DIY Raspberry Pi](#on-a-diy-raspberry-pi) at the end of this page.
+
 ## From the CardputerZero AppStore (easiest)
 
 1. Open the **AppStore** app on the Cardputer.
@@ -53,3 +55,54 @@ sudo apt remove quartermaster
 ```
 
 Your logs and settings stay where they are. See [Files and logs](files.md).
+
+## On a DIY Raspberry Pi
+
+The AppStore and the one command above are only for the CardputerZero. The command always fetches the CardputerZero package from the release with GitHub's **Latest** badge, so do not run it on a Pi.
+
+The DIY version comes from the Raspberry Pi releases on GitHub. Their tags start with `pi-v` and their names end in "for Raspberry Pi". They never have the **Latest** badge. A new Pi release is marked **Pre-release** until it has been tested. The release [Quartermaster 1.2.9 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) has:
+
+- a ready SD card image for each HAT: `quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.9-waveshare-1.3inch-lcd-hat.img.xz`,
+- `quartermaster.rpi-imager-manifest`, a small file that opens Raspberry Pi Imager with both images in its list,
+- the Pi package `quartermaster-pi_1.2.9_all.deb` and its checksums, for a card you already use.
+
+### Flash a ready image (easiest)
+
+Flash the image for your HAT with Raspberry Pi Imager. In Imager's list, choose "Quartermaster 1.2.9 for the Waveshare 1.44inch LCD HAT (128×128)" or "Quartermaster 1.2.9 for the Waveshare 1.3inch LCD HAT (240×240)". The [DIY guide](../diy.md#easiest-way-flash-a-ready-image) has every step.
+
+- The Pi starts Quartermaster by itself. The first start takes a few minutes, and the Pi may restart once. You do not need to restart it yourself.
+- The image logs in as user `pi` with password `pi`, and SSH is on. From a computer on the same network, type `ssh pi@quartermaster.local`. A user set in Raspberry Pi Imager replaces this login.
+- Change the password right away. Log in, type `passwd` and follow the prompts.
+
+### Install the Pi package on a card you already use
+
+Follow [Assemble and install manually](../diy.md#assemble-and-install-manually) in the DIY guide. It ends with one restart, which also gives your user the new permissions.
+
+### Checking for updates on a Pi
+
+**Settings > Check for updates** asks GitHub for a newer Pi release. Nothing is downloaded. You see one of these:
+
+| Message | What it means |
+| --- | --- |
+| "X is ready. Install the Pi package from GitHub." | A newer Pi release is out. |
+| "Your Pi version (X) is up to date." | Nothing to do. |
+| "Could not check. Is Wi-Fi connected?" | The Pi is not online. |
+| "Could not find a Raspberry Pi release with an installer." | GitHub did not give a Pi release with its package. Try again later. |
+
+Press **OK** on that screen to check again.
+
+To update, install the new Pi package, or flash the newest image. **Updating** and **Flashing the newest image** under [Good to know](../diy.md#good-to-know) in the DIY guide show both ways. Flashing erases the card, and your settings and upload keys go with it. Before you flash, copy the `logs`, `recon` and `aircraft` folders to your computer, as the DIY guide shows.
+
+To see which version runs on your Pi, open **About**.
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/about.png" width="256" alt="The About screen on the 1.44inch HAT, with the version and the words Raspberry Pi DIY"> | <img src="../screens/diy/240/about.png" width="240" alt="The About screen on the 1.3inch HAT, with the version and the words Raspberry Pi DIY"> |
+
+### Removing the DIY version
+
+```sh
+sudo apt remove quartermaster-pi
+```
+
+Your logs and settings stay where they are. See [Files and logs](files.md#on-a-diy-raspberry-pi).

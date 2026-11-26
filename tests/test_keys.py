@@ -303,10 +303,13 @@ def test_a_held_arrow_changes_a_choice_once_and_does_not_run_on(device):
     app.send(hold(106, 2))
     app.send(tap(ESC), tap(CODE["w"]), hold(106, 4), hold(105, 3))
     assert app.wardriving and app.screen.filter == "ble"
-    for arrow, repeats in ((105, 1), (106, 2), (103, 3), (108, 1)):
+    for arrow, repeats, choice in ((105, 1, 0), (106, 2, 2), (103, 3, 0), (108, 1, 2)):
         app.send(tap(ENTER), hold(arrow, repeats))
-        assert isinstance(app.screen, screens.Confirm) and app.screen.choice == 0
+        assert isinstance(app.screen, screens.Confirm) and app.screen.choice == choice
         app.send(tap(ENTER))
+        if choice == 2:
+            assert app.screen.title == "Throw away this wardrive?" and app.screen.choice == 0
+            app.send(tap(ENTER))
         assert isinstance(app.screen, screens.Wardrive) and app.wardriving
 
 

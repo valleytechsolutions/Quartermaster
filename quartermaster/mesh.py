@@ -542,6 +542,28 @@ class Listener:
                     pass
             return path if written else None
 
+    def checkpoint(self):
+        """Put the nodes heard so far on disk now, so that a power cut loses none of them."""
+        with self._lock:
+            if self.journal is None or not len(self.mesh):
+                return
+            self._journaled = time.monotonic()
+            save_journal(self.journal, self.mesh, self.name().name, self._now())
+            adsb.settle(self.journal.parent)
+
+    def discard(self):
+        """Throw the nodes of this wardrive away: nothing is written and the journal goes. False when it could not
+        be removed."""
+        with self._lock:
+            self.mesh, gone = Mesh(), True
+            if self.journal is not None:
+                for hidden in (self.journal, self.journal.with_name(self.journal.name + ".tmp")):
+                    try:
+                        hidden.unlink(missing_ok=True)
+                    except OSError:
+                        gone = False
+            return gone
+
     def _time(self, fix):
         if not fix.get("utc"):
             return self.epoch(fix) if self._offset is None else self.clock() + self._offset

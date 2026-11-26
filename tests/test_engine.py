@@ -2,9 +2,11 @@ import csv
 import functools
 import io
 import os
+import shutil
 import signal
 import stat
 import subprocess
+import threading
 import time
 
 import pytest
@@ -12,7 +14,7 @@ import pytest
 from quartermaster import engine, wigle
 from quartermaster.engine import Wardrive
 from quartermaster.wifi import parse_iw_scan
-from tests.fakes import QuietFleet, cards, networks, on_a_card
+from tests.fakes import NO_FIX, QuietFleet, cards, networks, on_a_card
 from tests.test_core import SCAN, FIX, NOW
 
 
@@ -759,10 +761,12 @@ def test_only_a_last_line_without_an_end_is_cut_from_a_log(tmp_path):
     assert wigle.trim(tmp_path / "missing.csv") is False and not (tmp_path / "missing.csv").exists()
     path.write_bytes(b"a,b\nc,d\n")
     for size, after in ((9, b"a,b\nc,d\n"), (6, b"a,b\nc,"), (4, b"a,b\n"), (8, b"a,b\n"), (0, b"")):
-        wigle.cut(path, size)
+        assert wigle.cut(path, size) is True
         assert path.read_bytes() == after
-    wigle.cut(tmp_path / "missing.csv", 0)
+    assert wigle.cut(tmp_path / "missing.csv", 0) is True
     assert not (tmp_path / "missing.csv").exists()
+    path.write_bytes(b"a,b\nc,d\n")
+    assert wigle.cut(tmp_path, 4) is False and path.read_bytes() == b"a,b\nc,d\n"
 
 
 def test_a_log_is_closed_even_when_its_last_rows_cannot_be_written(tmp_path):
@@ -1618,3 +1622,354 @@ def test_what_a_node_heard_before_the_first_fix_is_left_out_when_it_arrives_afte
     assert drive.status()["wifi"] == 2 and drive.skipped_no_fix == 1
     drive.stop()
     assert sorted(row[0] for row in rows_of(drive.log_path)) == ["aa:bb:cc:dd:ee:01", "c4:7c:8d:11:22:01"]
+
+
+class SkyStub:
+    """Stands in for the aircraft receiver or the mesh listener of a wardrive."""
+
+    made = []
+
+    def __init__(self, logs, gps, *args, **kwargs):
+        self.logs, self.calls, self.count, self.state = logs, [], 2, "running"
+        self.journal = logs / ".quartermaster_20261118-110640.aircraft.json.part"
+        SkyStub.made.append(self)
+
+    def start(self, epoch):
+        self.journal.write_text("{}")
+
+    def status(self):
+        return {"state": "running", "aircraft": self.count, "detail": ""}
+
+    def stop(self):
+        self.calls.append("stop")
+
+    def checkpoint(self):
+        self.calls.append("checkpoint")
+
+    def discard(self):
+        self.calls.append("discard")
+        self.journal.unlink()
+
+    def finish(self):
+        self.calls.append("finish")
+        return None
+
+
+def recovered(tmp_path, drive, name):
+    """The log a power cut right now would leave, finished the way the next start does it."""
+    copy = tmp_path / name / "logs"
+    shutil.copytree(drive.logs, copy)
+    engine._recover(copy, None)
+    return copy
+
+
+def test_a_checkpoint_puts_the_exact_ends_the_rows_and_the_summary_on_disk(tmp_path, monkeypatch):
+    drive, clock = closest_and_furthest(tmp_path)
+    other = dict(NET, bssid="AA:BB:CC:DD:EE:02", ssid="Nassau")
+    for rssi in (-70, -71, -69):
+        hear(drive, clock, rssi)
+    hear(drive, clock, -80, net=other)
+    log = drive.log_path
+    before = recovered(tmp_path, drive, "before")
+    assert list(before.iterdir()) == []
+    synced, fsync = [], wigle.fsync
+    monkeypatch.setattr(wigle, "fsync", lambda fd: synced.append(fd) or fsync(fd))
+    assert drive.checkpoint(keep=True) is True and drive.low_battery and drive.state == "running"
+    assert synced and not drive.writer._waiting and wigle.journal_path(log).exists() and not log.exists()
+    after = recovered(tmp_path, drive, "after")
+    assert sorted(row[6] for row in rows_of(after / log.name)) == ["-69", "-71", "-80"]
+    assert [row["MAC"].upper() for row in summary_of(after / log.name)] == [NET["bssid"], other["bssid"]]
+    assert summary_of(after / log.name)[0]["StrongestRSSI"] == "-69"
+    assert sorted(path.name for path in drive.logs.iterdir()) == ["." + log.name + ".part",
+                                                                  log.name.replace(".wigle.csv", ".summary.csv")]
+    third = dict(NET, bssid="AA:BB:CC:DD:EE:03", ssid="Abaco")
+    hear(drive, clock, -60, net=third)
+    hear(drive, clock, -66)
+    drive.stop()
+    assert sorted(row[6] for row in rows_of(log)) == ["-60", "-66", "-71", "-80"]
+    assert [row["MAC"].upper() for row in summary_of(log)] == [NET["bssid"], other["bssid"], third["bssid"]]
+    assert sorted(path.name for path in drive.logs.iterdir()) == [log.name.replace(".wigle.csv", ".summary.csv"),
+                                                                  log.name]
+
+
+def test_a_checkpoint_without_keep_saves_once_and_one_before_the_first_row_has_nothing_to_save(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    assert drive.checkpoint() is False and not drive.low_battery and list(drive.logs.iterdir()) == []
+    hear(drive, clock, -70)
+    assert drive.checkpoint() is True and not drive.low_battery
+    drive.stop()
+    assert drive.checkpoint() is False and len(rows_of(drive.log_path)) == 1
+
+
+def test_on_a_low_battery_the_upkeep_keeps_everything_on_disk(tmp_path, monkeypatch, later):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    drive.checkpoint(keep=True)
+    log = drive.log_path
+    for rssi in (-71, -72):
+        hear(drive, clock, rssi)
+    drive._keep_saving()
+    assert not drive.writer._waiting
+    assert sorted(row[6] for row in rows_of(recovered(tmp_path, drive, "soon") / log.name)) == ["-70"]
+    later(engine.LOW_BATTERY_SECONDS + 1)
+    drive._keep_saving()
+    assert sorted(row[6] for row in rows_of(recovered(tmp_path, drive, "later") / log.name)) == ["-70", "-72"]
+    saved = []
+    monkeypatch.setattr(drive, "_keep_saving", lambda: saved.append(True))
+    monkeypatch.setattr(engine, "UPKEEP_SECONDS", 0.01)
+    drive._stop.set()
+    for thread in drive._threads:
+        thread.join(2)
+    drive._stop.clear()
+    upkeep = threading.Thread(target=drive._housekeeping, daemon=True)
+    upkeep.start()
+    deadline = time.monotonic() + 5
+    while not saved and time.monotonic() < deadline:
+        time.sleep(0.01)
+    drive._threads = [upkeep]
+    drive.stop()
+    assert saved
+
+
+def test_a_save_that_takes_long_is_made_less_often_on_a_low_battery(tmp_path, monkeypatch, later):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    write = drive._write_summary
+    monkeypatch.setattr(drive, "_write_summary", lambda final=True: later(3) or write(final))
+    drive.checkpoint(keep=True)
+    assert drive._save_took == pytest.approx(3, abs=0.5)
+    saves = []
+    monkeypatch.setattr(drive, "checkpoint", lambda keep=False: saves.append(keep))
+    later(engine.LOW_BATTERY_SECONDS)
+    drive._keep_saving()
+    assert saves == []
+    later(engine.LOW_BATTERY_SHARE * 3)
+    drive._keep_saving()
+    assert saves == [False]
+    drive.stop()
+
+
+def test_a_stop_waits_for_a_save_under_way_and_no_save_starts_once_the_stop_has_begun(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    for rssi in (-70, -60, -80):
+        hear(drive, clock, rssi)
+    under_way, go_on = threading.Event(), threading.Event()
+    write = drive._write_summary
+
+    def slow(final=True):
+        if not final:
+            under_way.set()
+            go_on.wait(10)
+        write(final)
+    drive._write_summary = slow
+    saving, stopping = threading.Thread(target=drive.checkpoint), threading.Thread(target=drive.stop)
+    saving.start()
+    assert under_way.wait(5)
+    stopping.start()
+    stopping.join(0.5)
+    assert stopping.is_alive() and drive.state == "running" and drive.writer is not None
+    assert drive.checkpoint() is False
+    go_on.set()
+    saving.join(5)
+    stopping.join(10)
+    assert drive.state == "stopped" and not saving.is_alive() and not stopping.is_alive()
+    assert sorted(row[6] for row in rows_of(drive.log_path)) == ["-60", "-80"]
+    assert len(summary_of(drive.log_path)) == 1 and not engine.leftovers(drive.logs)
+
+
+def test_a_summary_line_of_a_device_caught_between_two_sightings_is_still_written():
+    from quartermaster.tracker import WIFI, Device, Ends, Tracker
+    tracker, device = Tracker(extremes=True), Device(WIFI, "AA:BB:CC:DD:EE:01", NOW)
+    device.ends = Ends()
+    row = engine._summary_row(device, tracker)
+    assert row[0] == "aa:bb:cc:dd:ee:01" and row[-8:] == [""] * 8
+    device.part = Ends()
+    assert tracker.log_rows(device) == 0
+
+
+def test_a_checkpoint_saves_the_aircraft_and_the_mesh_nodes_too(tmp_path, monkeypatch, noted):
+    SkyStub.made = []
+    drive = Wardrive({"ble": False, "adsb": True}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: NOW, receiver=SkyStub, guard=None)
+    drive.start()
+    sky = SkyStub.made[0]
+    drive.mesh = SkyStub(drive.logs, None)
+    drive.mesh.checkpoint = lambda: (_ for _ in ()).throw(OSError(28, "No space left on device"))
+    drive.checkpoint()
+    assert sky.calls == ["checkpoint"] and "Saving the mesh journal" in noted.read_text()
+    drive.mesh = None
+    drive.stop()
+
+
+def test_a_summary_saved_early_goes_when_its_part_ends_without_a_row(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path, ignore=["Tortuga"])
+    hear(drive, clock, -70, net=dict(NET, ssid="Nassau"))
+    drive.checkpoint()
+    early = drive.logs / drive.log_path.name.replace(".wigle.csv", ".summary.csv")
+    assert early.exists()
+    drive.set_ignore(["Nassau"])
+    drive.stop()
+    assert drive.log_path is None and list(drive.logs.iterdir()) == []
+
+
+def everything(folder):
+    return sorted(str(path.relative_to(folder)) for path in folder.rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize("cfg", [{}, {"log_rows": "track"}])
+def test_a_wardrive_thrown_away_leaves_none_of_its_files_and_touches_no_other(tmp_path, cfg, monkeypatch):
+    clock = [NOW]
+    earlier, _ = closest_and_furthest(tmp_path, clock, **cfg)
+    hear(earlier, clock, -70)
+    earlier.stop()
+    kept = everything(tmp_path)
+    assert len(kept) >= 2 and all("quartermaster_20261118-110640" in name or "drive_" in name for name in kept)
+    contents = {name: (tmp_path / name).read_bytes() for name in kept}
+    monkeypatch.setattr(engine, "ROTATE_BYTES", 400)
+    clock[0] += 100
+    drive, _ = closest_and_furthest(tmp_path, clock, **cfg)
+    for index in range(12):
+        hear(drive, clock, -70 - index, net=dict(NET, bssid="AA:BB:CC:DD:EE:%02X" % index, ssid="Net %d" % index))
+        hear(drive, clock, -50 - index, net=dict(NET, bssid="AA:BB:CC:DD:EE:%02X" % index, ssid="Net %d" % index))
+    drive._set_aside(drive.tracker.found()[:2])
+    drive.checkpoint()
+    drive._parts.join()
+    assert len(drive._made) >= 2 and len(everything(tmp_path)) > len(kept) + 2
+    made = [path.name for path in drive._made]
+    drive.discard()
+    assert everything(tmp_path) == kept
+    assert {name: (tmp_path / name).read_bytes() for name in kept} == contents
+    assert drive.state == "stopped" and drive.discarded and drive.removed == made and not drive.failed
+    assert drive.log_path is None and drive.status()["rows"] == 0 and not engine.leftovers(drive.logs)
+    assert os.path.realpath(str(drive.logs)) not in engine._writing
+
+
+def test_a_wardrive_thrown_away_takes_its_aircraft_mesh_and_alert_files_with_it(tmp_path):
+    SkyStub.made = []
+    clock = [NOW]
+    drive = Wardrive({"ble": False, "adsb": True}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: clock[0], receiver=SkyStub, guard=None)
+    drive.start()
+    drive._wifi_sink([dict(NET)], ADAPTERS[0])
+    first = drive.watch
+    first._write({"alert": 1})
+    other = first.log_path.with_name("drive_20250101-000000.jsonl")
+    other.write_text("{}\n")
+    drive.set_alerts({"drive_alerts": False})
+    clock[0] += 60
+    drive.set_alerts({"drive_alerts": True})
+    second = drive.watch
+    second._write({"alert": 2})
+    assert second is not first and second.log_path != first.log_path
+    assert first.log_path.exists() and second.log_path.exists() and SkyStub.made[0].journal.exists()
+    drive.discard()
+    assert SkyStub.made[0].calls == ["stop", "discard"] and not drive.failed
+    assert everything(tmp_path) == ["recon/drive_20250101-000000.jsonl"]
+
+
+def test_alerts_an_earlier_wardrive_wrote_stay_when_one_begun_in_the_same_second_is_thrown_away(tmp_path):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    shared = drive.watch.log_path
+    shared.parent.mkdir(parents=True)
+    shared.write_text('{"alert": "earlier"}\n')
+    drive.watch._write({"alert": "this wardrive"})
+    assert shared.read_text().count("\n") == 2
+    drive.discard()
+    assert shared.read_text() == '{"alert": "earlier"}\n' and not drive.failed
+    quiet, clock = closest_and_furthest(tmp_path / "quiet")
+    hear(quiet, clock, -70)
+    unopened = quiet.watch.log_path
+    unopened.parent.mkdir(parents=True)
+    unopened.write_text('{"alert": "earlier"}\n')
+    quiet.discard()
+    assert everything(tmp_path / "quiet") == ["recon/" + unopened.name]
+    assert unopened.read_text() == '{"alert": "earlier"}\n'
+
+
+def test_a_wardrive_still_waiting_for_its_fix_is_thrown_away_too(tmp_path):
+    drive = Wardrive({"ble": False}, FakeGPS(NO_FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: NOW)
+    drive.start()
+    drive._wifi_sink([dict(NET)], ADAPTERS[0])
+    assert drive.waiting
+    drive.discard()
+    assert drive.state == "stopped" and drive.removed == [] and everything(tmp_path) == []
+    drive.discard()
+
+
+def test_files_that_cannot_be_removed_are_said(tmp_path, monkeypatch):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    unlink = type(drive.log_path).unlink
+
+    def refuse(path, missing_ok=False):
+        if path.name.endswith(".part"):
+            raise PermissionError(13, "Permission denied")
+        unlink(path, missing_ok=missing_ok)
+    monkeypatch.setattr(type(drive.log_path), "unlink", refuse)
+    drive.discard()
+    assert drive.failed == "Some files of this wardrive could not be removed"
+
+
+def refused(tmp_path):
+    """A wardrive whose card took no more for a while, and that went on in a new log."""
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    with drive._lock:
+        drive._refused(OSError(28, "No space left on device"))
+    assert drive.error == drive.failed == "Cannot write the log: No space left on device"
+    hear(drive, clock, -60, net=dict(NET, bssid="AA:BB:CC:DD:EE:02"))
+    assert drive.error == "" and drive.failed == "Cannot write the log: No space left on device"
+    return drive
+
+
+def test_a_wardrive_thrown_away_says_nothing_of_what_it_could_not_write_before(tmp_path, monkeypatch):
+    drive = refused(tmp_path / "gone")
+    drive.discard()
+    assert (drive.error, drive.failed) == ("", "") and drive.status()["failed"] == ""
+    assert everything(tmp_path / "gone") == []
+    drive = refused(tmp_path / "stays")
+    unlink = type(drive.logs).unlink
+
+    def refuse(path, missing_ok=False):
+        if path.name.endswith(".part"):
+            raise PermissionError(13, "Permission denied")
+        unlink(path, missing_ok=missing_ok)
+    monkeypatch.setattr(type(drive.logs), "unlink", refuse)
+    drive.discard()
+    assert (drive.error, drive.failed) == ("", "Some files of this wardrive could not be removed")
+    assert any(name.endswith(".part") for name in everything(tmp_path / "stays"))
+
+
+@pytest.mark.parametrize("answer, failed", [(None, ""), (True, ""),
+                                            (False, "Some files of this wardrive could not be removed"),
+                                            (OSError(5, "Input/output error"),
+                                             "Some files of this wardrive could not be removed")])
+def test_aircraft_or_nodes_that_could_not_be_removed_are_said_too(tmp_path, noted, answer, failed):
+    SkyStub.made = []
+    drive = Wardrive({"ble": False, "adsb": True}, FakeGPS(FIX), root=tmp_path, adapters=ADAPTERS, fleet=QuietFleet,
+                     clock=lambda: NOW, receiver=SkyStub, guard=None)
+    drive.start()
+
+    def discard():
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    SkyStub.made[0].discard = discard
+    drive.discard()
+    assert drive.failed == failed and drive.state == "stopped" and drive.discarded
+    assert noted.exists() is isinstance(answer, Exception)
+
+
+def test_alerts_of_this_wardrive_that_cannot_be_cut_from_an_earlier_file_are_said(tmp_path, monkeypatch):
+    drive, clock = closest_and_furthest(tmp_path)
+    hear(drive, clock, -70)
+    shared = drive.watch.log_path
+    shared.parent.mkdir(parents=True)
+    shared.write_text('{"alert": "earlier"}\n')
+    drive.watch._write({"alert": "this wardrive"})
+    monkeypatch.setattr(wigle, "cut", lambda path, size: False)
+    drive.discard()
+    assert drive.failed == "Some files of this wardrive could not be removed"
+    assert shared.read_text().count("\n") == 2

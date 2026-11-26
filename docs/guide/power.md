@@ -71,3 +71,13 @@ Power guard never changes the country, never fakes power limits and never adds a
 A practical limit is **about 4 to 6 Wi-Fi adapters**. All USB devices share one USB 2.0 connection, and the Cardputer has a small processor that must read everything they hear. More adapters than that rarely find more networks.
 
 To scale further, add [nodes](nodes.md). Each ESP32-C5 node scans its own share of the channels. Wireless nodes run on their own battery, so they take no power from the Cardputer at all.
+
+## On a DIY Raspberry Pi
+
+**Powering the Pi.** A Pi has no battery of its own. Run it from a power supply, or from a USB battery that gives enough current for the Pi and everything plugged into it. See [First start](first-start.md#on-a-diy-raspberry-pi) for what Quartermaster shows about a battery on a Pi.
+
+**On a Zero,** plug the power into the port marked **PWR IN**. The port marked **USB** is the only one for data, so a GPS and a Wi-Fi adapter together need an OTG hub. A hub with its own power supply keeps the adapters from drawing on the Pi.
+
+**The estimate.** Quartermaster uses the same numbers on a Pi. It counts about 1,000 mA for the Pi's USB ports, as for the Cardputer's port. When everything fits, the Hardware screen still says "Estimate. Within what the Cardputer's port gives."
+
+**Under-voltage.** When the Pi's power supply is too weak, the Pi raises its under-voltage alarm. During a wardrive, Power guard takes that as a strong sign. The Hardware screen then shows "USB power ran short", with the reason "The Pi reports under-voltage". A powered hub helps the adapters, but the Pi itself still needs a power supply that is strong enough.

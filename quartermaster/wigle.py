@@ -251,14 +251,18 @@ def trim(path, window=65536):
 
 
 def cut(path, size):
-    """Cut a file back to the size a sync has put on disk. Storage that refuses this as well keeps what it has."""
+    """Cut a file back to the size a sync has put on disk. Storage that refuses this as well keeps what it has, and
+    False says so."""
     try:
         with open(path, "rb+") as kept:
             if kept.seek(0, os.SEEK_END) > size:
                 kept.truncate(size)
                 fsync(kept.fileno())
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError:
+        return False
+    return True
 
 
 class WigleWriter:

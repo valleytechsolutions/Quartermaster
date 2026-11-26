@@ -75,3 +75,11 @@ python3 tools/deepscan_ab.py --a lap1.wigle.csv lap4.wigle.csv --b lap2.wigle.cs
 ```
 
 For each band it prints how many unique networks each set found, how fast new ones came in, and how many of A's networks B found too. It passes only when B finds at least as many networks as A on every band.
+
+## On a DIY Raspberry Pi
+
+- **The built-in Wi-Fi** of a 3B+ or 4B sweeps 2.4 and 5 GHz. On a Zero W, Zero 2 W or 3B it sweeps 2.4 GHz only. See [Wi-Fi adapters](wifi-adapters.md#on-a-diy-raspberry-pi).
+- **Set the Pi's own Wi-Fi country.** Quartermaster never changes it, on a Pi either. A ready SD card image does not set one. Until you set it, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on the **Localisation** page of Raspberry Pi Imager, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`.
+- **Settings > Country** sets the channels the nodes use and the channels Deep scan listens on, as on the CardputerZero. A Pi has no LoRa band to set.
+- **The options that can help** need the radio helper. The Pi package and the ready images have it. See [Deep scan](deep-scan.md#on-a-diy-raspberry-pi).
+- **To compare two drives,** copy the logs off the Pi as [Files and logs](files.md#on-a-diy-raspberry-pi) shows.

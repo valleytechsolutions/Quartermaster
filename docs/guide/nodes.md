@@ -134,3 +134,9 @@ Good to know:
 | Not on this hub. Add it again. | Hold BOOT for 2 seconds and add it again. |
 | Needs a firmware update to be a hub | Update the node's firmware. |
 | Could not start as a hub. Plug it in again. | Replug it. |
+
+## On a DIY Raspberry Pi
+
+Nodes work the same way on a Pi. **Settings > Nodes**, a node's screen and **Flash a node** show the CardputerZero layout, and every step uses the joystick and **OK**. To type a node's name, press **K3** for the keyboard on the screen. See [Typing in a text box on a Pi](wardrive.md#typing-in-a-text-box-on-a-pi).
+
+On a Zero, plug USB nodes, and the node that is the hub for wireless nodes, into the OTG hub. Wireless nodes need no USB port on the Pi.

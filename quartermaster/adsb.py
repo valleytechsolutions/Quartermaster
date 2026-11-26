@@ -597,10 +597,11 @@ def end_all():
 atexit.register(end_all)
 
 
-def listen(stream, decoder, lock, mono=None, limit=MAX_FRAMES, pause=READ_PAUSE, read=os.read):
+def listen(stream, decoder, lock, mono=None, limit=MAX_FRAMES, pause=READ_PAUSE, read=os.read, tap=None):
     """Give each line rtl_adsb prints to the decoder until it ends. rtl_adsb writes each frame in many small pieces,
     so the pipe is read in large chunks, `pause` seconds apart, instead of waking for each piece. Past `limit` lines in
-    one second the rest of that second are dropped unread by the decoder, so a flood of noise never queues up."""
+    one second the rest of that second are dropped unread by the decoder, so a flood of noise never queues up.
+    tap(lines, now) is handed the same lines after the decoder had them."""
     mono = mono or time.monotonic
     fd, left, second, count = stream.fileno(), b"", None, 0
     while True:
@@ -621,7 +622,17 @@ def listen(stream, decoder, lock, mono=None, limit=MAX_FRAMES, pause=READ_PAUSE,
         with lock:
             for raw in take:
                 decoder.line(raw, now)
+        if tap is not None and take:
+            tap(take, now)
         time.sleep(pause)
+
+
+def stopped_state(said, plugged):
+    """Why a decoder that ended by itself did, from what it said last."""
+    return DRIVER if any(w in said for w in DRIVER_WORDS) else \
+        BUSY if any(w in said for w in BUSY_WORDS) else \
+        DENIED if any(w in said for w in DENIED_WORDS) else \
+        NO_DONGLE if any(w in said for w in GONE_WORDS) or not plugged else FAILED
 
 
 def _tail(path, size=4096):
@@ -651,6 +662,7 @@ class Receiver:
         self.state, self.proc, self.feed = RUNNING, None, None
         self.decoder = self._listener = self._said = self._binary = None
         self._decoding = threading.Lock()
+        self.tap = None
         self.target = self.journal = self.started = None
         self._journaled = self._failed_at = None
         self._last, self._blind = None, False
@@ -712,6 +724,28 @@ class Receiver:
                 except OSError:
                     pass
             return path if written else None
+
+    def checkpoint(self):
+        """Put the aircraft heard so far on disk now, so that a power cut loses none of them."""
+        with self._lock:
+            if self.journal is None or not len(self.sky):
+                return
+            self._journaled = time.monotonic()
+            save_journal(self.journal, self.sky, self.name().name, self._now())
+            settle(self.journal.parent)
+
+    def discard(self):
+        """Throw the aircraft of this wardrive away: nothing is written and the journal goes. False when it could
+        not be removed."""
+        with self._lock:
+            self.sky, gone = Sky(), True
+            if self.journal is not None:
+                for hidden in (self.journal, self.journal.with_name(self.journal.name + ".tmp")):
+                    try:
+                        hidden.unlink(missing_ok=True)
+                    except OSError:
+                        gone = False
+            return gone
 
     def _time(self, fix):
         """UTC: the GPS's when it has it, else the system clock moved by what the GPS last said of it.
@@ -796,10 +830,7 @@ class Receiver:
                 _no_rtlsdr.add(self._binary)
                 self.state = NO_TOOLS
             else:
-                self.state = DRIVER if any(w in said for w in DRIVER_WORDS) else \
-                    BUSY if any(w in said for w in BUSY_WORDS) else \
-                    DENIED if any(w in said for w in DENIED_WORDS) else \
-                    NO_DONGLE if any(w in said for w in GONE_WORDS) or not self.dongles() else FAILED
+                self.state = stopped_state(said, self.dongles())
             self._failed_at = time.monotonic()
         elif proc is not None and self._blind:
             fix = self.gps.snapshot()
@@ -855,11 +886,21 @@ class Receiver:
 
     def _hear(self, stream, decoder):
         try:
-            listen(stream, decoder, self._decoding, self.mono)
+            listen(stream, decoder, self._decoding, self.mono, tap=self._tapped)
         except (OSError, ValueError):
             pass
         except Exception:
             faults.note("Aircraft")
+
+    def _tapped(self, lines, now):
+        """The aircraft viewer reads the frames the wardrive hears, so that one stick serves both."""
+        tap = self.tap
+        if tap is not None:
+            try:
+                tap(lines, now)
+            except Exception:
+                self.tap = None
+                faults.note("Aircraft viewer")
 
     def _launch(self, binary):
         out = _own_dir(self.out or run_dir())

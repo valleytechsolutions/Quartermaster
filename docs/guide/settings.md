@@ -25,7 +25,7 @@ Defaults are shown in **bold**.
 | Bluetooth scan | **On**, Off | Logs Bluetooth LE and classic devices. |
 | Random BLE addresses | **Log**, Skip | Phones change their Bluetooth address often. Skip keeps logs smaller. |
 | Bluetooth check | 0.5 s, **1 s**, 2 s, 5 s | How often Bluetooth results are read. |
-| Aircraft (ADS-B) | **Auto**, On, Off | Logs aircraft with an RTL-SDR stick. Auto listens when one is plugged in. See [Aircraft](aircraft-and-lora.md). |
+| Aircraft (ADS-B) | **Auto**, On, Off | Logs aircraft with an RTL-SDR stick. Auto listens when one is plugged in. See [Aircraft](aircraft-and-lora.md). The [aircraft viewer](aircraft-and-lora.md#aircraft-viewer) on the Hardware screen works with any choice when no wardrive runs. |
 | LoRa mesh | **Auto**, On, Off | Logs Meshtastic and MeshCore nodes with a Cap LoRa-1262. Auto listens when one is found. |
 | Country | **United States**, 43 other countries, or Anywhere else | Where you are. Nodes use the Wi-Fi channels, and the cap the LoRa band, allowed there. |
 
@@ -119,3 +119,21 @@ See [Drive Alerts and Recon](alerts.md).
 ## Where settings are kept
 
 Settings are in `~/.config/quartermaster/config.json`, your upload keys in `~/.config/quartermaster/accounts.json`. Only your user can read them. See [Files and logs](files.md).
+
+## On a DIY Raspberry Pi
+
+The Settings screen shows one setting at a time. At the top is its section, such as **SCANNING**. Under it are the setting, its value and a line about it. Move the joystick up and down to go from setting to setting, and left or right to step through the choices. **OK** works as on the CardputerZero. During a wardrive, a setting that cannot be changed says "Stop the wardrive to change this."
+
+| Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
+| --- | --- |
+| <img src="../screens/diy/128/settings.png" width="256" alt="Settings on the 1.44inch HAT: the Wi-Fi adapters setting on All, in the Scanning section"> | <img src="../screens/diy/240/settings.png" width="240" alt="Settings on the 1.3inch HAT: the Wi-Fi adapters setting on All, in the Scanning section"> |
+
+What is different on a Pi:
+
+- **LoRa mesh** and **Cap and Grove power** are not there, and **GPS source** has no **Cap / Grove** choice. They are for the Cap LoRa-1262 and the Grove port of the CardputerZero.
+- **Alert me about** has no **LoRaWAN networks**, because LoRaWAN needs the cap. It lists 19 kinds, and 4 of them are on by default.
+- **Country** sets the Wi-Fi channels that nodes use and that [Deep scan](deep-scan.md) listens on. There is no LoRa band to set. It does not change the Pi's own Wi-Fi country. See [First start](first-start.md#on-a-diy-raspberry-pi).
+- **Send logs** on **Automatic** sends finished logs whenever the Pi is online.
+- **Check for updates** asks GitHub for a newer Pi release. It does not ask the AppStore. See [Install and update](install.md#checking-for-updates-on-a-pi).
+- The lists, such as **Ignored networks**, **My alerts** and **Alert me about**, show the CardputerZero layout. Their letter keys are in the **K3** list, such as **Add** and **Remove**. See [Drive Alerts](alerts.md#on-a-diy-raspberry-pi) for **Alert me about**.
+- A ready SD card image keeps the settings in another folder. See [Files and logs](files.md#on-a-diy-raspberry-pi).

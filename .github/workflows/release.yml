@@ -54,14 +54,22 @@ jobs:
           sha256sum quartermaster.deb "quartermaster_${VERSION}_all.deb" > SHA256SUMS
       - name: Release notes for this version
         run: |
-          awk -v version="$VERSION" '$1 == "##" { on = ($2 == version) ; next } on' CHANGELOG.md > build/notes.md
-          test -s build/notes.md
+          awk -v version="$VERSION" '$1 == "##" { on = ($2 == version) ; next } on' CHANGELOG.md > build/changes.md
+          test -s build/changes.md
+          {
+            echo "**This is the CardputerZero version of Quartermaster.**" \
+              "Building one on a Raspberry Pi with a Waveshare LCD HAT?" \
+              "Use the DIY version: the names of its releases end in \"for Raspberry Pi\", and the" \
+              "[DIY guide](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/diy.md) shows how to flash it."
+            echo
+            sed '/[^[:space:]]/,$!d' build/changes.md
+          } > build/notes.md
       - name: Publish the Cardputer package
         run: |
           files=(build/cardputer/quartermaster.deb "build/cardputer/quartermaster_${VERSION}_all.deb" build/cardputer/SHA256SUMS)
           if ! names=$(gh release view "$TAG" --json assets --jq '.assets[].name'); then
-            gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "Quartermaster $VERSION" \
-              --notes-file build/notes.md "${files[@]}"
+            gh release create "$TAG" --target "$(git rev-parse HEAD)" \
+              --title "Quartermaster $VERSION for CardputerZero" --notes-file build/notes.md "${files[@]}"
             exit 0
           fi
           found=0
@@ -78,3 +86,25 @@ jobs:
             test "$(git rev-parse HEAD)" = "$(git rev-parse 'FETCH_HEAD^{commit}')"
             gh release upload "$TAG" "${files[@]}"
           fi
+      - name: Give a release published by hand its title and banner
+        run: |
+          title="Quartermaster $VERSION for CardputerZero"
+          latest=$(gh release view --json tagName --jq .tagName) || true
+          gh release view "$TAG" --json body --jq .body > build/old.md
+          rest=$(awk 'index($0, "**This is the CardputerZero version of Quartermaster.**") != 1' build/old.md |
+            sed '/[^[:space:]]/,$!d')
+          [ -n "$rest" ] || rest=$(sed '/[^[:space:]]/,$!d' build/changes.md)
+          { head -n 1 build/notes.md; printf '\n%s\n' "$rest"; } > build/titled.md
+          if [ "$(cat build/titled.md)" = "$(cat build/old.md)" ] &&
+            [ "$(gh release view "$TAG" --json name --jq .name)" = "$title" ]; then
+            echo "$TAG has its title and banner."
+            exit 0
+          fi
+          gh release edit "$TAG" --title "$title" --notes-file build/titled.md
+          now=$(gh release view --json tagName --jq .tagName) || true
+          if [ -n "$latest" ] && [ "$now" != "$latest" ]; then
+            gh release edit "$latest" --latest
+            echo "::error::$TAG took the Latest badge from $latest. It was given back to $latest."
+            exit 1
+          fi
+          echo "$TAG now has its title and banner."

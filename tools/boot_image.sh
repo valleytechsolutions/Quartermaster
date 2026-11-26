@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start a Quartermaster SD card image in an emulated Raspberry Pi 3 and check its first start over SSH.
 #
-#   tools/boot_image.sh --image build/images/quartermaster-pi-<version>-<hat>.img.xz
+#   tools/boot_image.sh --image build/images/quartermaster-pi-<version>-waveshare-<HAT name>.img.xz
 #
 # Options: --imager (first set the card up the way Raspberry Pi Imager does: its own user, password, name and
 # Wi-Fi country), --hat <the HAT the card must be set for>, --work <dir> (default: a temporary folder),
@@ -17,6 +17,7 @@ set -euo pipefail
 image='' work='' port=5555 wait_minutes=30 imager=no wanted_hat=''
 service_user=_quartermaster
 data=/var/lib/quartermaster/quartermaster
+log_folders=(logs recon aircraft)
 user=pi password=pi name=quartermaster
 imager_user=kal-test imager_password=Imager-set-1 imager_name=qm-imager imager_country=US
 
@@ -273,17 +274,23 @@ checks() {
         "$(grep -c "^Cannot open $hat display or controls: " <<< "$app" || true)" 1
     check "$when: the app reports no missing software" \
         "$(grep -ciE 'no module named|cannot import|shared object' <<< "$app" || true)" 0
-    as_root "-u $service_user sh -c 'umask 077 && echo saved > $data/logs/boot-check.wigle.csv'" || true
-    for _ in $(seq 1 12); do
-        [ "$(on_pi cat quartermaster/logs/boot-check.wigle.csv 2>/dev/null)" = saved ] && break
-        sleep 5
+    for folder in "${log_folders[@]}"; do
+        as_root "-u $service_user sh -c 'umask 077 && echo saved > $data/$folder/boot-check.log'" || true
     done
-    check "$when: a newly saved log opens to the login" \
-        "$(on_pi cat quartermaster/logs/boot-check.wigle.csv 2>&1)" saved
+    for folder in "${log_folders[@]}"; do
+        for _ in $(seq 1 12); do
+            [ "$(on_pi cat "quartermaster/$folder/boot-check.log" 2>/dev/null)" = saved ] && break
+            sleep 5
+        done
+        check "$when: a newly saved log in $folder opens to the login" \
+            "$(on_pi cat "quartermaster/$folder/boot-check.log" 2>&1)" saved
+    done
     sleep 6
     check "$when: saving a log leaves no warning in the journal" "$(as_root "journalctl -b -q -p warning -o cat \
         --no-pager -u quartermaster-logs.service -u quartermaster-logs-changed.service && echo none")" none
-    as_root "rm -f $data/logs/boot-check.wigle.csv" || true
+    for folder in "${log_folders[@]}"; do
+        as_root "rm -f $data/$folder/boot-check.log" || true
+    done
 }
 
 notice() {
