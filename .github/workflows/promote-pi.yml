@@ -1,0 +1,51 @@
+name: Raspberry Pi full release
+
+# Makes a tested Pi prerelease a full release. It never takes the Latest badge: that stays on the CardputerZero
+# release, because the CardputerZero update links use releases/latest.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Pi release tag, for example pi-v1.2.8'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Check the Pi release
+        run: |
+          [[ $TAG =~ ^pi-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a Pi release tag"; exit 1; }
+          gh release view "$TAG" --json isDraft --jq '.isDraft | not' | grep -qx true ||
+            { echo "::error::$TAG is a draft or has no release"; exit 1; }
+          latest=$(gh release view --json tagName --jq .tagName)
+          [[ -n $latest && $latest != pi-v* ]] || { echo "::error::The Latest release must be a CardputerZero release, not '$latest'"; exit 1; }
+          echo "LATEST=$latest" >> "$GITHUB_ENV"
+      - name: Write the release notes
+        run: |
+          mkdir -p build
+          gh release view "$TAG" --json assets --jq '.assets[].name' > build/assets.txt
+          python3 tools/pi_release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$(git rev-parse HEAD)" \
+            --assets build/assets.txt > build/notes.md
+      - name: Make it a full release
+        run: |
+          gh release edit "$TAG" --prerelease=false --latest=false --title "Quartermaster ${TAG#pi-v} DIY for Raspberry Pi" \
+            --notes-file build/notes.md
+          now=$(gh release view --json tagName --jq .tagName)
+          if [ "$now" != "$LATEST" ]; then
+            gh release edit "$LATEST" --latest
+            echo "::error::$TAG took the Latest badge from $LATEST. It was given back to $LATEST."
+            exit 1
+          fi
+          echo "$TAG is a full release. $LATEST is still the Latest release."
