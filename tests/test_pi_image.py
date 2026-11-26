@@ -891,6 +891,11 @@ def test_the_pi_release_can_be_run_by_hand_and_then_starts_the_image_build():
     target = publish.index('tag_option=(--target "$(git rev-parse HEAD)")')
     assert by_hand < target < pushed < publish.index('gh release create "$TAG" "${tag_option[@]}" --prerelease --latest=false')
     assert publish.count("--verify-tag") == 1 and publish.count("gh release create") == 1
+    notes = publish[publish.index('--notes "'):]
+    for text in ("download \\`quartermaster.rpi-imager-manifest\\` below and open it", "Raspberry Pi Imager 2",
+                 "user \\`pi\\` with password \\`pi\\`", "Change the password with \\`passwd\\`",
+                 "blob/$TAG/docs/diy.md"):
+        assert text in notes, text
     assert 'git fetch --no-tags origin "refs/tags/$TAG"' in publish and "already exists on another commit" in publish
     start = steps[-1]
     assert start["if"] == "github.event_name == 'workflow_dispatch'"
