@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Quartermaster logs rule again after a change in the logs folder
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+LogLevelMax=notice
+ExecStart=/usr/bin/sleep 0.2
+ExecStart=/usr/bin/systemctl --no-block restart quartermaster-logs.service

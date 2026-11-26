@@ -37,15 +37,17 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 
 | Your HAT | Image to choose |
 | --- | --- |
-| 1.44″ HAT (128×128) | Quartermaster for the Waveshare 1.44-inch LCD HAT |
-| 1.3″ HAT (240×240) | Quartermaster for the Waveshare 1.3-inch LCD HAT |
+| 1.44″ HAT (128×128) | Quartermaster 1.2.8 for the Waveshare 1.44-inch LCD HAT (128x128) |
+| 1.3″ HAT (240×240) | Quartermaster 1.2.8 for the Waveshare 1.3-inch LCD HAT (240x240) |
 
 5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
-6. Imager shows its set-up pages. All of them are optional, and Quartermaster works without them: **Skip customisation** goes straight to writing. We recommend two of them.
+6. Imager shows its set-up pages one after another. Go through them with **Next**. You can leave a page empty, except **Localisation**: there **Next** works only after you choose a city. We recommend filling in two pages.
    - **Localisation**: choose your capital city. This sets your Wi-Fi country, so the Pi scans every Wi-Fi channel your country allows.
    - **Wi-Fi**: enter your network if you want to log in to the Pi over your network.
 
-   A username and password set on the **User** page replace the default login below.
+   A username and password set on the **User** page replace the default login below. On the last page, **Remote access**, you can click **Next** without changing anything, because SSH is already on. If you choose public-key authentication there, fill in the **User** page too. Otherwise the login is named after your computer account, has no password and cannot use `sudo`.
+
+   Do not use **Skip customisation** unless you want none of this. It throws away what you entered on every page, your Wi-Fi network included, and writes the card with the default login.
 7. Write the card. With the Pi powered off, seat the HAT on the GPIO header with pin 1 lined up, and plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
 8. Put the card in the Pi and power it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu appears on the HAT.
 

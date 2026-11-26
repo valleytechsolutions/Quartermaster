@@ -260,7 +260,7 @@ ln -sfn "$data" "$mnt$login_home/quartermaster"
 in_chroot chown -h "$login_user:" "$login_home/quartermaster"
 install -D -m 644 "$here/packaging/image/first_login.py" "$mnt/usr/local/lib/quartermaster-image/first_login.py"
 for unit in quartermaster-first-login.service quartermaster-ssh-keys.service quartermaster-logs.path \
-            quartermaster-logs.service; do
+            quartermaster-logs-changed.service quartermaster-logs.service; do
     install -D -m 644 "$here/packaging/image/$unit" "$mnt/etc/systemd/system/$unit"
 done
 install -D -m 644 "$here/packaging/image/userconfig-needs-userconf.conf" \
@@ -471,6 +471,12 @@ check "start order was examined" "$([ "$order_status" -le 1 ] && ! grep -qi 'ini
     echo "no: $(head -n 3 <<< "$order" | tr '\n' ' ')")" yes
 check "start order has no cycle" "$(grep -i -A 3 'ordering cycle' <<< "$order" | tr '\n' ' ')" ""
 check "systemd accepts the Quartermaster units" "$(grep -i quartermaster <<< "$order" | tr '\n' ' ')" ""
+missing=''
+while read -r program; do
+    in_chroot test -x "$program" < /dev/null || missing+=" $program"
+done < <(sed -n 's/^Exec[A-Za-z]*=[-@:+!]*\([^ ]*\).*/\1/p' "$mnt"/etc/systemd/system/quartermaster*.service \
+    "$mnt"/usr/lib/systemd/system/quartermaster*.service | sort -u)
+check "every program the Quartermaster units start is in the image" "${missing# }" ""
 echo "ok    Imager customisation: $init_format"
 echo "ok    root file system: $(df -BM --output=used,avail "$mnt" | tail -n 1 | xargs | tr ' ' '/') used/free"
 

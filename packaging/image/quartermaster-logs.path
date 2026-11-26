@@ -4,6 +4,7 @@ Wants=quartermaster-logs.service
 
 [Path]
 PathChanged=/var/lib/quartermaster/quartermaster/logs
+Unit=quartermaster-logs-changed.service
 
 [Install]
 WantedBy=multi-user.target

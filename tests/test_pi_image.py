@@ -457,6 +457,34 @@ def test_a_log_saved_while_nothing_watched_or_in_a_burst_still_opens_to_the_grou
     assert "quartermaster-logs.path" in shell_list(script, "units") and "quartermaster-logs.service" in script
 
 
+def test_the_folder_is_watched_again_before_the_logs_rule_takes_its_last_look():
+    path = settings((IMAGE / "quartermaster-logs.path").read_text())
+    assert path["Unit"] == ["quartermaster-logs-changed.service"]
+    changed = settings((IMAGE / "quartermaster-logs-changed.service").read_text())
+    assert changed["Type"] == ["oneshot"] and changed["StartLimitIntervalSec"] == ["0"]
+    assert changed["ExecStart"] == ["/usr/bin/sleep 0.2",
+                                    "/usr/bin/systemctl --no-block restart quartermaster-logs.service"]
+    assert "User" not in changed and "WantedBy" not in changed and "RemainAfterExit" not in changed
+    service = settings((IMAGE / "quartermaster-logs.service").read_text())
+    pause = float(service["ExecStart"][1].split()[-1])
+    assert pause >= 5 * float(changed["ExecStart"][0].split()[-1])
+    assert changed["LogLevelMax"] == service["LogLevelMax"] == ["notice"]
+    script = SCRIPT.read_text()
+    assert "quartermaster-logs-changed.service quartermaster-logs.service; do" in script
+    assert "quartermaster-logs-changed.service" not in shell_list(script, "units")
+
+
+def test_the_image_check_finds_every_program_the_units_start():
+    script = SCRIPT.read_text()
+    pattern = re.search(r"done < <\(sed -n '([^']+)' ", script).group(1)
+    assert 'in_chroot test -x "$program" < /dev/null || missing+=" $program"' in script
+    units = sorted(IMAGE.glob("quartermaster*.service")) + sorted((ROOT / "packaging").glob("quartermaster*.service"))
+    assert len(units) == 7
+    found = subprocess.run(["sed", "-n", pattern, *map(str, units)], capture_output=True, text=True, check=True)
+    assert set(found.stdout.split()) == {"/usr/bin/python3", "/usr/bin/quartermaster", "/usr/bin/find",
+                                         "/usr/bin/sleep", "/usr/bin/ssh-keygen", "/usr/bin/systemctl"}
+
+
 @pytest.mark.skipif(not shutil.which("find"), reason="needs find")
 def test_the_logs_rule_opens_new_logs_to_the_group_and_then_changes_nothing(tmp_path):
     service = settings((IMAGE / "quartermaster-logs.service").read_text())
@@ -533,14 +561,22 @@ def test_the_first_start_test_checks_the_names_the_image_really_uses():
         assert name in script
     assert "-machine raspi3b" in script and "-no-reboot" in script
     assert 'hostfwd=tcp:127.0.0.1:$port-:22' in script and "0.0.0.0" not in script
-    assert script.count("\ntake_boot_files\n") == 2 and "attach --read-only" in script
+    assert script.count("\ntake_boot_files\n") == 2 and "partscan" not in script
+    assert 'mcopy -n -i "$disk@@$(partition 1)" "::$file" "$work/$file"' in script
+    assert (IMAGE / "quartermaster.txt").read_text().splitlines()[-1] == "display=@HAT@"
+    assert "::quartermaster.txt" in script and "sed -n 's/^display=//p'" in script
+    assert '"Cannot open %s display or controls: %s"' in (ROOT / "quartermaster" / "__main__.py").read_text()
+    assert 'grep -c "^Cannot open $hat display or controls: "' in script
+    assert "grep -q 'Permission denied'" in script and "<<< 'exit 0'" in script
+    assert script.count('"$(refused ') == 3 and "&& echo open || echo refused" not in script
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
 def test_the_first_start_test_parses_and_refuses_bad_arguments(tmp_path):
     subprocess.run(["bash", "-n", str(BOOT)], check=True)
-    result = subprocess.run(["bash", str(BOOT), "--wat"], capture_output=True, text=True)
-    assert result.returncode == 2 and "--image build/images/" in result.stderr
+    for args in (["--wat"], ["--image"], ["--image", str(BOOT), "--wait"]):
+        result = subprocess.run(["bash", str(BOOT), *args], capture_output=True, text=True)
+        assert result.returncode == 2 and "--image build/images/" in result.stderr, args
     for args, message in (([], "no image at ''"), (["--image", str(tmp_path / "none.img.xz")], "no image at"),
                           (["--image", str(BOOT), "--port", "ssh"], "whole numbers"),
                           (["--image", str(BOOT), "--wait", "1.5"], "whole numbers")):
@@ -961,8 +997,13 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
                  "quartermaster@%s.service" % SERVICE_USER, "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
                  "built-in `%s` account" % SERVICE_USER,
                  "8 GB or more", "switched on from the first start", "does not choose a country for you",
-                 "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login"):
+                 "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login",
+                 "there **Next** works only after you choose a city", "It throws away what you entered on every page",
+                 "On the last page, **Remote access**", "fill in the **User** page too"):
         assert text in section, text
+    for hat in imager_os_list.HATS:
+        listed = imager_os_list.entry(meta(hat, version), "owner/repo", "pi-v" + version)["name"]
+        assert "| %s |" % listed in section, listed
 
 
 def test_every_pi_release_link_in_the_guide_and_the_readme_is_for_this_version():

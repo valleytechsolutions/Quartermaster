@@ -6,10 +6,11 @@
 # Options: --imager (first set the card up the way Raspberry Pi Imager does: its own user, password, name and
 # Wi-Fi country), --work <dir> (default: a temporary folder), --port <local port for SSH, default 5555>,
 # --wait <minutes to wait for a start, default 30>.
-# Needs sudo for the loop device, and qemu-system-aarch64, qemu-img, sshpass, xz and openssl.
-# The emulated Pi has no HAT, no Wi-Fi and no Bluetooth, so the app itself cannot run there. What is checked: the
-# card starts, grows to the card size, takes the login (the default one or Imager's), has SSH on, opens newly saved
-# logs to the login, and still does all of that after a restart.
+# Needs qemu-system-aarch64, qemu-img, mtools, partx, sshpass, xz and openssl. Root is not needed.
+# The emulated Pi has no HAT, no Wi-Fi and no Bluetooth, so the app stops as soon as it looks for its screen. What is
+# checked: the card starts, grows to the card size, takes the login (the default one or Imager's), has SSH on, starts
+# the app for the HAT named in quartermaster.txt, opens newly saved logs to the login, and still does all of that
+# after a restart.
 # The emulator restarts the moment the Pi's watchdog is switched on, so the emulated Pi is started without one.
 set -euo pipefail
 
@@ -21,36 +22,45 @@ imager_user=kal-test imager_password=Imager-set-1 imager_name=qm-imager imager_c
 
 die() { echo "boot_image: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
     case $1 in
-        --image) image=${2:-}; shift 2 ;;
-        --work) work=${2:-}; shift 2 ;;
-        --port) port=${2:-}; shift 2 ;;
-        --wait) wait_minutes=${2:-}; shift 2 ;;
-        --imager) imager=yes; shift ;;
+        --imager) imager=yes; shift; continue ;;
+        --image|--work|--port|--wait) [ $# -ge 2 ] || usage ;;
         *) usage ;;
     esac
+    case $1 in
+        --image) image=$2 ;;
+        --work) work=$2 ;;
+        --port) port=$2 ;;
+        --wait) wait_minutes=$2 ;;
+    esac
+    shift 2
 done
 
 [ -f "$image" ] || die "no image at '$image'"
 [[ $port =~ ^[0-9]+$ && $wait_minutes =~ ^[0-9]+$ ]] || die "--port and --wait take whole numbers"
-for tool in sudo losetup mount umount qemu-system-aarch64 qemu-img sshpass ssh xz openssl timeout; do
+for tool in qemu-system-aarch64 qemu-img mcopy partx sshpass ssh xz openssl timeout; do
     command -v "$tool" >/dev/null || die "missing $tool"
 done
+export MTOOLS_SKIP_CHECK=1
 
 made=''
 if [ -z "$work" ]; then
     work=$(mktemp -d)
     made=$work
 fi
-mkdir -p "$work/boot"
+mkdir -p "$work"
 work=$(cd "$work" && pwd)
 disk=$work/card.img
 loop='' mounted='' failed=0 booted=no starts=0 console=$work/console-0.log
 
-running() { [ -f "$work/qemu.pid" ] && kill -0 "$(cat "$work/qemu.pid")" 2>/dev/null; }
+running() {
+    local pid
+    pid=$(cat "$work/qemu.pid" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+partition() { echo $(($(partx -g -r -o START -n "$1" "$disk") * 512)); }
 halted() { grep -aqE 'reboot: (Power down|System halted|Power off not available)' "$console" 2>/dev/null; }
 
 stop_emulator() {
@@ -60,7 +70,7 @@ stop_emulator() {
         sleep 1
     done
     if running; then
-        kill "$(cat "$work/qemu.pid")" 2>/dev/null || true
+        kill "$(cat "$work/qemu.pid" 2>/dev/null)" 2>/dev/null || true
         for _ in $(seq 1 20); do
             running || break
             sleep 0.5
@@ -70,12 +80,10 @@ stop_emulator() {
 }
 
 show_card_journal() {
-    local part
-    loop=$(sudo losetup --find --show --partscan --read-only "$disk") || return 0
-    sudo udevadm settle 2>/dev/null || true
-    part=${loop}p2
+    command -v sudo >/dev/null || return 0
+    loop=$(sudo losetup --find --show --read-only --offset "$(partition 2)" "$disk") || return 0
     mkdir -p "$work/root"
-    if sudo mount -o ro,noload "$part" "$work/root" 2>/dev/null; then
+    if sudo mount -o ro,noload "$loop" "$work/root" 2>/dev/null; then
         mounted=$work/root
         log "The card's own journal"
         sudo journalctl --no-pager -o short-monotonic -D "$work/root/var/log/journal" 2>/dev/null | tail -n 200 || true
@@ -98,26 +106,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-attach() {
-    loop=$(sudo losetup --find --show --partscan "$@" "$disk")
-    sudo udevadm settle 2>/dev/null || true
-    for _ in 1 2 3 4 5; do [ -b "${loop}p1" ] && break; sleep 1; done
-}
-
-detach() {
-    [ -z "$mounted" ] || sudo umount "$mounted"
-    mounted=''
-    [ -z "$loop" ] || sudo losetup -d "$loop"
-    loop=''
-}
-
 take_boot_files() {
     local file
     for file in kernel8.img initramfs8 bcm2710-rpi-3-b.dtb cmdline.txt; do
-        [ -f "$work/boot/$file" ] || die "the card has no $file"
+        mcopy -n -i "$disk@@$(partition 1)" "::$file" "$work/$file" || die "the card has no $file"
     done
-    cp "$work/boot/kernel8.img" "$work/boot/initramfs8" "$work/boot/bcm2710-rpi-3-b.dtb" "$work/"
-    cmdline=$(tr -d '\n' < "$work/boot/cmdline.txt" | sed -E 's/(^| )console=[^ ]*//g')
+    cmdline=$(tr -d '\n' < "$work/cmdline.txt" | sed -E 's/(^| )console=[^ ]*//g')
     cmdline="console=tty1 console=ttyAMA0,115200 console=ttyAMA1,115200 ${cmdline# } dwc_otg.lpm_enable=0"
     cmdline="$cmdline earlycon=pl011,mmio32,0x3f201000"
     cmdline="$cmdline initcall_blacklist=bcm2835_wdt_driver_init module_blacklist=bcm2835_wdt"
@@ -129,13 +123,10 @@ case $image in
     *) cp --sparse=always "$image" "$disk" ;;
 esac
 
-attach
-sudo mount -o "uid=$(id -u),gid=$(id -g)" "${loop}p1" "$work/boot"
-mounted=$work/boot
 if [ "$imager" = yes ]; then
     log "Setting the card up as Raspberry Pi Imager does: user $imager_user, name $imager_name, country $imager_country"
     user=$imager_user password=$imager_password name=$imager_name
-    cat > "$work/boot/user-data" <<EOF
+    cat > "$work/user-data" <<EOF
 #cloud-config
 manage_resolv_conf: false
 
@@ -169,12 +160,15 @@ runcmd:
   - [ rfkill, unblock, wifi ]
   - [ sh, -c, "for f in /var/lib/systemd/rfkill/*:wlan; do echo 0 > \"\$f\"; done" ]
 EOF
-    printf '%s\n' "$(tr -d '\n' < "$work/boot/cmdline.txt") cfg80211.ieee80211_regdom=$imager_country" \
-        > "$work/cmdline.txt"
-    cp "$work/cmdline.txt" "$work/boot/cmdline.txt"
+    mcopy -n -i "$disk@@$(partition 1)" ::cmdline.txt "$work/cmdline.txt"
+    printf '%s\n' "$(tr -d '\n' < "$work/cmdline.txt") cfg80211.ieee80211_regdom=$imager_country" \
+        > "$work/cmdline.new"
+    mcopy -o -i "$disk@@$(partition 1)" "$work/user-data" ::user-data
+    mcopy -o -i "$disk@@$(partition 1)" "$work/cmdline.new" ::cmdline.txt
 fi
 take_boot_files
-detach
+hat=$(mcopy -n -i "$disk@@$(partition 1)" ::quartermaster.txt - | tr -d '\r' | sed -n 's/^display=//p' | tail -n 1)
+[ -n "$hat" ] || die "the card's quartermaster.txt names no HAT"
 qemu-img resize -q -f raw "$disk" 8G
 
 start_emulator() {
@@ -216,9 +210,9 @@ wait_for_login() {
 }
 
 settle() {
-    local began=$SECONDS state
+    local began=$SECONDS state=''
     wait_for_login
-    while [ $((SECONDS - began)) -lt $((wait_minutes * 60)) ]; do
+    while [ $((SECONDS - began)) -lt $((wait_minutes * 60 + 300)) ]; do
         state=$(on_pi 'cloud-init status 2>&1 | head -n 1; systemctl is-system-running 2>&1' 2>/dev/null |
             xargs) || true
         case $state in
@@ -239,7 +233,7 @@ check() {
 }
 
 checks() {
-    local when=$1 unit
+    local when=$1 unit app
     check "$when: SSH login" "$(on_pi id -un)" "$user"
     check "$when: cloud-init" "$(on_pi 'cloud-init status' | head -n 1)" "status: done"
     check "$when: name" "$(on_pi hostname)" "$name"
@@ -257,16 +251,40 @@ checks() {
         "$(on_pi 'test -e /var/lib/quartermaster-image/first-login.done && echo yes')" yes
     check "$when: failed Quartermaster set-up units" "$(on_pi 'systemctl --failed --plain --no-legend' |
         awk '{print $1}' | grep '^quartermaster-' | xargs)" ""
+    app=$(as_root "journalctl -b -u quartermaster@$service_user.service -o cat --no-pager" 2>/dev/null |
+        grep '^Cannot open' | tail -n 1) || true
+    check "$when: the app is started for the $hat HAT" \
+        "$(grep -c "^Cannot open $hat display or controls: " <<< "$app" || true)" 1
+    check "$when: the app misses none of its software" \
+        "$(grep -ciE 'no module named|cannot import|shared object' <<< "$app" || true)" 0
     as_root "-u $service_user sh -c 'umask 077 && echo saved > $data/logs/boot-check.wigle.csv'" || true
-    sleep 8
+    for _ in $(seq 1 12); do
+        [ "$(on_pi cat quartermaster/logs/boot-check.wigle.csv 2>/dev/null)" = saved ] && break
+        sleep 5
+    done
     check "$when: a newly saved log opens to the login" \
         "$(on_pi cat quartermaster/logs/boot-check.wigle.csv 2>&1)" saved
     as_root "rm -f $data/logs/boot-check.wigle.csv" || true
 }
 
 notice() {
-    SSHPASS=$2 timeout 120 sshpass -e ssh -tt "${ssh_options[@]}" "$1@127.0.0.1" <<< exit 2>&1 |
-        grep -c 'still has the default password' || true
+    local text
+    if text=$(SSHPASS=$2 timeout 120 sshpass -e ssh -tt "${ssh_options[@]}" "$1@127.0.0.1" <<< 'exit 0' 2>&1); then
+        grep -c 'still has the default password' <<< "$text" || true
+    else
+        echo "no login"
+    fi
+}
+
+refused() {
+    local answer
+    if answer=$(as_login "$1" "$2" true 2>&1); then
+        echo open
+    elif grep -q 'Permission denied' <<< "$answer"; then
+        echo refused
+    else
+        echo "no answer: $(head -n 1 <<< "$answer")"
+    fi
 }
 
 report() {
@@ -274,7 +292,9 @@ report() {
     on_pi 'systemctl --failed --plain --no-legend; systemd-analyze 2>&1 | head -n 2
         cloud-init status --long 2>&1 | head -n 12; cat /proc/cmdline; ip -brief address' || true
     on_pi "systemctl status --no-pager -n 12 quartermaster@$service_user.service quartermaster-first-login.service \
-        quartermaster-logs.service quartermaster-boot-config.service 2>&1 | cut -c1-200" || true
+        quartermaster-logs.service quartermaster-logs-changed.service quartermaster-boot-config.service 2>&1 |
+        cut -c1-200" || true
+    as_root "journalctl -b -u quartermaster@$service_user.service -o cat --no-pager -n 4 2>&1 | cut -c1-220" || true
     as_root "journalctl -b --no-pager -p warning -n 60 2>&1 | cut -c1-220" || true
 }
 
@@ -285,18 +305,14 @@ report "First start"
 checks "first start"
 
 if [ "$imager" = yes ]; then
-    check "the default login is switched off" \
-        "$(as_login pi pi true >/dev/null 2>&1 && echo open || echo refused)" refused
+    check "the default login is switched off" "$(refused pi pi)" refused
     check "no default password notice" "$(notice "$user" "$password")" 0
-    check "the Wi-Fi country reached the kernel command line" \
-        "$(on_pi "grep -c 'cfg80211.ieee80211_regdom=$imager_country' /proc/cmdline")" 1
 else
     check "the login says the password is still the default" "$(notice "$user" "$password")" 1
     as_root "sh -c 'echo $user:Changed-by-test-1 | chpasswd'"
     password=Changed-by-test-1
     check "the new password works" "$(on_pi id -un)" "$user"
-    check "the old password is refused" \
-        "$(as_login "$user" pi true >/dev/null 2>&1 && echo open || echo refused)" refused
+    check "the old password is refused" "$(refused "$user" pi)" refused
     check "no notice after the password change" "$(notice "$user" "$password")" 0
 fi
 
@@ -305,17 +321,19 @@ before=$(on_pi cat /proc/sys/kernel/random/boot_id) || true
 as_root "systemctl poweroff" >/dev/null 2>&1 || true
 stop_emulator 600
 check "the first start switches off by itself" "$(halted && echo yes || echo no)" yes
-attach --read-only
-sudo mount -o ro "${loop}p1" "$work/boot"
-mounted=$work/boot
 take_boot_files
-detach
 start_emulator
 settle
+after=$(on_pi cat /proc/sys/kernel/random/boot_id) || true
 check "second start is a new start" \
-    "$([ "$(on_pi cat /proc/sys/kernel/random/boot_id)" != "$before" ] && echo yes || echo no)" yes
+    "$([ -n "$before" ] && [ -n "$after" ] && [ "$after" != "$before" ] && echo yes || echo no)" yes
 report "Second start"
 checks "second start"
+if [ "$imager" = yes ]; then
+    check "the default login is still switched off" "$(refused pi pi)" refused
+    check "the Wi-Fi country set in Imager is still on the card after the first start" \
+        "$(on_pi "grep -c 'cfg80211.ieee80211_regdom=$imager_country' /proc/cmdline")" 1
+fi
 check "first login is not set up again" \
     "$(on_pi systemctl show -p ConditionResult --value quartermaster-first-login.service)" no
 

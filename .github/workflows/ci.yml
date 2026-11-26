@@ -30,7 +30,7 @@ jobs:
       - name: Install the emulator
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-utils sshpass xz-utils
+          sudo apt-get install -y qemu-system-arm qemu-utils mtools sshpass xz-utils
       - name: Fetch a practice image
         run: gh run download 45787783091 --name image-st7735-128 --dir build/boot
       - name: Start the image and check its first start
