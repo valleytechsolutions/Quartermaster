@@ -33,29 +33,27 @@ jobs:
               if sudo test -d "$f"; then sudo ls -la "$f"; else sudo cat "$f" 2>&1 || true; fi
             done
           }
-          show var/lib/NetworkManager var/lib/NetworkManager/NetworkManager.state etc/NetworkManager \
-            etc/NetworkManager/NetworkManager.conf usr/lib/NetworkManager/conf.d usr/lib/NetworkManager/conf.d/* \
-            etc/modprobe.d etc/modprobe.d/* usr/lib/modprobe.d etc/profile.d etc/profile.d/wifi-check.sh \
-            etc/profile.d/sshpwd.sh etc/modules-load.d usr/lib/modules
-          echo "=================== rfkill mentions"
-          sudo grep -rn -i "rfkill" etc/modprobe.d usr/lib/modprobe.d etc/modules-load.d usr/lib/modules-load.d \
-            etc/udev/rules.d usr/lib/udev/rules.d etc/profile.d usr/lib/raspberrypi-sys-mods boot/firmware/cmdline.txt \
-            boot/firmware/config.txt etc/NetworkManager usr/lib/NetworkManager usr/lib/systemd/system \
-            etc/systemd/system 2>/dev/null | cut -c1-220 || true
-          echo "=================== rfkill built in"
-          sudo grep -h "rfkill\|cfg80211\|brcmfmac" usr/lib/modules/*/modules.builtin | sort | uniq -c || true
-          sudo find usr/lib/modules -name 'rfkill*.ko*' | head -5 || true
-          echo "=================== saved rfkill states"
-          for f in var/lib/systemd/rfkill/*; do echo "$f: $(sudo cat "$f")"; done
-          echo "=================== raspi-config wifi country"
-          sudo grep -n "^do_wifi_country\|^get_wifi_country\|^do_wifi_ssid_passphrase\|^do_net_names" -A 60 usr/bin/raspi-config | cut -c1-200 | head -260 || true
-          echo "=================== imager_custom"
-          sudo cat usr/lib/raspberrypi-sys-mods/imager_custom || true
-          echo "=================== regulatory"
-          sudo ls -la usr/lib/firmware/regulatory.db* usr/lib/crda 2>&1 | head || true
-          sudo grep -rn "ccode\|regrev" usr/lib/firmware/brcm/brcmfmac43430-sdio.txt usr/lib/firmware/brcm/brcmfmac43436-sdio.txt \
-            usr/lib/firmware/brcm/brcmfmac43455-sdio.txt usr/lib/firmware/cypress/*.txt 2>/dev/null | head -20 || true
-          sudo ls -la usr/lib/firmware/brcm | head -60 || true
+          echo "=================== cc_ssh enable_ssh"
+          sudo sed -n '225,290p' usr/lib/python3/dist-packages/cloudinit/config/cc_ssh.py
+          echo "=================== cc_set_passwords ssh_pwauth"
+          sudo grep -n "ssh_pwauth\|def handle_ssh_pwauth" -A 6 usr/lib/python3/dist-packages/cloudinit/config/cc_set_passwords.py | cut -c1-200 | head -120 || true
+          echo "=================== who owns rfkill_default.conf"
+          sudo grep -l "rfkill_default" var/lib/dpkg/info/*.list var/lib/dpkg/info/*.conffiles var/lib/dpkg/info/*.postinst 2>/dev/null || true
+          sudo grep -rn "rfkill" var/lib/dpkg/info/raspberrypi-sys-mods.* 2>/dev/null | cut -c1-200 | head -20 || true
+          echo "=================== brcm country defaults"
+          sudo sh -c 'grep -n "ccode\|regrev" usr/lib/firmware/brcm/*.txt usr/lib/firmware/cypress/*.txt 2>/dev/null' | cut -c1-200 | head -60 || true
+          sudo sh -c 'ls usr/lib/firmware/brcm/ | grep -i "4345\|43455"' || true
+          echo "=================== kmod and iw"
+          sudo sh -c 'ls -la usr/bin/kmod usr/sbin/modprobe usr/sbin/iw usr/sbin/rfkill 2>&1' || true
+          sudo grep -n "Version" -m1 var/lib/dpkg/info/../status >/dev/null 2>&1 || true
+          sudo sh -c "grep -A 8 '^Package: kmod$' var/lib/dpkg/status | grep '^Version'" || true
+          sudo sh -c "grep -A 8 '^Package: network-manager$' var/lib/dpkg/status | grep '^Version'" || true
+          echo "=================== netplan and NetworkManager dirs"
+          show etc/netplan usr/lib/netplan etc/NetworkManager/conf.d etc/NetworkManager/system-connections
+          echo "=================== update-motd and pam"
+          sudo grep -n "motd" etc/pam.d/sshd etc/pam.d/login | cut -c1-200 || true
+          echo "=================== user-data seed"
+          show boot/firmware/user-data boot/firmware/network-config boot/firmware/meta-data
 
   test:
     runs-on: ubuntu-24.04
