@@ -56,7 +56,7 @@ A Raspberry Pi with a 40-pin header can run Quartermaster with either of Raspyja
 Choose the 1.44″ 128×128 ST7735S or the 1.3″ 240×240 ST7789. Both have a five-way joystick and three buttons.
 The Pi package includes a native square dashboard, a joystick keyboard and an optional start-at-boot service.
 The easiest start is a ready SD card image for your HAT: flash it with Raspberry Pi Imager and the Pi boots straight into Quartermaster.
-Follow the [DIY build guide](docs/diy.md) for the parts, the ready images, a manual Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer and checksum](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.5).
+Follow the [DIY build guide](docs/diy.md) for the parts, the ready images, a manual Raspberry Pi OS setup, and first-drive checks. [Download the Pi installer, the ready images and the checksums](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.8).
 
 ### From the CardputerZero AppStore
 

@@ -3,6 +3,7 @@
 ## 1.2.8
 
 - New: Quartermaster also runs on a Raspberry Pi with either Waveshare joystick screen that Raspyjack uses, the 1.44 inch and the 1.3 inch. It has its own package, quartermaster-pi, and a build guide in docs/diy.md.
+- New: ready SD card images for both screens. Flash the one for your screen with Raspberry Pi Imager and the Pi starts Quartermaster by itself. The login is user pi with password pi, and SSH is on. Change the password with passwd after your first login. The steps are in docs/diy.md.
 - This version also has everything from 1.2.6 (Power guard) and 1.2.7 (All adapters listen) below.
 
 ## 1.2.7

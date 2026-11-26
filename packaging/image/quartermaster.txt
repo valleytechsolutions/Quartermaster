@@ -1,7 +1,8 @@
-# Quartermaster display setting.
-# Keep the line that matches your Waveshare HAT, save this file and put the card back in the Pi.
+# Quartermaster display setting. Which Waveshare HAT is on this Pi?
 #
-#   1.44 inch HAT (128x128):  display=st7735-128
-#   1.3 inch HAT (240x240):   display=st7789-240
+#   1.44 inch HAT (128x128):  st7735-128
+#   1.3 inch HAT (240x240):   st7789-240
 #
+# Put the name of your HAT after display= on the last line.
+# Then save this file and put the card back in the Pi.
 display=@HAT@

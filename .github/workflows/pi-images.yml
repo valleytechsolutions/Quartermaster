@@ -11,13 +11,17 @@ on:
         description: Pi release to rebuild the images for, like pi-v1.2.8 (empty for the newest)
         required: false
         default: ''
+      practice:
+        description: Practice run. Build both images from this branch and publish nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   actions: read
 
 concurrency:
-  group: pi-images
+  group: pi-images${{ inputs.practice && '-practice' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -31,10 +35,15 @@ jobs:
       EVENT: ${{ github.event_name }}
       PUSHED: ${{ github.ref_name }}
       REQUESTED: ${{ inputs.tag }}
+      PRACTICE: ${{ inputs.practice }}
     steps:
       - name: Pick the Pi release
         id: pick
         run: |
+          if [ "$PRACTICE" = true ]; then
+            echo "Practice run: the images are built from this branch and nothing is published."
+            exit 0
+          fi
           if [ "$EVENT" = push ]; then
             tag=$PUSHED
           elif [ -n "$REQUESTED" ]; then
@@ -60,29 +69,43 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.release.outputs.tag }}
       HAT: ${{ matrix.hat }}
+      PRACTICE: ${{ inputs.practice }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
       - name: Install the image tools
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support xz-utils e2fsprogs fdisk
           test -e /proc/sys/fs/binfmt_misc/qemu-arm
+      - name: Build the Pi package from this branch
+        if: inputs.practice
+        run: |
+          python3 tools/build_deb.py --target pi --out build/pi
+          version=$(python3 -c "import json; print(json.load(open('app-builder.json'))['version'])")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Wait for the Pi package
+        if: ${{ !inputs.practice }}
         run: |
           mkdir -p build/pi
           version=${TAG#pi-v}
           for attempt in $(seq 1 40); do
             if gh release download "$TAG" --dir build/pi --clobber \
-                --pattern "quartermaster-pi_${version}_all.deb" --pattern SHA256SUMS; then
+                --pattern "quartermaster-pi_${version}_all.deb" --pattern SHA256SUMS &&
+                [ -s "build/pi/quartermaster-pi_${version}_all.deb" ] &&
+                (cd build/pi && sha256sum --check --ignore-missing --strict SHA256SUMS); then
               break
             fi
-            [ "$attempt" -lt 40 ] || { echo "::error::$TAG has no Pi package"; exit 1; }
+            [ "$attempt" -lt 40 ] || { echo "::error::$TAG has no complete Pi package"; exit 1; }
             sleep 30
           done
-          cd build/pi
-          sha256sum --check --ignore-missing --strict SHA256SUMS
-          echo "DEB=build/pi/quartermaster-pi_${version}_all.deb" >> "$GITHUB_ENV"
-          echo "IMAGE=quartermaster-pi-${version}-${HAT}.img.xz" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Name the package and the image
+        run: |
+          test -f "build/pi/quartermaster-pi_${VERSION}_all.deb"
+          echo "DEB=build/pi/quartermaster-pi_${VERSION}_all.deb" >> "$GITHUB_ENV"
+          echo "IMAGE=quartermaster-pi-${VERSION}-${HAT}.img.xz" >> "$GITHUB_ENV"
       - name: Build the image
         run: |
           sudo tools/build_image.sh --hat "$HAT" --deb "$DEB" --out build/images
@@ -106,8 +129,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  boot:
     needs: [release, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - hat: st7735-128
+            setup: default login
+            options: ''
+          - hat: st7789-240
+            setup: set up as Raspberry Pi Imager does
+            options: --imager
+    name: First start of the ${{ matrix.hat }} image, ${{ matrix.setup }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HAT: ${{ matrix.hat }}
+      OPTIONS: ${{ matrix.options }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
+      - name: Install the emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-utils mtools sshpass xz-utils
+      - name: Fetch the image
+        run: gh run download "$GITHUB_RUN_ID" --name "image-$HAT" --dir build/boot
+      - name: Start the image in an emulated Pi and log in over SSH
+        run: |
+          # shellcheck disable=SC2086
+          tools/boot_image.sh --image build/boot/*.img.xz --hat "$HAT" $OPTIONS || {
+            echo "::warning::The first try failed. Trying once more with a fresh copy of the image."
+            tools/boot_image.sh --image build/boot/*.img.xz --hat "$HAT" $OPTIONS
+          }
+
+  publish:
+    needs: [release, image, boot]
+    if: ${{ !inputs.practice }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -115,6 +177,8 @@ jobs:
       TAG: ${{ needs.release.outputs.tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.release.outputs.tag && format('refs/tags/{0}', needs.release.outputs.tag) || '' }}
       - name: Collect the images
         run: |
           gh run download "$GITHUB_RUN_ID" --pattern 'image-*' --dir build/download
@@ -130,7 +194,10 @@ jobs:
         run: |
           python3 tools/imager_os_list.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" build/release/*.json \
             > build/release/quartermaster-imager.json
+          python3 tools/imager_os_list.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --manifest \
+            > build/release/quartermaster.rpi-imager-manifest
       - name: Publish the images and the Imager list together
         run: |
           cd build/release
-          ../../tools/replace_release_assets.sh "$TAG" *.img.xz *.img.xz.sha256 quartermaster-imager.json
+          ../../tools/replace_release_assets.sh "$TAG" *.img.xz *.img.xz.sha256 quartermaster-imager.json \
+            quartermaster.rpi-imager-manifest

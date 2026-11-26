@@ -107,7 +107,7 @@ def test_pi_installer_contains_both_profiles_and_an_unprivileged_launcher(tmp_pa
     assert (stage / "DEBIAN/conffiles").read_text().strip() == "/etc/quartermaster/display"
     assert (stage / "usr/lib/quartermaster/app/quartermaster/ui/hat.py").is_file()
     unit = (stage / "usr/lib/systemd/system/quartermaster@.service").read_text()
-    assert "User=%I\n" in unit and "ExecStart=/usr/bin/quartermaster\n" in unit
+    assert "User=%i\n" in unit and "%I" not in unit and "ExecStart=/usr/bin/quartermaster\n" in unit
     assert (stage / "usr/share/doc/quartermaster-pi/diy.md").is_file()
     assert (stage / "usr/share/doc/quartermaster-pi/screens/waveshare-preview.png").is_file()
     assert not (stage / "usr/share/APPLaunch").exists()

@@ -1,0 +1,13 @@
+[Unit]
+Description=Make this device's own SSH host keys if it has none yet
+ConditionPathExistsGlob=!/etc/ssh/ssh_host_*_key
+ConditionFileIsExecutable=/usr/bin/ssh-keygen
+After=regenerate_ssh_host_keys.service
+Before=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

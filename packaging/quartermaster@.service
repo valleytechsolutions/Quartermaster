@@ -1,9 +1,9 @@
 [Unit]
-Description=Quartermaster Waveshare handheld for %I
+Description=Quartermaster Waveshare handheld for %i
 After=NetworkManager.service bluetooth.service
 
 [Service]
-User=%I
+User=%i
 ExecStart=/usr/bin/quartermaster
 Restart=on-failure
 RestartSec=5
