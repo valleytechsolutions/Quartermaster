@@ -49,18 +49,18 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 - A username and password set in Raspberry Pi Imager replace the default: `pi` with password `pi` then no longer works. Log in with `ssh <your user>@quartermaster.local`. A hostname set in Imager replaces `quartermaster` too.
 - The Pi needs a network for SSH: set your Wi-Fi in Imager, or plug in an Ethernet cable on a 3B, 3B+ or 4B.
 - Each Pi makes its own SSH host keys on its first start. Your computer asks you to trust the new key the first time you connect.
-- Saved drives are in `~/quartermaster/logs`. Copy them to your computer with `scp "pi@quartermaster.local:quartermaster/logs/*" .`. The real folder is `/var/lib/quartermaster/quartermaster/logs/`. Any user in the `quartermaster` group can read it. Add a user with `sudo usermod -aG quartermaster <user>`.
+- Saved drives are in `~/quartermaster/logs`. Copy them to your computer with `scp "pi@quartermaster.local:quartermaster/logs/*" .`. The real folder is `/var/lib/quartermaster/quartermaster/logs/`. Any user in the `_quartermaster` group can read it. Add a user with `sudo usermod -aG _quartermaster <user>`.
 
 ### Good to know
 
 - **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the `display=` line to `st7735-128` for the 1.44″ HAT or `st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
 - **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it in Imager in step 4, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
-- Quartermaster runs under its own built-in `quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
+- Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
 - If Imager does not offer to customise the OS for the file, set up Wi-Fi later from the Pi with `sudo nmtui`, or use the `quartermaster-imager.json` link from the same release in Imager under **App Options > Content Repository > Use custom URL**. The images then appear in Imager's list with customisation.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates. To update, flash the newest image, or install a newer package as shown below.
 - To start faster, the image does not check for system updates in the background. Run `sudo apt update && sudo apt full-upgrade` when you want them.
 - The first start grows the card's file system to the full size of the card. You do not need to do anything.
-- The app's own log is `sudo journalctl -b -u quartermaster@quartermaster.service`.
+- The app's own log is `sudo journalctl -b -u quartermaster@_quartermaster.service`.
 
 Use the steps below instead if you want to install Quartermaster on a card you already use.
 
@@ -109,5 +109,5 @@ The Pi now opens Quartermaster on the HAT. To launch it manually instead, leave 
 ## Checking a build
 
 - `quartermaster --probe` reports the selected profile and detected adapters and GPS ports. The profile is the configured choice. To verify the panel, look for readable text, correct colors, and all four edges of the menu.
-- If the screen stays blank, check the profile in `/etc/quartermaster/display`, verify `/dev/spidev0.0` exists, and read `journalctl -b -u "quartermaster@$USER.service"`. On a ready image the service is `quartermaster@quartermaster.service`, and `quartermaster.txt` on the boot partition sets the profile at every start. Both HATs use SPI0 CE0. The backlight, display and joystick need access to the Pi's GPIO.
+- If the screen stays blank, check the profile in `/etc/quartermaster/display`, verify `/dev/spidev0.0` exists, and read `journalctl -b -u "quartermaster@$USER.service"`. On a ready image the service is `quartermaster@_quartermaster.service`, and `quartermaster.txt` on the boot partition sets the profile at every start. Both HATs use SPI0 CE0. The backlight, display and joystick need access to the Pi's GPIO.
 - A physical acceptance check for each HAT includes every joystick direction, the center press, K1–K3, a GPS fix, a saved drive and a reboot back to the menu. Frame rendering and simulated I/O tests cover both profiles. Panel orientation, radio reception and runtime on battery require an assembled unit.

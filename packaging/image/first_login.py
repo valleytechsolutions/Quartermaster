@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 DEFAULT_USER = "pi"
-GROUP = "quartermaster"
+GROUP = "_quartermaster"
 DATA = "/var/lib/quartermaster/quartermaster"
 HASH_FILE = "/usr/local/lib/quartermaster-image/default-login"
 STAMP = "/var/lib/quartermaster-image/first-login.done"
@@ -28,13 +28,19 @@ def requested(text):
         return None
     if not isinstance(data, dict):
         return None
-    entries = [data.get("user")]
-    if isinstance(data.get("users"), list):
-        entries += data["users"]
-    for entry in entries:
-        if isinstance(entry, str) and entry != "default":
-            return entry, None
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+    users = data.get("users")
+    if isinstance(users, dict):
+        users = [dict(entry, name=name) if isinstance(entry, dict) else name
+                 for name, entry in users.items() if entry or isinstance(entry, dict)]
+    elif isinstance(users, str):
+        users = [users]
+    for entry in [data.get("user")] + (users if isinstance(users, list) else []):
+        if isinstance(entry, str):
+            names = [name.strip() for name in entry.split(",")]
+            names = [name for name in names if name and name != "default"]
+            if names:
+                return names[0], None
+        elif isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"] != "default":
             found = entry.get("hashed_passwd") or entry.get("passwd")
             return entry["name"], found if isinstance(found, str) and found else None
     return None
@@ -53,10 +59,10 @@ def plan(users, hashes, members, default_hash, wanted, links=(), banner=False):
         locked = stored.startswith("!")
         if user == name and new_hash and new_hash != default_hash:
             steps.append(["usermod", "-p", new_hash, user])
-        elif user == name or len(logins) > 1:
+        elif user == name or user != DEFAULT_USER or len(logins) > 1:
             if not locked:
                 steps.append(["usermod", "-L", user])
-        elif name is None and locked and user == DEFAULT_USER:
+        elif name is None and locked:
             steps.append(["usermod", "-U", user])
     for user in logins:
         if user not in members:

@@ -25,6 +25,7 @@ def load_image_module(name):
 
 boot_config = load_image_module("boot_config")
 first_login = load_image_module("first_login")
+SERVICE_USER = re.search(r"^service_user=(\S+)$", SCRIPT.read_text(), re.M).group(1)
 
 
 def settings(text):
@@ -97,7 +98,7 @@ def test_the_boot_config_unit_runs_before_the_app_and_points_at_the_installed_sc
     unit = settings((IMAGE / "quartermaster-boot-config.service").read_text())
     script = SCRIPT.read_text()
     assert unit["Type"] == ["oneshot"] and unit["WantedBy"] == ["multi-user.target"]
-    assert unit["Before"] == ["quartermaster@quartermaster.service"]
+    assert unit["Before"] == ["quartermaster@%s.service" % SERVICE_USER]
     assert unit["ConditionPathExists"] == [boot_config.BOOT_FILE]
     installed = unit["ExecStart"][0].split()[-1]
     assert unit["ExecStart"] == ["/usr/bin/python3 -I " + installed]
@@ -108,7 +109,7 @@ def test_the_boot_config_unit_runs_before_the_app_and_points_at_the_installed_sc
 def test_the_polkit_rule_only_lets_the_service_user_request_wifi_scans():
     rule = (IMAGE / "50-quartermaster-wifi-scan.rules").read_text()
     assert re.findall(r'action\.id == "([^"]+)"', rule) == ["org.freedesktop.NetworkManager.wifi.scan"]
-    assert re.findall(r'subject\.user == "([^"]+)"', rule) == ["quartermaster"]
+    assert re.findall(r'subject\.user == "([^"]+)"', rule) == [SERVICE_USER]
     assert rule.count("polkit.Result.YES") == 1 and "indexOf" not in rule and "isInGroup" not in rule
 
 
@@ -123,7 +124,7 @@ def test_the_image_script_is_strict_cleans_up_and_keeps_imager_customisation_wor
     assert "useradd --system" not in script and "--shell /usr/sbin/nologin" in script
     assert 'useradd --uid "$service_id"' in script and "radiod.peer_allowed" in script
     for unit in ("quartermaster-radio.socket", "quartermaster-boot-config.service",
-                 "quartermaster@quartermaster.service"):
+                 '"quartermaster@$service_user.service"'):
         assert unit in re.search(r"^units=\(([^)]*)\)", script, re.M).group(1)
     groups = re.search(r"^groups_wanted=\(([^)]*)\)", script, re.M).group(1).split()
     postinst = (ROOT / "packaging" / "postinst").read_text()
@@ -144,14 +145,15 @@ def test_the_image_logs_in_as_pi_with_the_default_password_and_keeps_the_other_a
     script = SCRIPT.read_text()
     assert re.search(r"^login_user=pi login_password=pi login_id=1000 host_name=quartermaster$", script, re.M)
     groups = shell_list(script, "login_groups")
-    assert {"sudo", "adm", "gpio", "spi", "netdev", "quartermaster"} <= set(groups)
+    assert {"sudo", "adm", "gpio", "spi", "netdev", '"$service_user"'} <= set(groups)
+    assert first_login.DEFAULT_USER == "pi"
     assert 'login_hash=$(openssl passwd -6 "$login_password")' in script
     assert 'in_chroot usermod --password "$login_hash" "$login_user"' in script
     assert 'in_chroot usermod --shell /bin/bash "$login_user"' in script
     assert 'die "the first user of the base image is $first_user, not $login_user"' in script
     assert """awk -F: '$2 !~ /^[!*]/ {print $1}' "$mnt/etc/shadow" | xargs)" "$login_user\"""" in script
     assert 'openssl passwd -6 -salt "$salt" "$login_password")" = "$stored"' in script
-    for label in ('"root password locked"', '"quartermaster password locked"', '"quartermaster shell"',
+    for label in ('"root password locked"', '"$service_user password locked"', '"$service_user shell"',
                   '"$login_user in $group"', '"$login_user uid and shell"', '"default login record mode"',
                   '"first start keeps the default login"'):
         assert "check " + label in script, label
@@ -193,7 +195,9 @@ def test_the_image_has_ssh_on_and_never_ships_host_keys():
 def test_the_first_start_never_waits_for_a_user_prompt_but_still_takes_userconf_txt():
     script = SCRIPT.read_text()
     condition = settings((IMAGE / "userconfig-needs-userconf.conf").read_text())
-    assert condition == {"ConditionPathExists": ["|/boot/firmware/userconf.txt", "|/boot/firmware/userconf"]}
+    assert condition == {"ConditionPathExists": ["|/boot/firmware/userconf.txt", "|/boot/firmware/userconf",
+                                                 "|" + first_login.BANNER]}
+    assert 'grep -c \'^ConditionPathExists=|/boot/firmware/userconf\' ' in script
     assert '"$mnt/etc/systemd/system/userconfig.service.d/quartermaster.conf"' in script
     assert 'rm -f "$mnt/etc/ssh/sshd_config.d/rename_user.conf"' in script
     assert 'check "getty@tty1.service" "$(enabled getty@tty1.service)" enabled' in script
@@ -236,6 +240,14 @@ def test_the_first_login_unit_runs_once_after_cloud_init_made_its_users_and_befo
     ("user: kal\n", ("kal", None)),
     ("users:\n- default\n- name: robot\n  hashed_passwd: $6$r$s\n", ("robot", "$6$r$s")),
     ("users:\n- name: [1]\n", None),
+    ("users:\n  kal:\n    lock_passwd: false\n    ssh_authorized_keys: [\"ssh-ed25519 AAAA\"]\n", ("kal", None)),
+    ("users:\n  default: true\n  robot: {passwd: $6$r$s}\n", ("robot", "$6$r$s")),
+    ("users:\n  off: false\n  bare: {}\n", ("bare", None)),
+    ("users: pi\n", ("pi", None)),
+    ("users: \"default, kal\"\n", ("kal", None)),
+    ("users:\n- default,kal\n", ("kal", None)),
+    ("users:\n- name: default\n  lock_passwd: false\n", None),
+    ("users:\n  1: true\n", None),
     ("user: [unclosed\n", None),
     ("- just\n- a list\n", None),
 ])
@@ -245,10 +257,10 @@ def test_the_first_login_reads_the_user_imager_asked_for(text, wanted):
 
 
 PI = {"pi": (1000, "/home/pi", "/bin/bash"), "root": (0, "/root", "/bin/bash"),
-      "quartermaster": (59999, "/var/lib/quartermaster", "/usr/sbin/nologin"),
+      SERVICE_USER: (59999, "/var/lib/quartermaster", "/usr/sbin/nologin"),
       "nobody": (65534, "/nonexistent", "/usr/sbin/nologin")}
 DEFAULT, OWN = "$6$salt$default", "$6$other$own"
-LOCKED = {"root": "*", "quartermaster": "!"}
+LOCKED = {"root": "*", SERVICE_USER: "!"}
 
 
 def login_plan(users, hashes, wanted, members=("pi",), links=("/home/pi/quartermaster",), banner=False):
@@ -265,7 +277,7 @@ def test_the_default_login_stays_when_imager_set_no_user():
 def test_a_user_from_imager_switches_the_default_login_off():
     users = dict(PI, kal=(1001, "/home/kal", "/bin/bash"))
     steps = login_plan(users, {"pi": DEFAULT, "kal": OWN}, ("kal", OWN))
-    assert steps == [["usermod", "-L", "pi"], ["usermod", "-aG", "quartermaster", "kal"],
+    assert steps == [["usermod", "-L", "pi"], ["usermod", "-aG", SERVICE_USER, "kal"],
                      ["ln", "-s", first_login.DATA, "/home/kal/quartermaster"],
                      ["chown", "-h", "kal:", "/home/kal/quartermaster"]]
     assert login_plan(users, {"pi": DEFAULT, "kal": "!"}, ("kal", None))[0] == ["usermod", "-L", "pi"]
@@ -300,12 +312,16 @@ def test_a_login_asked_for_without_a_password_never_keeps_the_default_one():
     assert login_plan(users, {"kal": "!" + DEFAULT}, ("kal", None), **renamed) == []
     assert login_plan(users, {"kal": "!" + DEFAULT}, None, **renamed) == []
     assert login_plan(users, {"kal": DEFAULT}, ("kal", DEFAULT), **renamed) == [["usermod", "-L", "kal"]]
+    assert login_plan(users, {"kal": DEFAULT}, None, **renamed) == [["usermod", "-L", "kal"]]
+    assert login_plan(users, {"kal": DEFAULT}, ("pi", OWN), **renamed) == [["usermod", "-L", "kal"]]
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, first_login.requested("users:\n  pi:\n    shell: /bin/bash\n")) == []
+    assert login_plan(PI, {"pi": "!" + DEFAULT}, first_login.requested("users: pi\n")) == []
 
 
 def test_pi_set_up_in_imager_gets_its_group_and_link_back():
-    assert login_plan(PI, {"pi": OWN}, ("pi", OWN), members=()) == [["usermod", "-aG", "quartermaster", "pi"]]
+    assert login_plan(PI, {"pi": OWN}, ("pi", OWN), members=()) == [["usermod", "-aG", SERVICE_USER, "pi"]]
     assert login_plan(PI, {"pi": DEFAULT}, ("pi", OWN), members=(), links=()) == [
-        ["usermod", "-p", OWN, "pi"], ["usermod", "-aG", "quartermaster", "pi"],
+        ["usermod", "-p", OWN, "pi"], ["usermod", "-aG", SERVICE_USER, "pi"],
         ["ln", "-s", first_login.DATA, "/home/pi/quartermaster"], ["chown", "-h", "pi:", "/home/pi/quartermaster"]]
 
 
@@ -313,7 +329,8 @@ def test_a_login_without_a_home_folder_gets_no_link(tmp_path, monkeypatch):
     home = tmp_path / "home" / "pi"
     home.mkdir(parents=True)
     files = {"/etc/passwd": "pi:x:1000:1000::%s:/bin/bash\nkal:x:1001:1001::%s:/bin/bash\n" % (home, tmp_path / "gone"),
-             "/etc/shadow": "pi:%s:1::::::\nkal:!:1::::::\n" % OWN, "/etc/group": "quartermaster:x:59999:pi,kal\n"}
+             "/etc/shadow": "pi:%s:1::::::\nkal:!:1::::::\n" % OWN,
+             "/etc/group": "%s:x:59999:pi,kal\n" % SERVICE_USER}
     monkeypatch.setattr(first_login, "read", lambda path: files.get(path, ""))
     monkeypatch.setattr(first_login, "BANNER", str(tmp_path / "banner"))
     assert first_login.plan(*first_login.gather()) == [
@@ -367,7 +384,7 @@ def notice(tmp_path, shadow, record=DEFAULT + "\n"):
 @pytest.mark.skipif(not shutil.which("awk"), reason="needs awk")
 def test_the_login_notice_names_only_logins_that_still_have_the_default_password(tmp_path):
     rest = ":20000:0:99999:7:::\n"
-    system = "root:*" + rest + "quartermaster:!" + rest
+    system = "root:*" + rest + SERVICE_USER + ":!" + rest
     assert notice(tmp_path, system + "pi:" + DEFAULT + rest) == \
         "\nThe login pi still has the default password. Type passwd to set your own.\n\n"
     assert notice(tmp_path, system + "pi:!" + DEFAULT + rest) == ""
@@ -398,7 +415,7 @@ def test_pi_reaches_the_logs_through_the_group_and_a_link_in_its_home():
     path = settings((IMAGE / "quartermaster-logs.path").read_text())
     assert path["PathChanged"] == [first_login.DATA + "/logs"] and path["WantedBy"] == ["multi-user.target"]
     service = settings((IMAGE / "quartermaster-logs.service").read_text())
-    assert service["User"] == ["quartermaster"] and service["Type"] == ["oneshot"]
+    assert service["User"] == [SERVICE_USER] and service["Type"] == ["oneshot"]
     command = service["ExecStart"][0].split()
     assert command[:2] == ["/usr/bin/find", first_login.DATA + "/logs"] and command[-5:] == "-exec chmod g+rX {} +".split()
     assert "quartermaster-logs.path" in shell_list(script, "units") and "quartermaster-logs.service" in script
@@ -475,6 +492,39 @@ def test_the_service_account_is_one_the_radio_helper_accepts_and_leaves_room_for
     assert not radiod.peer_allowed(999, 999, members=[999, target])
     assert service_id >= 1000 and service_id + 1 >= 60000
     assert "[UG]ID_MAX" in script and "LAST_[UG]ID" in script and "$((service_id - 1))" in script
+
+
+def test_no_login_can_take_the_name_of_the_account_the_app_runs_as():
+    script = SCRIPT.read_text()
+    assert SERVICE_USER == first_login.GROUP == "_quartermaster"
+    assert not re.fullmatch(r"[a-z][a-z0-9-]*", SERVICE_USER) and re.fullmatch(r"[a-z_][a-z0-9_]*", SERVICE_USER)
+    assert 'groupadd --gid "$service_id" "$service_user"' in script
+    assert 'useradd --uid "$service_id" --gid "$service_user" --home-dir /var/lib/quartermaster' in script
+    assert 'for taken in "$service_user" quartermaster; do' in script
+    for label in ('"$service_user uid and group"', '"the name quartermaster is free for a login"',
+                  '"the logs rule runs as $service_user"', '"the Wi-Fi scan rule is for $service_user"',
+                  '"the boot file is read before the app starts"', '"radio helper accepts $service_user"',
+                  '"systemd accepts the Quartermaster units"'):
+        assert "check " + label in script, label
+    assert not re.search(r"(useradd|groupadd|getent (passwd|group)|runuser -u|id -\w+|shadow_of) quartermaster\b",
+                         script.replace('in "$service_user" quartermaster; do', "").replace(
+                             "in_chroot getent passwd quartermaster; in_chroot getent group quartermaster", ""))
+    unit = (ROOT / "packaging" / "quartermaster@.service").read_text()
+    assert "User=%i\n" in unit and "%I" not in unit
+
+
+@pytest.mark.skipif(not shutil.which("systemd-analyze"), reason="needs systemd-analyze")
+@pytest.mark.parametrize("user", ["_quartermaster", "pi", "kal-pi", "my_user"])
+def test_systemd_takes_the_app_unit_for_any_user_name(tmp_path, user):
+    units = tmp_path / "etc" / "systemd" / "system"
+    units.mkdir(parents=True)
+    shutil.copy(ROOT / "packaging" / "quartermaster@.service", units)
+    result = subprocess.run(["systemd-analyze", "verify", "--man=no", "--root=%s" % tmp_path,
+                             "quartermaster@%s.service" % user], capture_output=True, text=True)
+    report = result.stdout + result.stderr
+    if "nitialize manager" in report:
+        pytest.skip("systemd-analyze cannot run here")
+    assert "Invalid user" not in report and "fatal error" not in report, report
 
 
 def test_the_image_unblocks_wifi_that_raspberry_pi_os_blocks_until_a_country_is_set():
@@ -750,7 +800,8 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     assert easy < manual
     section = guide[easy:manual]
     for text in ("Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
-                 "quartermaster@quartermaster.service", "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
+                 "quartermaster@%s.service" % SERVICE_USER, "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
+                 "built-in `%s` account" % SERVICE_USER,
                  "8 GB or more", "switched on from the first start", "does not choose a country for you",
                  "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login"):
         assert text in section, text
@@ -764,7 +815,7 @@ def test_the_diy_guide_gives_the_default_login_and_says_to_change_the_password()
                  "Change the password right away", "`passwd`", "shared or public Wi-Fi",
                  "reminds you each time you log in",
                  "set in Raspberry Pi Imager replace the default", "`~/quartermaster/logs`", "host keys",
-                 "`sudo usermod -aG quartermaster <user>`"):
+                 "`sudo usermod -aG %s <user>`" % SERVICE_USER):
         assert text in login, text
     assert login.index("user `pi` with password `pi`") < login.index("Change the password right away")
     assert "no password and SSH is off" not in guide

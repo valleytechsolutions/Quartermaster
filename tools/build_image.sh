@@ -16,11 +16,13 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 base_url=${QM_BASE_URL:-https://downloads.raspberrypi.com/raspios_lite_armhf_latest}
 hat='' deb='' base='' out=$here/build/images grow_mb=1536
 service_id=59999
+service_user=_quartermaster
 groups_wanted=(video input render dialout gpio spi i2c bluetooth netdev plugdev audio quartermaster-radio)
-units=(quartermaster-radio.socket quartermaster-boot-config.service quartermaster@quartermaster.service
+units=(quartermaster-radio.socket quartermaster-boot-config.service "quartermaster@$service_user.service"
        quartermaster-first-login.service quartermaster-ssh-keys.service quartermaster-logs.path)
 login_user=pi login_password=pi login_id=1000 host_name=quartermaster
-login_groups=(adm dialout cdrom audio users sudo video games plugdev input gpio spi i2c netdev render quartermaster)
+login_groups=(adm dialout cdrom audio users sudo video games plugdev input gpio spi i2c netdev render
+              "$service_user")
 unneeded=(ModemManager.service triggerhappy.service triggerhappy.socket man-db.timer apt-daily.timer
           apt-daily-upgrade.timer e2scrub_all.timer e2scrub_reap.service)
 kept=(NetworkManager.service bluetooth.service systemd-timesyncd.service rpi-resize.service
@@ -211,20 +213,24 @@ cp "$deb" "$mnt/tmp/quartermaster-pi.deb"
 in_chroot apt-get "${apt_options[@]}" --no-install-recommends install /tmp/quartermaster-pi.deb avahi-daemon
 in_chroot apt-get -y autoremove --purge
 
-log "Setting up the quartermaster service user"
+log "Setting up the $service_user service account"
 in_chroot getent passwd "$service_id" >/dev/null && die "uid $service_id is taken in the base image"
 in_chroot getent group "$service_id" >/dev/null && die "gid $service_id is taken in the base image"
-in_chroot getent passwd quartermaster >/dev/null && die "the base image already has a quartermaster user"
-in_chroot groupadd --gid "$service_id" quartermaster
-in_chroot useradd --uid "$service_id" --gid quartermaster --home-dir /var/lib/quartermaster --create-home \
-    --shell /usr/sbin/nologin --comment Quartermaster quartermaster
+for taken in "$service_user" quartermaster; do
+    if in_chroot getent passwd "$taken" >/dev/null || in_chroot getent group "$taken" >/dev/null; then
+        die "the base image already has a user or group called $taken"
+    fi
+done
+in_chroot groupadd --gid "$service_id" "$service_user"
+in_chroot useradd --uid "$service_id" --gid "$service_user" --home-dir /var/lib/quartermaster --create-home \
+    --shell /usr/sbin/nologin --comment Quartermaster "$service_user"
 sed -i -E "s/^([[:space:]]*[UG]ID_MAX[[:space:]]+).*/\1$((service_id - 1))/" "$mnt/etc/login.defs"
 if [ -f "$mnt/etc/adduser.conf" ]; then
     sed -i -E "s/^#?[[:space:]]*(LAST_[UG]ID)=.*/\1=$((service_id - 1))/" "$mnt/etc/adduser.conf"
 fi
 for group in "${groups_wanted[@]}"; do
     if in_chroot getent group "$group" >/dev/null; then
-        in_chroot usermod -aG "$group" quartermaster
+        in_chroot usermod -aG "$group" "$service_user"
     fi
 done
 chmod 750 "$mnt/var/lib/quartermaster"
@@ -339,16 +345,25 @@ check "SPI" "$(grep -Ec '^[[:space:]]*dtparam=spi=on' "$config")" 1
 for unit in "${units[@]}"; do
     check "$unit" "$(in_chroot systemctl is-enabled "$unit" 2>/dev/null || true)" enabled
 done
-check "app import as quartermaster" "$(in_chroot runuser -u quartermaster -- /bin/sh -c \
+check "app import as $service_user" "$(in_chroot runuser -u "$service_user" -- /bin/sh -c \
     'cd /usr/lib/quartermaster/app && exec python3 -c "import quartermaster; print(quartermaster.__version__)"')" \
     "$version"
-check "quartermaster uid" "$(in_chroot id -u quartermaster)" "$service_id"
-check "radio helper accepts quartermaster" "$(in_chroot python3 -I -c '
+check "$service_user uid and group" "$(in_chroot id -u "$service_user"):$(in_chroot id -gn "$service_user")" \
+    "$service_id:$service_user"
+check "the name quartermaster is free for a login" \
+    "$(in_chroot getent passwd quartermaster; in_chroot getent group quartermaster)" ""
+check "the logs rule runs as $service_user" "$(grep '^User=' "$mnt/etc/systemd/system/quartermaster-logs.service")" \
+    "User=$service_user"
+check "the Wi-Fi scan rule is for $service_user" "$(grep -o 'subject\.user == "[^"]*"' \
+    "$mnt/etc/polkit-1/rules.d/50-quartermaster-wifi-scan.rules")" "subject.user == \"$service_user\""
+check "the boot file is read before the app starts" "$(grep '^Before=' \
+    "$mnt/etc/systemd/system/quartermaster-boot-config.service")" "Before=quartermaster@$service_user.service"
+check "radio helper accepts $service_user" "$(in_chroot python3 -I -c '
 import pwd, sys
 sys.path.insert(0, "/usr/lib/quartermaster")
 import radiod
-user = pwd.getpwnam("quartermaster")
-print(radiod.peer_allowed(user.pw_uid, user.pw_gid))')" True
+user = pwd.getpwnam(sys.argv[1])
+print(radiod.peer_allowed(user.pw_uid, user.pw_gid))' "$service_user")" True
 probe=$(in_chroot sh -c 'useradd -M -N -s /usr/sbin/nologin qm-probe && id -u qm-probe; userdel qm-probe' 2>/dev/null)
 check "next login user below the service uid" "$([ "${probe:-0}" -ge 1000 ] && [ "$probe" -lt "$service_id" ] && echo yes || echo "no ($probe)")" yes
 check "Wi-Fi rfkill saved state" "$(cat "$mnt"/var/lib/systemd/rfkill/*:wlan 2>/dev/null | grep -vx 0 | xargs)" ""
@@ -364,10 +379,10 @@ check "a kernel was checked for the radio switch" "$([ "$kernels" -gt 0 ] && ech
 check "NetworkManager has Wi-Fi switched on" "$(grep -s '^WirelessEnabled=' \
     "$mnt/var/lib/NetworkManager/NetworkManager.state" | grep -v '=true$' | tr '\n' ' ')" ""
 check "the image sets no Wi-Fi country" "$(grep -c 'cfg80211\.ieee80211_regdom=' "$mnt/boot/firmware/cmdline.txt")" 0
-member_of=" $(in_chroot id -nG quartermaster) "
+member_of=" $(in_chroot id -nG "$service_user") "
 for group in video gpio spi dialout netdev bluetooth quartermaster-radio; do
     if in_chroot getent group "$group" >/dev/null; then
-        check "quartermaster in $group" "$([[ $member_of == *" $group "* ]] && echo yes || echo no)" yes
+        check "$service_user in $group" "$([[ $member_of == *" $group "* ]] && echo yes || echo no)" yes
     fi
 done
 enabled() {
@@ -384,12 +399,12 @@ check "default login record" "$([ "$(cat "$mnt/usr/local/lib/quartermaster-image
 check "default login record mode" "$(stat -c %a:%u "$mnt/usr/local/lib/quartermaster-image/default-login")" 600:0
 check "$login_user uid and shell" "$(in_chroot getent passwd "$login_user" | cut -d: -f3,7)" "$login_id:/bin/bash"
 login_member_of=" $(in_chroot id -nG "$login_user") "
-for group in sudo quartermaster; do
+for group in sudo "$service_user"; do
     check "$login_user in $group" "$([[ $login_member_of == *" $group "* ]] && echo yes || echo no)" yes
 done
 check "root password locked" "$(shadow_of root | cut -c1 | tr '*' '!')" '!'
-check "quartermaster password locked" "$(shadow_of quartermaster | cut -c1 | tr '*' '!')" '!'
-check "quartermaster shell" "$(in_chroot getent passwd quartermaster | cut -d: -f7)" /usr/sbin/nologin
+check "$service_user password locked" "$(shadow_of "$service_user" | cut -c1 | tr '*' '!')" '!'
+check "$service_user shell" "$(in_chroot getent passwd "$service_user" | cut -d: -f7)" /usr/sbin/nologin
 check "logs link" "$(readlink "$mnt$login_home/quartermaster")" "$data"
 check "$login_user reads the logs" "$(in_chroot runuser -u "$login_user" -- ls "$login_home/quartermaster/logs" 2>&1)" ""
 check "first start keeps the default login" "$(in_chroot python3 -I -c '
@@ -448,6 +463,7 @@ order=$(in_chroot systemd-analyze verify --man=no cloud-init.target default.targ
 check "start order was examined" "$([ "$order_status" -le 1 ] && ! grep -qi 'initialize manager' <<< "$order" && echo yes ||
     echo "no: $(head -n 3 <<< "$order" | tr '\n' ' ')")" yes
 check "start order has no cycle" "$(grep -i -A 3 'ordering cycle' <<< "$order" | tr '\n' ' ')" ""
+check "systemd accepts the Quartermaster units" "$(grep -i quartermaster <<< "$order" | tr '\n' ' ')" ""
 echo "ok    Imager customisation: $init_format"
 echo "ok    root file system: $(df -BM --output=used,avail "$mnt" | tail -n 1 | xargs | tr ' ' '/') used/free"
 

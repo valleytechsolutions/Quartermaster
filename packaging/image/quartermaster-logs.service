@@ -1,7 +1,7 @@
 [Unit]
-Description=Let the quartermaster group read the Quartermaster logs
+Description=Let the _quartermaster group read the Quartermaster logs
 
 [Service]
 Type=oneshot
-User=quartermaster
+User=_quartermaster
 ExecStart=/usr/bin/find /var/lib/quartermaster/quartermaster/logs ( -type d ! -perm -050 -o -type f ! -perm -040 ) -exec chmod g+rX {} +

@@ -1,5 +1,5 @@
 polkit.addRule(function(action, subject) {
-    if (action.id == "org.freedesktop.NetworkManager.wifi.scan" && subject.user == "quartermaster") {
+    if (action.id == "org.freedesktop.NetworkManager.wifi.scan" && subject.user == "_quartermaster") {
         return polkit.Result.YES;
     }
 });
