@@ -291,13 +291,42 @@ def test_a_new_password_for_pi_from_imager_replaces_the_default():
     assert login_plan(PI, {"pi": DEFAULT}, ("kal", OWN)) == []
 
 
+def test_a_login_asked_for_without_a_password_never_keeps_the_default_one():
+    assert login_plan(PI, {"pi": DEFAULT}, ("pi", None)) == [["usermod", "-L", "pi"]]
+    users = {name: entry for name, entry in PI.items() if name != "pi"}
+    users["kal"] = (1000, "/home/kal", "/bin/bash")
+    renamed = dict(members=("kal",), links=("/home/kal/quartermaster",))
+    assert login_plan(users, {"kal": DEFAULT}, ("kal", None), **renamed) == [["usermod", "-L", "kal"]]
+    assert login_plan(users, {"kal": "!" + DEFAULT}, ("kal", None), **renamed) == []
+    assert login_plan(users, {"kal": "!" + DEFAULT}, None, **renamed) == []
+    assert login_plan(users, {"kal": DEFAULT}, ("kal", DEFAULT), **renamed) == [["usermod", "-L", "kal"]]
+
+
+def test_pi_set_up_in_imager_gets_its_group_and_link_back():
+    assert login_plan(PI, {"pi": OWN}, ("pi", OWN), members=()) == [["usermod", "-aG", "quartermaster", "pi"]]
+    assert login_plan(PI, {"pi": DEFAULT}, ("pi", OWN), members=(), links=()) == [
+        ["usermod", "-p", OWN, "pi"], ["usermod", "-aG", "quartermaster", "pi"],
+        ["ln", "-s", first_login.DATA, "/home/pi/quartermaster"], ["chown", "-h", "pi:", "/home/pi/quartermaster"]]
+
+
+def test_a_login_without_a_home_folder_gets_no_link(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "pi"
+    home.mkdir(parents=True)
+    files = {"/etc/passwd": "pi:x:1000:1000::%s:/bin/bash\nkal:x:1001:1001::%s:/bin/bash\n" % (home, tmp_path / "gone"),
+             "/etc/shadow": "pi:%s:1::::::\nkal:!:1::::::\n" % OWN, "/etc/group": "quartermaster:x:59999:pi,kal\n"}
+    monkeypatch.setattr(first_login, "read", lambda path: files.get(path, ""))
+    monkeypatch.setattr(first_login, "BANNER", str(tmp_path / "banner"))
+    assert first_login.plan(*first_login.gather()) == [
+        ["ln", "-s", first_login.DATA, "%s/quartermaster" % home], ["chown", "-h", "pi:", "%s/quartermaster" % home]]
+
+
 def test_the_first_login_ignores_system_accounts_and_tidies_the_rename_banner():
     users = dict(PI, wizard=(999, "/home/w", "/bin/bash"), ghost=(1001, "/home/ghost", "/usr/sbin/nologin"))
     assert login_plan(users, {"pi": DEFAULT}, None) == []
     assert login_plan(PI, {"pi": DEFAULT}, None, banner=True) == [
         ["rm", "-f", first_login.BANNER], ["systemctl", "enable", "getty@tty1.service"],
         ["systemctl", "--no-block", "start", "getty@tty1.service"]]
-    assert first_login.plan(PI, dict(LOCKED, pi=""), {"pi"}, "", None) == []
+    assert first_login.plan(PI, dict(LOCKED, pi=""), {"pi"}, "", None, {"/home/pi/quartermaster"}) == []
 
 
 def test_the_first_login_marks_itself_done_only_when_every_step_worked(tmp_path, monkeypatch):
@@ -452,6 +481,53 @@ def test_the_image_unblocks_wifi_that_raspberry_pi_os_blocks_until_a_country_is_
     script = SCRIPT.read_text()
     assert '"$mnt"/var/lib/systemd/rfkill/*:wlan' in script and 'echo 0 > "$state"' in script
     assert "Wi-Fi rfkill saved state" in script
+
+
+def test_the_radios_start_switched_on_and_the_image_sets_no_country():
+    script = SCRIPT.read_text()
+    rule = [line for line in (IMAGE / "radios-on.conf").read_text().splitlines() if not line.startswith("#")]
+    assert rule == ["options rfkill default_state=1"]
+    installed = re.search(r'radios-on\.conf" "\$mnt/etc/modprobe\.d/([^"]+)"', script).group(1)
+    assert sorted(["rfkill_default.conf", installed])[-1] == installed and installed.endswith(".conf")
+    assert "--show-depends rfkill" in script and "grep -o 'default_state=[0-9]*' | tail -n 1)\" default_state=1" in script
+    assert "sed -i 's/^WirelessEnabled=.*/WirelessEnabled=true/'" in script
+    for label in ('"radios start switched on with $kernel"', '"a kernel was checked for the radio switch"',
+                  '"NetworkManager has Wi-Fi switched on"', '"the image sets no Wi-Fi country"'):
+        assert "check " + label in script, label
+    for forbidden in ("iw reg set", "do_wifi_country \"", "ieee80211_regdom=$", "REGDOMAIN="):
+        assert forbidden not in script, forbidden
+    assert "Wi-Fi and Bluetooth start switched on. No Wi-Fi country is set" in script
+
+
+COUNTRY_NOTICE = IMAGE / "wifi_country_notice.sh"
+
+
+def country_notice(*rules):
+    result = subprocess.run(["sh", str(COUNTRY_NOTICE), *rules], capture_output=True, text=True)
+    assert result.returncode == 0 and result.stderr == ""
+    return result.stdout
+
+
+def test_the_login_hint_for_the_wifi_country_shows_only_while_none_is_set():
+    world = "global\ncountry 00: DFS-UNSET\n\t(2402 - 2472 @ 40), (N/A, 20), (N/A)\n\nphy#0\ncountry US: DFS-FCC\n"
+    shown = country_notice(world)
+    assert "No Wi-Fi country is set" in shown and shown.endswith("  sudo raspi-config nonint do_wifi_country US\n\n")
+    assert shown.startswith("\n") and len(shown.splitlines()) == 6
+    assert country_notice("global\ncountry US: DFS-FCC\n\nphy#0\ncountry 00: DFS-UNSET\n") == ""
+    assert country_notice("country DE: DFS-ETSI\n") == ""
+    assert country_notice("") == "" and country_notice("nl80211 not found.\n") == ""
+
+
+def test_the_wifi_country_hint_is_installed_next_to_the_password_notice():
+    script = SCRIPT.read_text()
+    assert COUNTRY_NOTICE.stat().st_mode & 0o111 and COUNTRY_NOTICE.read_text().startswith("#!/bin/sh\n")
+    assert ('install -D -m 755 "$here/packaging/image/wifi_country_notice.sh" '
+            '"$mnt/etc/update-motd.d/21-quartermaster-wifi-country"') in script
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", "21-quartermaster-wifi-country")
+    for label in ('"Wi-Fi country hint without a country"', '"Wi-Fi country hint with a country"',
+                  '"raspi-config sets the Wi-Fi country"'):
+        assert "check " + label in script, label
+    assert "iw reg get" in COUNTRY_NOTICE.read_text() and "iw reg set" not in COUNTRY_NOTICE.read_text()
 
 
 REPLACE = ROOT / "tools" / "replace_release_assets.sh"
@@ -674,7 +750,9 @@ def test_the_diy_guide_offers_the_ready_image_before_the_manual_route():
     assert easy < manual
     section = guide[easy:manual]
     for text in ("Use custom", "st7735-128.img.xz", "st7789-240.img.xz", "quartermaster.txt",
-                 "quartermaster@quartermaster.service", "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country"):
+                 "quartermaster@quartermaster.service", "/var/lib/quartermaster/quartermaster/logs", "Wi-Fi country",
+                 "8 GB or more", "switched on from the first start", "does not choose a country for you",
+                 "leaves out 6 GHz", "`sudo raspi-config nonint do_wifi_country US`", "reminds you at each login"):
         assert text in section, text
 
 

@@ -8,6 +8,7 @@
 # Needs root, util-linux, e2fsprogs, xz, curl, openssl, python3 and qemu-user-static registered for ARM binaries.
 # The image logs in as pi with the password pi, has SSH on and is named quartermaster. Each device makes its own
 # SSH host keys on its first start. A user set in Raspberry Pi Imager replaces the default login.
+# Wi-Fi and Bluetooth start switched on. No Wi-Fi country is set: the worldwide rules apply until the user sets one.
 # Writes quartermaster-pi-<version>-<hat>.img.xz, its Imager metadata (.json) and SHA256SUMS to the out directory.
 set -euo pipefail
 
@@ -29,7 +30,7 @@ data=/var/lib/quartermaster/quartermaster
 
 die() { echo "build_image: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -263,6 +264,7 @@ if [ -d "$mnt/etc/cloud/cloud.cfg.d" ]; then
     install -m 644 "$here/packaging/image/99_zz_quartermaster.cfg" "$mnt/etc/cloud/cloud.cfg.d/99_zz_quartermaster.cfg"
 fi
 install -D -m 755 "$here/packaging/image/default_password_notice.sh" "$mnt/etc/update-motd.d/20-quartermaster-password"
+install -D -m 755 "$here/packaging/image/wifi_country_notice.sh" "$mnt/etc/update-motd.d/21-quartermaster-wifi-country"
 in_chroot systemctl enable ssh.service avahi-daemon.service getty@tty1.service
 printf '%s\n' "$host_name" > "$mnt/etc/hostname"
 if grep -q '^127\.0\.1\.1[[:space:]]' "$mnt/etc/hosts"; then
@@ -290,6 +292,11 @@ in_chroot systemctl enable "${units[@]}"
 printf 'VERSION=%s\nHAT=%s\nBASE_IMAGE=%s\nBUILT=%s\n' "$version" "$hat" "$base_name" "$(date -u +%Y-%m-%d)" \
     > "$mnt/etc/quartermaster/image-release"
 
+log "Switching the radios on for the first start"
+install -D -m 644 "$here/packaging/image/radios-on.conf" "$mnt/etc/modprobe.d/zz-quartermaster-radios.conf"
+if [ -f "$mnt/var/lib/NetworkManager/NetworkManager.state" ]; then
+    sed -i 's/^WirelessEnabled=.*/WirelessEnabled=true/' "$mnt/var/lib/NetworkManager/NetworkManager.state"
+fi
 for state in "$mnt"/var/lib/systemd/rfkill/*:wlan; do
     [ -e "$state" ] || continue
     echo 0 > "$state"
@@ -345,6 +352,18 @@ print(radiod.peer_allowed(user.pw_uid, user.pw_gid))')" True
 probe=$(in_chroot sh -c 'useradd -M -N -s /usr/sbin/nologin qm-probe && id -u qm-probe; userdel qm-probe' 2>/dev/null)
 check "next login user below the service uid" "$([ "${probe:-0}" -ge 1000 ] && [ "$probe" -lt "$service_id" ] && echo yes || echo "no ($probe)")" yes
 check "Wi-Fi rfkill saved state" "$(cat "$mnt"/var/lib/systemd/rfkill/*:wlan 2>/dev/null | grep -vx 0 | xargs)" ""
+kernels=0
+for index in "$mnt"/lib/modules/*/modules.dep; do
+    [ -e "$index" ] || continue
+    kernel=$(basename "$(dirname "$index")")
+    kernels=$((kernels + 1))
+    check "radios start switched on with $kernel" "$(in_chroot modprobe -S "$kernel" --show-depends rfkill 2>&1 |
+        grep -o 'default_state=[0-9]*' | tail -n 1)" default_state=1
+done
+check "a kernel was checked for the radio switch" "$([ "$kernels" -gt 0 ] && echo yes || echo no)" yes
+check "NetworkManager has Wi-Fi switched on" "$(grep -s '^WirelessEnabled=' \
+    "$mnt/var/lib/NetworkManager/NetworkManager.state" | grep -v '=true$' | tr '\n' ' ')" ""
+check "the image sets no Wi-Fi country" "$(grep -c 'cfg80211\.ieee80211_regdom=' "$mnt/boot/firmware/cmdline.txt")" 0
 member_of=" $(in_chroot id -nG quartermaster) "
 for group in video gpio spi dialout netdev bluetooth quartermaster-radio; do
     if in_chroot getent group "$group" >/dev/null; then
@@ -386,6 +405,11 @@ rm -f "$mnt"/tmp/probe_key*
 check "default password notice" "$(in_chroot /etc/update-motd.d/20-quartermaster-password | xargs)" \
     "The login $login_user still has the default password. Type passwd to set your own."
 check "the notice is shown at login" "$(grep -c '^session.*pam_motd\.so.*motd=/run/motd\.dynamic' "$mnt/etc/pam.d/sshd")" 1
+check "Wi-Fi country hint without a country" "$(in_chroot /etc/update-motd.d/21-quartermaster-wifi-country \
+    'country 00: DFS-UNSET' | grep -c 'sudo raspi-config nonint do_wifi_country US')" 1
+check "Wi-Fi country hint with a country" "$(in_chroot /etc/update-motd.d/21-quartermaster-wifi-country \
+    'country US: DFS-FCC' | tr '\n' ' ')" ""
+check "raspi-config sets the Wi-Fi country" "$(grep -c '^do_wifi_country()' "$mnt/usr/bin/raspi-config")" 1
 check "ssh host keys in the image" "$(find "$mnt/etc/ssh" -name 'ssh_host_*' -printf '%f ')" ""
 check "machine-id as in the base image" "$(cat "$mnt/etc/machine-id" 2>/dev/null)" "$(cat "$keep/etc/machine-id" 2>/dev/null)"
 check "first-start prompt only with userconf.txt" \
@@ -425,6 +449,7 @@ check "start order was examined" "$([ "$order_status" -le 1 ] && ! grep -qi 'ini
     echo "no: $(head -n 3 <<< "$order" | tr '\n' ' ')")" yes
 check "start order has no cycle" "$(grep -i -A 3 'ordering cycle' <<< "$order" | tr '\n' ' ')" ""
 echo "ok    Imager customisation: $init_format"
+echo "ok    root file system: $(df -BM --output=used,avail "$mnt" | tail -n 1 | xargs | tr ' ' '/') used/free"
 
 fstrim "$mnt" 2>/dev/null || true
 unmount_all

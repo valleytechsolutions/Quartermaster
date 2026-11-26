@@ -44,21 +44,21 @@ def plan(users, hashes, members, default_hash, wanted, links=(), banner=False):
     """The commands that leave one working login. users maps a name to (uid, home, shell)."""
     name, new_hash = wanted or (None, None)
     steps = []
-
-    def is_default(user):
-        return bool(default_hash) and hashes.get(user, "").lstrip("!") == default_hash
-
-    others = sorted(user for user, (uid, _, shell) in users.items()
-                    if FIRST_UID <= uid < SERVICE_UID and user != DEFAULT_USER and not shell.endswith(NO_LOGIN))
-    if name in users and new_hash and new_hash != default_hash and is_default(name):
-        steps.append(["usermod", "-p", new_hash, name])
-    elif DEFAULT_USER in users and is_default(DEFAULT_USER):
-        locked = hashes[DEFAULT_USER].startswith("!")
-        if others and not locked:
-            steps.append(["usermod", "-L", DEFAULT_USER])
-        elif not others and name is None and locked:
-            steps.append(["usermod", "-U", DEFAULT_USER])
-    for user in others:
+    logins = sorted(user for user, (uid, _, shell) in users.items()
+                    if FIRST_UID <= uid < SERVICE_UID and not shell.endswith(NO_LOGIN))
+    for user in logins:
+        stored = hashes.get(user, "")
+        if not default_hash or stored.lstrip("!") != default_hash:
+            continue
+        locked = stored.startswith("!")
+        if user == name and new_hash and new_hash != default_hash:
+            steps.append(["usermod", "-p", new_hash, user])
+        elif user == name or len(logins) > 1:
+            if not locked:
+                steps.append(["usermod", "-L", user])
+        elif name is None and locked and user == DEFAULT_USER:
+            steps.append(["usermod", "-U", user])
+    for user in logins:
         if user not in members:
             steps.append(["usermod", "-aG", GROUP, user])
         link = users[user][1].rstrip("/") + "/quartermaster"
@@ -94,8 +94,8 @@ def gather():
         field = line.strip().split(":")
         if len(field) >= 4 and field[0] == GROUP:
             members = set(filter(None, field[3].split(",")))
-    links = {home.rstrip("/") + "/quartermaster" for _, home, _ in users.values()
-             if os.path.lexists(home.rstrip("/") + "/quartermaster")}
+    links = {link for link in (home.rstrip("/") + "/quartermaster" for _, home, _ in users.values())
+             if os.path.lexists(link) or not os.path.isdir(os.path.dirname(link))}
     banner = os.path.exists(BANNER) and not any(os.path.exists(path) for path in USERCONF_FILES)
     return users, hashes, members, read(HASH_FILE).strip(), requested(read(USER_DATA)), links, banner
 

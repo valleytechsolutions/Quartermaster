@@ -36,8 +36,8 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 | 1.3″ HAT (240×240) | `quartermaster-pi-<version>-st7789-240.img.xz` |
 
 2. Install and open [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Choose your Pi model. For the operating system, scroll to the bottom and choose **Use custom**. Pick the file you downloaded.
-3. Choose your microSD card.
-4. Imager offers to customise the OS. This is optional. Quartermaster works without it. We recommend you set your Wi-Fi country here, so the Pi uses the right Wi-Fi channels for where you live. Set your Wi-Fi here too if you want to log in to the Pi over your network. A username and password set here replace the default login below.
+3. Choose your microSD card. Use one of 8 GB or more.
+4. Imager offers to customise the OS. This is optional. Quartermaster works without it. We recommend you set your Wi-Fi country here, so the Pi scans every Wi-Fi channel your country allows. Set your Wi-Fi here too if you want to log in to the Pi over your network. A username and password set here replace the default login below.
 5. Write the card. With the Pi powered off, seat the HAT on the GPIO header with pin 1 lined up, and plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
 6. Put the card in the Pi and power it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu appears on the HAT.
 
@@ -54,7 +54,7 @@ Each Raspberry Pi release has two ready SD card images, one for each HAT. They b
 ### Good to know
 
 - **Wrong HAT?** Put the card in your computer and open the drive called **bootfs**. Open `quartermaster.txt` in a text editor. Change the `display=` line to `st7735-128` for the 1.44″ HAT or `st7789-240` for the 1.3″ HAT. Save it, then put the card back in the Pi.
-- Without a Wi-Fi country, Wi-Fi still works for scanning. It uses the safe worldwide channel settings, which can hide a few channels.
+- **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it in Imager in step 4, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
 - If Imager does not offer to customise the OS for the file, set up Wi-Fi later from the Pi with `sudo nmtui`, or use the `quartermaster-imager.json` link from the same release in Imager under **App Options > Content Repository > Use custom URL**. The images then appear in Imager's list with customisation.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. They are rebuilt every month with the latest Raspberry Pi OS updates. To update, flash the newest image, or install a newer package as shown below.
