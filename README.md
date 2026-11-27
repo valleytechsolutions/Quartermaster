@@ -155,6 +155,8 @@ Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Car
 
 Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
 
+On **Gh0st OS** with the native Store, press **R** to refresh the catalog, then **S** and search for **WARD**. If the listing appears but installation reports missing Wi-Fi firmware, check the [Gh0st OS installation guide](https://github.com/valleytechsolutions/Quartermaster/wiki/CardputerZero-installation#install-on-gh0st-os).
+
 For a fresh or replacement SD card, follow the [CardputerZero flashing and installation guide](https://github.com/valleytechsolutions/Quartermaster/wiki/CardputerZero-installation).
 
 #### With one command
