@@ -8,6 +8,7 @@
 - The node sends its Pager firmware name again when the Biscuit adds it or gives it a job, and every 30 seconds, so the Biscuit always shows it as a Pager and never as a plain node.
 - While node mode runs, a wardrive and Recon wait until it is stopped.
 - The radio helper runs node mode. It sends no frame but the node's own messages to the Biscuit, on channel 6, and only while node mode runs.
+- On the CardputerZero, 1.2.12 is the first release since 1.2.5, so it brings everything listed for 1.2.6 to 1.2.10 as well, such as Power guard, the aircraft viewer and **Stop, don't save**. Restart the Cardputer once after you install it, so the USB reset permission from 1.2.7 applies.
 
 ## 1.2.10
 
