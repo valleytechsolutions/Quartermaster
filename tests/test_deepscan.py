@@ -874,7 +874,8 @@ def test_the_settings_screen_shows_deep_scan_off_and_says_when_the_helper_is_mis
     from tests.test_ui import make_app, press, screen_text
     real_state = radio_helper.state
     monkeypatch.setattr(radio_helper, "SOCKET", str(tmp_path / "no-helper.sock"))
-    monkeypatch.setattr(radio_helper, "state", lambda cfg: real_state(cfg, path=radio_helper.SOCKET))
+    monkeypatch.setattr(radio_helper, "state",
+                        lambda cfg, diy=False: real_state(cfg, path=radio_helper.SOCKET, diy=diy))
     app = make_app(tmp_path)
     app.home()
     press(app, "S")

@@ -1,8 +1,17 @@
 # Changelog
 
+## 1.2.10
+
+- On a Pi, the messages on the HAT screen now name the Pi, not the Cardputer. For example, the Hardware screen can say "No permission yet. Restart the Pi once." about the RTL-SDR stick.
+- On a Pi, no message points to the AppStore any more. When the radio helper is missing, the message says "Radio helper not found. Reinstall the Pi package from GitHub."
+- On a Pi, the phone setup page names the Pi too. Where it asks for the PIN, it says "It is on the Pi's screen right now."
+- On a Pi, a message that named a letter key now names the menu item or the **K3** action. For example, without upload keys, the summary after a wardrive says "Open Keys on the menu to add your upload keys." An empty **My alerts** list says to press **K3** and choose **Add**.
+- The DIY guide and the user guide quote these messages as a Pi shows them, and say what to do on a Pi.
+- On the CardputerZero, the screens and messages stay as they were in 1.2.9. 1.2.10 is its first release since 1.2.5, so it brings everything listed for 1.2.6 to 1.2.9 as well, such as Power guard, the aircraft viewer and **Stop, don't save**. Restart the Cardputer once after you install it, so the USB reset permission from 1.2.7 applies.
+
 ## 1.2.9
 
-- On the CardputerZero, this is the first release since 1.2.5. So it also brings Power guard from 1.2.6 and All adapters listen from 1.2.7. Power guard is on by default. Restart the Cardputer once after you install it, so the USB reset permission from 1.2.7 applies.
+- On the CardputerZero, 1.2.9 had no release of its own. Its changes come to the CardputerZero with 1.2.10, together with Power guard from 1.2.6 and All adapters listen from 1.2.7. Power guard is on by default.
 - New: an aircraft viewer. On the Hardware screen, press **A** on the RTL-SDR card (**K3** > **Aircraft** on a Pi screen). It is there when a stick is plugged in and can listen. When it cannot, the card says why.
 - It lists every aircraft heard, the nearest first: callsign or ICAO code, height, speed, distance and direction from your GPS position, and how long ago it was last heard. **Tab** changes the order to the latest first (**K3** > **Sort** on a Pi screen).
 - **OK** on an aircraft shows all it sent: ICAO code, callsign, squawk, category, barometric and GNSS height, ground speed, heading, vertical rate, position and message count. What an aircraft did not send is shown as "Unknown". **OK** again shows its route: the track it flew while it was heard, on a small map with north up, you in the middle and two range rings.

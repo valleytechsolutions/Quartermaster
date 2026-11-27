@@ -28,6 +28,16 @@ HINTS = {
     "wdgwars": "On wdgwars.pl open your Profile and press Generate API key.",
     "wardrift": "On wardrift.net open the Dashboard, then API Keys, and create a key for a wardriving device.",
 }
+WORDS = {
+    "unreachable": "Could not reach the Cardputer. Is the setup screen still open?",
+    "locked": "Too many wrong PINs. Close the setup screen on the Cardputer and open it again for a new PIN.",
+    "pin": "It is on the Cardputer screen right now.",
+}
+PI_WORDS = {
+    "unreachable": "Could not reach the Pi. Is the setup screen still open?",
+    "locked": "Too many wrong PINs. Close the setup screen on the Pi and open it again for a new PIN.",
+    "pin": "It is on the Pi's screen right now.",
+}
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -82,7 +92,7 @@ document.querySelectorAll("[data-test]").forEach(function (button) {
       note.textContent = result.detail;
       note.className = "note " + (result.ok ? "ok" : "bad");
     } catch (error) {
-      note.textContent = "Could not reach the Cardputer. Is the setup screen still open?";
+      note.textContent = %s;
       note.className = "note bad";
     }
   });
@@ -114,8 +124,9 @@ def _page(title, body, script=""):
 
 class SetupServer:
     def __init__(self, logs_dir, cfg=None, accounts_path=None, port=PORT, on_keys=None, on_ignore=None,
-                 on_upload=None, tester=uploads.test, marks=None, host="0.0.0.0"):
+                 on_upload=None, tester=uploads.test, marks=None, host="0.0.0.0", diy=False):
         self.logs_dir = Path(logs_dir)
+        self.words = PI_WORDS if diy else WORDS
         self.cfg = cfg if cfg is not None else {}
         self.accounts_path = accounts_path
         self.port, self.host = port, host
@@ -156,14 +167,14 @@ class SetupServer:
 
     def unlock_page(self, wrong=False):
         if self.locked:
-            body = ("<div class=\"banner bad\">Too many wrong PINs. Close the setup screen on the Cardputer and "
-                    "open it again for a new PIN.</div>")
+            body = "<div class=\"banner bad\">%s</div>" % html.escape(self.words["locked"])
             return _page("Quartermaster setup", body)
         body = ("%s<form class=\"card\" method=\"post\" action=\"/unlock\"><h2>Enter the PIN</h2>"
-                "<p class=\"hint\">It is on the Cardputer screen right now.</p>"
+                "<p class=\"hint\">%s</p>"
                 "<input class=\"pin\" id=\"pin\" name=\"pin\" inputmode=\"numeric\" maxlength=\"6\" "
                 "autocomplete=\"off\" autofocus><button class=\"primary\">Open setup</button></form>"
-                % ("<div class=\"banner bad\">That PIN is not right.</div>" if wrong else ""))
+                % ("<div class=\"banner bad\">That PIN is not right.</div>" if wrong else "",
+                   html.escape(self.words["pin"])))
         return _page("Quartermaster setup", body, UNLOCK_SCRIPT)
 
     def main_page(self, notice=""):
@@ -219,7 +230,8 @@ class SetupServer:
                 parts.append("<form method=\"post\" action=\"/remove\">%s<input type=\"hidden\" name=\"service\" "
                              "value=\"%s\"><button class=\"link\">Remove the %s key</button></form>"
                              % (hidden, service, keys.SERVICE_NAMES[service]))
-        return _page("Quartermaster setup", "".join(parts), SCRIPT % json.dumps(self.csrf))
+        return _page("Quartermaster setup", "".join(parts),
+                     SCRIPT % (json.dumps(self.csrf), json.dumps(self.words["unreachable"])))
 
     def save_keys(self, form):
         changes = {name: form[name] for name in ("wigle_name", "wigle_token", "wigle_encoded", "wdgwars_key",

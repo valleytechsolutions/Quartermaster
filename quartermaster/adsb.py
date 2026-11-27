@@ -63,6 +63,7 @@ WORDS = {OFF: "Off in Settings", NO_DONGLE: "Not plugged in", NO_TOOLS: "rtl-sdr
          BUSY: "In use by another program", RUNNING: "Running", SYSTEM: "Uses the aircraft program that already runs",
          FAILED: "It stopped. Trying again soon.", READY: "Ready. It listens in the next wardrive.",
          DENIED: "No permission yet. Restart the Cardputer once.", DRIVER: "Restart the Cardputer once to use it"}
+PI_WORDS = dict(WORDS, **{DENIED: "No permission yet. Restart the Pi once.", DRIVER: "Restart the Pi once to use it"})
 
 _HEX = re.compile(r"[0-9a-f]{6}")
 _NAME = re.compile(r"quartermaster_\d{8}-\d{6}(-\d+)?\.aircraft\.json\.gz")

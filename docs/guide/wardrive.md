@@ -180,7 +180,7 @@ Press **K3** to open a keyboard on the screen. Move to a character with the joys
 
 ### The summary and the Logs screen on a Pi
 
-The summary shows the CardputerZero layout. **K3** offers **Logs**, **Uploads** and **New wardrive**. **OK** or **K2** goes back to the menu. When the summary says "Press K to add your upload keys.", go back to the menu and open **Keys**.
+The summary shows the CardputerZero layout. **K3** offers **Logs**, **Uploads** and **New wardrive**. **OK** or **K2** goes back to the menu. When no upload keys are saved, the summary says "Open Keys on the menu to add your upload keys." When **Settings > Send logs** is on **Only when asked**, it says "Automatic uploads are off. Open Uploads to send it." To send the log, press **K3**, choose **Uploads** and press **OK** on the Uploads screen.
 
 The Logs screen lists your logs by date. The line under the list shows the size of the log you are on, with **REC** for the log being written now. **K3** offers **Upload now**. The upload dots are only on the CardputerZero layout: press **K3** and choose **Pan details**. **OK** opens a log, and there **K3** offers **Upload again** and **Delete**.
 

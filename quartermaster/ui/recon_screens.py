@@ -98,7 +98,8 @@ class Recon(Screen, ListMixin):
             c.text((70, y + 6 + i * 13), value, font("mono", 9), color, width=W - 126 if i < 3 else W - 84)
         by = CONTENT_BOTTOM - 25
         c.rect((4, by, W - 4, CONTENT_BOTTOM - 3), fill=GOLD, radius=6)
-        c.text_center(W // 2, by + 5, "SPACE  ·  START RECON", font("display", 11), GOLD_INK)
+        c.text_center(W // 2, by + 5, "K3  ·  START RECON" if app.square else "SPACE  ·  START RECON",
+                      font("display", 11), GOLD_INK)
 
     def live(self, c, app):
         r = app.recon
@@ -127,7 +128,9 @@ class Recon(Screen, ListMixin):
                           font("ui", 8), MUTED)
             if summary["wifi"] or summary["ble"]:
                 heard = summary["wifi"] + summary["ble"]
-                c.text_center(W // 2, y + 45, "Press A to list all %d devices heard." % heard, font("ui", 8), FAINT)
+                said = "Press K3 and choose All to list all %d devices heard." if app.square else \
+                    "Press A to list all %d devices heard."
+                c.text_center(W // 2, y + 45, said % heard, font("ui", 8), FAINT)
             return
         visible = self.VISIBLE = max(1, (CONTENT_BOTTOM - y) // 16)
         self.clamp(len(devices), visible)
@@ -522,6 +525,8 @@ class MyAlerts(Screen, ListMixin):
         entries = app.cfg.get("drive_watch", [])
         if not entries:
             empty_state(c, "alert", "Nothing on your list",
+                        "To add a Wi-Fi or Bluetooth name or address, press K3 and choose Add. veh matches every name "
+                        "that starts with veh, and * or ? match any text. A match always alerts." if app.square else
                         "Press A to add a Wi-Fi or Bluetooth name or address. veh matches every name that starts "
                         "with veh, and * or ? match any text. A match always alerts.")
             return
@@ -572,6 +577,8 @@ class SkipList(Screen, ListMixin):
         entries = app.cfg.get("drive_alert_skip", [])
         if not entries:
             empty_state(c, "alert", "Nothing is silenced",
+                        "To stop alerts for a device, open its alert from the wardrive alert list, press K3 and "
+                        "choose No alerts. It is still logged." if app.square else
                         "Open an alert from the wardrive alert list and press N to stop alerts for that device. "
                         "It is still logged.")
             return

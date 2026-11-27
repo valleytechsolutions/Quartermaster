@@ -148,7 +148,7 @@ Limits: it listens on one channel and one data rate only (903.9 MHz in the US, 8
 
 Aircraft work as on the CardputerZero. Plug the RTL-SDR stick into a USB port of the Pi. A Zero has only one USB port for data, so use an OTG hub when the GPS is plugged in too. The `rtl-sdr` package comes with the Pi package and with the ready SD card images.
 
-A ready image already has what the stick needs, so you do not need to restart for it. After a manual install, the restart at the end of the [DIY guide](../diy.md#assemble-and-install-manually) does the same as the restart in step 2 above. Where a message on the Pi says "Restart the Cardputer once", restart the Pi.
+A ready image already has what the stick needs, so you do not need to restart for it. After a manual install, the restart at the end of the [DIY guide](../diy.md#assemble-and-install-manually) does the same as the restart in step 2 above. On a Pi, two of the Hardware screen's messages about the stick name the Pi instead of the Cardputer: "No permission yet. Restart the Pi once." and "Restart the Pi once to use it". For either one, restart the Pi with `sudo reboot`.
 
 ### The aircraft viewer on a Pi
 

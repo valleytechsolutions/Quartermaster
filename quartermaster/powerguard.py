@@ -200,7 +200,7 @@ def _ma(value):
     return "{:,}".format(int(value))
 
 
-def load_cards(load):
+def load_cards(load, diy=False):
     """What the Hardware screen says about USB power: [(title, detail, problem)]. Empty with nothing counted."""
     if not load or not load.get("devices"):
         return []
@@ -209,10 +209,11 @@ def load_cards(load):
         cards.append(("Too many adapters for USB power", "About %s of %s mA, estimated. Use a powered USB hub." % (
             _ma(load["ma"]), _ma(load["budget"])), True))
     else:
+        fits = "Estimate. Within what the Pi's USB ports give." if diy else \
+            "Estimate. Within what the Cardputer's port gives."
         cards.append(("USB power: about %s of %s mA" % (_ma(load["ma"]), _ma(load["budget"])),
                       "Estimate. Peaks to %s mA; radios start one by one." % _ma(load["peak"])
-                      if load["peak"] > load["budget"] else "Estimate. Within what the Cardputer's port gives.",
-                      False))
+                      if load["peak"] > load["budget"] else fits, False))
     for hub in load["hubs"].values():
         if not hub["over"]:
             continue

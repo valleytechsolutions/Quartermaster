@@ -174,17 +174,16 @@ See also [Troubleshooting](../diy.md#troubleshooting) in the DIY guide.
 | Message | What to do |
 | --- | --- |
 | No GPS found. Plug in a USB GPS or connect a receiver through gpsd. | Plug in a USB GPS. On a Zero, use the port marked **USB**. Check **Settings > GPS source**. |
+| USB power: about X of Y mA. Estimate. Within what the Pi's USB ports give. | All fits. |
 | Connect the Pi and phone to the same network. | The phone setup screen says this while the Pi is not on a network. See [Uploads](uploads.md#on-a-diy-raspberry-pi). |
 
-**Messages that name the Cardputer, the AppStore or a letter key.** Some messages are the same as on the CardputerZero. On a Pi, do this instead:
+**Messages that ask you to restart, update or reinstall.** On a Pi, do this:
 
 | Where a message says | What to do on a Pi |
 | --- | --- |
-| Restart the Cardputer | Restart the Pi with `sudo reboot`. |
+| Restart the Pi once | Restart the Pi with `sudo reboot`. |
 | Update Quartermaster | Install the newest Pi package, as **Updating** under [Good to know](../diy.md#good-to-know) in the DIY guide shows. Run only step 3 of the manual install, then restart the Pi. |
-| Reinstall Quartermaster | Run the commands of step 3 of the [manual install](../diy.md#assemble-and-install-manually), but type the last one with `--reinstall`: `sha256sum --check SHA256SUMS && sudo apt install --reinstall ./quartermaster-pi_1.2.9_all.deb`. Without it, apt does nothing when this version is already installed. Then restart the Pi. |
-| Radio helper not installed. Update Quartermaster from the AppStore. | Switch the radio helper on with `sudo systemctl enable --now quartermaster-radio.socket`. If the message stays, reinstall Quartermaster as the line above shows. |
-| Press K to add your upload keys | Go back to the menu and open **Keys**. |
-| Another letter key | Press **K3** and choose the action from the list. |
+| Reinstall Quartermaster | Run the commands of step 3 of the [manual install](../diy.md#assemble-and-install-manually), but type the last one with `--reinstall`: `sha256sum --check SHA256SUMS && sudo apt install --reinstall ./quartermaster-pi_1.2.10_all.deb`. Without it, apt does nothing when this version is already installed. Then restart the Pi. |
+| Radio helper not found. Reinstall the Pi package from GitHub. | Switch the radio helper on with `sudo systemctl enable --now quartermaster-radio.socket`. If the message stays, reinstall the Pi package as the line above shows. |
 
 **Quartermaster closed.** After **Quit** on the menu, Quartermaster stays closed until the Pi starts again. Restart the Pi to open it. If Quartermaster stops because of an error, it opens again by itself after a few seconds.
