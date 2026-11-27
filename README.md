@@ -49,6 +49,8 @@ Quartermaster is on the CardputerZero AppStore. Open the AppStore app on the Car
 
 Updates come through the AppStore app too. It lists the apps with a newer version, and key **7** updates them.
 
+On Gh0st OS, open **Store**, press **R** to refresh the catalog, then **S** and search for **WARD**. Version 1.2.5-1 can use the Wi-Fi firmware bundled with Gh0st OS Stable. Some external adapters require additional firmware. [Gh0st OS installation guide](https://github.com/valleytechsolutions/Quartermaster/wiki/CardputerZero-installation#install-on-gh0st-os)
+
 ### With one command
 
 New versions reach GitHub first, and the AppStore after its review. To get the newest one now, open a terminal on the CardputerZero, or connect to it with SSH, and paste this:

@@ -444,11 +444,19 @@ def usb_driver(usb_id, modules=Path("/lib/modules"), release=None):
 
 
 def has_firmware(prefix, firmware=Path("/lib/firmware")):
-    folder, _, start = ("/" + prefix).rpartition("/")
-    try:
-        return any(name.startswith(start) for name in os.listdir(str(firmware) + folder))
-    except OSError:
-        return False
+    prefixes = [prefix]
+    if prefix in ("ath9k_htc/htc_9271", "ath9k_htc/htc_7010"):
+        # ath9k_htc falls back to the older unversioned file at the firmware root.
+        prefixes.append(Path(prefix).name + ".fw")
+    for root in (Path(firmware) / "updates", Path(firmware)):
+        for candidate in prefixes:
+            folder, _, start = candidate.rpartition("/")
+            try:
+                if any(name.startswith(start) for name in os.listdir(root / folder)):
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def _since_plugged(lines, port, plugged):

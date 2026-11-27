@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.5-1
+
+- On Gh0st OS, Quartermaster can install using the Wi-Fi firmware bundled with the OS. Stock CardputerZero installations continue to use the Atheros, MediaTek and Realtek firmware packages. External adapter support depends on the drivers and firmware installed on the device.
+- The Hardware screen also checks the firmware override directory used by Gh0st OS when diagnosing a USB adapter that has failed to start.
+
 ## 1.2.5
 
 - New: Deep scan, in Settings. It is off by default. When you turn it on, a spare USB Wi-Fi adapter listens in monitor mode while a wardrive or Recon runs. It only listens and never sends anything.

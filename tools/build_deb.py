@@ -30,7 +30,7 @@ UNITS = ("quartermaster-radio.socket", "quartermaster-radio.service")
 DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
            "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr, python3-spidev, "
            "python3-smbus | python3-smbus2, python3-libgpiod, python3-cryptography, usb-modeswitch, "
-           "firmware-realtek, firmware-mediatek, firmware-atheros")
+           "firmware-realtek | gh0st-wifi, firmware-mediatek | gh0st-wifi, firmware-atheros | gh0st-wifi")
 
 
 def build(out):
