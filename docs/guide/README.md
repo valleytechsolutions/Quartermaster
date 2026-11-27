@@ -1,8 +1,8 @@
 # Quartermaster user guide
 
-This guide explains how to use Quartermaster 1.2.10 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
+This guide explains how to use Quartermaster 1.2.12 on the M5Stack CardputerZero. It is written for everyone, not only for people who know Linux or radio.
 
-The AppStore and the one command can give you an older version than 1.2.10. Then some things in this guide are not on your Cardputer yet, such as **Power guard**, **Stop, don't save** and the aircraft viewer. The **About** screen shows which version you have, and the [changelog](../../CHANGELOG.md) says what each version brought.
+The AppStore and the one command can give you an older version than 1.2.12. Then some things in this guide are not on your Cardputer yet, such as **Power guard**, **Stop, don't save** and the aircraft viewer. The **About** screen shows which version you have, and the [changelog](../../CHANGELOG.md) says what each version brought.
 
 There is also a DIY version of Quartermaster, for a Raspberry Pi with a Waveshare LCD HAT. It has the same screens and nearly the same settings, with other controls. This guide is written for the CardputerZero. Where the DIY version works differently, the page ends with a section called **On a DIY Raspberry Pi**. The [DIY guide](../diy.md) explains how to build and install the DIY version, its controls and what is different. To tell the two versions apart, see [The CardputerZero version and the DIY version](#the-cardputerzero-version-and-the-diy-version) below.
 
@@ -28,6 +28,7 @@ A few words used everywhere in this guide:
 - [Deep scan and the radio helper](deep-scan.md)
 - [Drive Alerts and Recon](alerts.md): warnings about cameras, trackers and more.
 - [Nodes](nodes.md): extra ESP32-C5 scanners, plugged in or wireless.
+- [Biscuit node](biscuit.md): scan 6 GHz for a Biscuit or Biscuit Pro.
 - [Aircraft and LoRa mesh](aircraft-and-lora.md): ADS-B, Meshtastic, MeshCore and LoRaWAN.
 - [Uploads](uploads.md): WiGLE, WDGWars and Wardrift keys, and the phone setup page.
 - [Files and logs](files.md): where everything is kept.
@@ -44,8 +45,8 @@ Both versions are Quartermaster, made from the same code. They run on different 
 | Device | The M5Stack CardputerZero, with its 320×170 screen and its keyboard | A Raspberry Pi Zero W or WH, Zero 2 W or WH, 3B, 3B+ or 4B, with a Waveshare 1.44inch LCD HAT (128×128) or a Waveshare 1.3inch LCD HAT (240×240) |
 | Controls | The keys of the Cardputer | The joystick and the buttons **K1**, **K2** and **K3** on the HAT, or a USB keyboard |
 | How to install | From the CardputerZero AppStore (share code **WARD**), or with the one command in [Install and update](install.md) | With a ready SD card image for your HAT, or with the Pi package. See [Install and update](install.md#on-a-diy-raspberry-pi). |
-| Package | `quartermaster`, downloaded as `quartermaster.deb` | `quartermaster-pi`, downloaded as `quartermaster-pi_1.2.10_all.deb` |
-| Releases on GitHub | Their tags start with `v`. The newest one has GitHub's **Latest** badge. | Their tags start with `pi-v`, such as [pi-v1.2.10](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.10), and their names end in "for Raspberry Pi". They never have the **Latest** badge. |
+| Package | `quartermaster`, downloaded as `quartermaster.deb` | `quartermaster-pi`, downloaded as `quartermaster-pi_1.2.12_all.deb` |
+| Releases on GitHub | Their tags start with `v`. The newest one has GitHub's **Latest** badge. | Their tags start with `pi-v`, such as [pi-v1.2.12](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12), and their names end in "for Raspberry Pi". They never have the **Latest** badge. |
 | Cap LoRa-1262 (Meshtastic, MeshCore and LoRaWAN) and a Grove GPS | Yes | No |
 | The **About** screen says | "for the CardputerZero" | "Raspberry Pi DIY" |
 

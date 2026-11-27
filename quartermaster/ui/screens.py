@@ -1461,6 +1461,9 @@ class Settings(Screen, ListMixin):
             return plural(len(app.cfg.get("nodes", ())), "node") + (", %d new" % found if found else "")
         if key == "flash_node":
             return ""
+        if key == "biscuit_node":
+            from .biscuit_screen import summary
+            return summary(app)[0]
         if key == "check_updates":
             return "v" + __version__
         return config.shown(key, app.cfg.get(key))
@@ -1543,6 +1546,9 @@ class Settings(Screen, ListMixin):
                                 app.cfg.get("country"), lambda value: app.change("country", value)))
         elif name == "flash_node":
             app.push(FlashTargets())
+        elif name == "biscuit_node":
+            from .biscuit_screen import BiscuitNode
+            app.push(BiscuitNode())
         elif name == "check_updates":
             app.push(Updates())
             app.check_updates()

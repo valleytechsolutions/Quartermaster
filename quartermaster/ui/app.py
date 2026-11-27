@@ -11,6 +11,7 @@ from PIL import Image
 from .. import accounts, adsb, config, drive_watch, faults, flasher, hardware, lora, mesh, power, powerguard, tones
 from .. import skyview, updates_check
 from .. import engine, uploads, wigle
+from ..biscuit import BiscuitLink
 from ..engine import DEFAULT_ROOT, Wardrive
 from ..nodes import NodeManager
 from ..recon_engine import AlertSound, Recon
@@ -35,6 +36,7 @@ PORT_WAIT, PORT_STEP = 20.0, 0.1
 FLASH_WAIT = 60.0
 FINISH_WAIT = 30.0
 UPDATE_SECONDS = 15.0
+BISCUIT_ON = "Biscuit node mode is on. Stop it under Settings > Biscuit node first."
 GONE = "The node is not plugged in any more. Plug it in again and retry."
 FLASH_LAST = "Battery almost empty. Closing once the board is flashed."
 BUSY = "Something else is using this board's port. Plug the board in again and retry."
@@ -239,6 +241,7 @@ class App:
         self.viewer_factory = viewer or (lambda: skyview.Viewer(
             root, gps, drive=lambda: self.drive if self.wardriving else None, diy=bool(self.square)))
         self.sky = None
+        self.biscuit = BiscuitLink()
         self.flasher_class = flasher_class
         self.flash_job = None
         self.updates = updates
@@ -659,6 +662,9 @@ class App:
             self.toast("Capture saved in quartermaster/aircraft", GREEN, 5)
 
     def start_wardrive(self, ask=True):
+        if self.biscuit.running:
+            self.toast(BISCUIT_ON, AMBER, 4)
+            return False
         if self.wardriving:
             if not isinstance(self.screen, screens.Wardrive):
                 self.home()
@@ -794,6 +800,8 @@ class App:
             self.toast(drive.failed, RED, 5)
 
     def start_recon(self):
+        if self.biscuit.running:
+            return self.toast(BISCUIT_ON, AMBER, 4)
         self.recon.cfg = dict(self.cfg)
         try:
             self.recon.start()
@@ -1193,6 +1201,7 @@ class App:
         self.toast("That screen hit a problem. Back at the menu.", AMBER, 5)
 
     def shutdown(self):
+        self.biscuit.stop(wait=True)
         if self.wardriving:
             self.drive.stop()
         if self.recon_running:

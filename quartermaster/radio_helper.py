@@ -50,6 +50,7 @@ class Client:
         self._connect = connect or self._unix
         self.sock = None
         self.frames = None
+        self.biscuit = None
         self.lock = threading.Lock()
         self.reader = None
         self.closed = threading.Event()
@@ -94,6 +95,15 @@ class Client:
                     sink = self.frames
                     if sink is not None:
                         sink(body)
+                elif kind == b"B":
+                    sink = self.biscuit
+                    if sink is not None:
+                        try:
+                            message = json.loads(body.decode("utf-8"))
+                        except ValueError:
+                            message = None
+                        if isinstance(message, dict):
+                            sink(message)
                 elif kind == b"J":
                     self._reply(body)
                 elif kind == b"C":

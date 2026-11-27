@@ -50,6 +50,7 @@ If the radio helper is not ready, the help line says "Helper:" and what to do.
 | --- | --- |
 | Nodes | ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, name or update them here. See [Nodes](nodes.md). |
 | Flash a node | Puts the node firmware on an ESP32-C5 board, or updates a node. |
+| Biscuit node | Makes Quartermaster a Pager 6 GHz node for a Biscuit or Biscuit Pro, with a 6 GHz USB adapter. Add it from a node search on the Biscuit. See [Biscuit node](biscuit.md). |
 
 ## Logging
 

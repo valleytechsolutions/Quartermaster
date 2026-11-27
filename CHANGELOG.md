@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.12
+
+- New: **Biscuit node** mode. Under **Settings > Biscuit node**, Quartermaster becomes the 6 GHz node of a Biscuit or Biscuit Pro, with a 6 GHz USB adapter such as the ALFA AWUS036AXM. The Biscuit runs the wardrive and logs with its own GPS. See [Biscuit node](docs/guide/biscuit.md).
+- In node mode, Quartermaster works like the Biscuit Pager node for the Hak5 Pager by GSHD and CodeHedge. It reports to the Biscuit as a Pager node (`Pager:v1.1.0`) and sends only what the Pager node sends. It scans 6 GHz only and goes to 2.4 GHz channel 6 only to talk to the Biscuit.
+- As with the Pager node, pairing is done on the Biscuit: start node mode, then add the node from a node search in the Biscuit manager app. The Biscuit must be in Extended node mode, with firmware v1.7.0 or newer.
+- The node sends its Pager firmware name again when the Biscuit adds it or gives it a job, and every 30 seconds, so the Biscuit always shows it as a Pager and never as a plain node.
+- While node mode runs, a wardrive and Recon wait until it is stopped.
+- The radio helper runs node mode. It sends no frame but the node's own messages to the Biscuit, on channel 6, and only while node mode runs.
+- On the CardputerZero, 1.2.12 is the first release since 1.2.5, so it brings everything listed for 1.2.6 to 1.2.10 as well, such as Power guard, the aircraft viewer and **Stop, don't save**. Restart the Cardputer once after you install it, so the USB reset permission from 1.2.7 applies.
+
 ## 1.2.10
 
 - On a Pi, the messages on the HAT screen now name the Pi, not the Cardputer. For example, the Hardware screen can say "No permission yet. Restart the Pi once." about the RTL-SDR stick.

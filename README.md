@@ -46,7 +46,7 @@ Plug in your radios and a GPS, press one key, and drive. Quartermaster finds you
 
 Quartermaster comes in two versions, made from the same code. The CardputerZero version runs on the M5Stack CardputerZero. The DIY version runs on a Raspberry Pi that you build with a Waveshare LCD HAT, a small screen with a joystick and three buttons. The two versions are installed in different ways, so find the column for your device and follow only that one.
 
-The two versions have their own releases, so their version numbers can differ. This page is for Quartermaster 1.2.10. The **About** screen shows which version you have, and the [changelog](CHANGELOG.md) says what each version brought.
+The two versions have their own releases, so their version numbers can differ. This page is for Quartermaster 1.2.12. The **About** screen shows which version you have, and the [changelog](CHANGELOG.md) says what each version brought.
 
 <table>
   <tr>
@@ -83,13 +83,13 @@ The two versions have their own releases, so their version numbers can differ. T
   <tr><th colspan="3">What to download</th></tr>
   <tr>
     <td>Nothing with the AppStore. The one command fetches <code>quartermaster.deb</code> by itself.</td>
-    <td><code>quartermaster.rpi-imager-manifest</code>. Imager then downloads the image for this HAT, <code>quartermaster-pi-1.2.10-waveshare-1.44inch-lcd-hat.img.xz</code>.</td>
-    <td><code>quartermaster.rpi-imager-manifest</code>. Imager then downloads the image for this HAT, <code>quartermaster-pi-1.2.10-waveshare-1.3inch-lcd-hat.img.xz</code>.</td>
+    <td><code>quartermaster.rpi-imager-manifest</code>. Imager then downloads the image for this HAT, <code>quartermaster-pi-1.2.12-waveshare-1.44inch-lcd-hat.img.xz</code>.</td>
+    <td><code>quartermaster.rpi-imager-manifest</code>. Imager then downloads the image for this HAT, <code>quartermaster-pi-1.2.12-waveshare-1.3inch-lcd-hat.img.xz</code>.</td>
   </tr>
   <tr><th colspan="3">Where it comes from</th></tr>
   <tr>
     <td>The AppStore, or <a href="https://github.com/valleytechsolutions/Quartermaster/releases/latest">the GitHub release with the <b>Latest</b> badge</a>. Its tag starts with <code>v</code>. The package is <code>quartermaster</code>.</td>
-    <td colspan="2">The <a href="https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.10">Raspberry Pi release pi-v1.2.10</a>. The names of Pi releases end in "for Raspberry Pi", and they never have the <b>Latest</b> badge. The package is <code>quartermaster-pi</code>.</td>
+    <td colspan="2">The <a href="https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12">Raspberry Pi release pi-v1.2.12</a>. The names of Pi releases end in "for Raspberry Pi", and they never have the <b>Latest</b> badge. The package is <code>quartermaster-pi</code>.</td>
   </tr>
   <tr><th colspan="3">How to update</th></tr>
   <tr>
@@ -177,17 +177,17 @@ Restart the Cardputer once after the first install, then open **Quartermaster** 
 
 **Settings > Check for updates** tells you when a newer version is out. It only asks the AppStore and GitHub, and never downloads anything.
 
-The AppStore and the one command can give you an older version than 1.2.10. Then some things on this page are not on your Cardputer yet, such as **Power guard**, **Stop, don't save** and the aircraft viewer. The **About** screen shows which version you have.
+The AppStore and the one command can give you an older version than 1.2.12. Then some things on this page are not on your Cardputer yet, such as **Power guard**, **Stop, don't save** and the aircraft viewer. The **About** screen shows which version you have.
 
 ### On a DIY Raspberry Pi
 
-The DIY version is not in the AppStore, and the one command above is not for it. It comes from the Raspberry Pi releases on GitHub. Their tags start with `pi-v`, their names end in "for Raspberry Pi", and they never have the **Latest** badge. Quartermaster 1.2.10 for the Pi is in the release called [Quartermaster 1.2.10 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.10). A new Pi release is marked **Pre-release** until it has been tested.
+The DIY version is not in the AppStore, and the one command above is not for it. It comes from the Raspberry Pi releases on GitHub. Their tags start with `pi-v`, their names end in "for Raspberry Pi", and they never have the **Latest** badge. Quartermaster 1.2.12 for the Pi is in the release called [Quartermaster 1.2.12 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12). A new Pi release is marked **Pre-release** until it has been tested.
 
 It runs on a Raspberry Pi with one of the two Waveshare LCD HATs that Raspyjack uses. The easiest way is a ready SD card image for your HAT. The Pi then starts straight into Quartermaster, and you do not need to type any commands.
 
 1. Install the newest [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer.
-2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.10/quartermaster.rpi-imager-manifest) and open it. Imager starts with the Quartermaster images in its list.
-3. Choose your Pi model, then **Quartermaster 1.2.10**, then the image for your HAT: **Quartermaster 1.2.10 for the Waveshare 1.44inch LCD HAT (128×128)** or **Quartermaster 1.2.10 for the Waveshare 1.3inch LCD HAT (240×240)**.
+2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.12/quartermaster.rpi-imager-manifest) and open it. Imager starts with the Quartermaster images in its list.
+3. Choose your Pi model, then **Quartermaster 1.2.12**, then the image for your HAT: **Quartermaster 1.2.12 for the Waveshare 1.44inch LCD HAT (128×128)** or **Quartermaster 1.2.12 for the Waveshare 1.3inch LCD HAT (240×240)**.
 4. Choose your microSD card, 8 GB or more. Go through Imager's set-up pages. Give it your Wi-Fi network, and choose your capital city on **Localisation**. A Zero W, Zero 2 W or 3B can only join a 2.4 GHz network. Then write the card.
 5. With the Pi off, put the HAT on the 40-pin header and plug in the GPS. On a Zero, plug the GPS into the port marked **USB** and the power into **PWR IN**.
 6. Put the card in the Pi and switch it on. The first start takes a few minutes, and the Pi may restart once. Then the Quartermaster menu shows on the HAT.
@@ -200,8 +200,8 @@ The [DIY guide](docs/diy.md#easiest-way-flash-a-ready-image) has every step in m
 
 | Your HAT | Its image file |
 | --- | --- |
-| Waveshare 1.44inch LCD HAT (128×128) | `quartermaster-pi-1.2.10-waveshare-1.44inch-lcd-hat.img.xz` |
-| Waveshare 1.3inch LCD HAT (240×240) | `quartermaster-pi-1.2.10-waveshare-1.3inch-lcd-hat.img.xz` |
+| Waveshare 1.44inch LCD HAT (128×128) | `quartermaster-pi-1.2.12-waveshare-1.44inch-lcd-hat.img.xz` |
+| Waveshare 1.3inch LCD HAT (240×240) | `quartermaster-pi-1.2.12-waveshare-1.3inch-lcd-hat.img.xz` |
 
 A card written from one of these files has no Wi-Fi network and no Wi-Fi country, because Imager shows no set-up pages for a file you choose yourself. **Flashing an image file yourself** under [Good to know](docs/diy.md#good-to-know) in the DIY guide shows how to add them.
 
@@ -822,7 +822,7 @@ Everything is kept in the `quartermaster` folder in your home directory. On a DI
 Every log starts with a header that names the app:
 
 ```
-WigleWifi-1.6,appRelease=Quartermaster 1.2.10,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
+WigleWifi-1.6,appRelease=Quartermaster 1.2.12,model=CardputerZero,release=...,device=Quartermaster,display=320x170,board=M5Stack CardputerZero,brand=Valleytech Solutions,star=Sol,body=3,subBody=0
 ```
 
 On a DIY Pi, `model` and `board` name the Pi, such as Raspberry Pi Zero 2 W Rev 1.0, and `display` is `128x128` or `240x240`.

@@ -1,10 +1,12 @@
-"""Quartermaster radio helper: the one privileged step Deep scan, direct scans and radio tuning need.
+"""Quartermaster radio helper: the one privileged step Deep scan, direct scans, radio tuning and Biscuit node mode
+need.
 
 systemd starts it on the first connection to /run/quartermaster/radio.sock, as a dynamic user holding only
 CAP_NET_ADMIN and CAP_NET_RAW. It takes a fixed set of JSON commands from members of the quartermaster-radio group
 and checks every argument. It has no command for the regulatory domain, never touches a radio that is not on USB,
-never sends a frame, and runs no shell. Everything a connection changes is put back when that connection closes, and
-what a crash left behind is put back at the next start.
+and runs no shell. The only frames it sends are a Biscuit node's own messages on 2.4 GHz channel 6, built here, while
+Biscuit node mode runs. Everything a connection changes is put back when that connection closes, and what a crash
+left behind is put back at the next start.
 """
 
 import array
@@ -49,9 +51,10 @@ RESET_GAP, RESET_MAX, RESET_WINDOW = 5.0, 3, 600.0
 USBDEVFS_RESET = 0x5514
 COMMANDS = {"hello": (), "adapters": (), "scan": ("iface", "freqs"), "tune": ("iface",), "untune": ("iface",),
             "monitor_start": ("iface",), "hop_plan": ("vif", "plan"), "capture": ("vif", "mgmt_only"),
-            "monitor_stop": ("vif",), "usb_reset": ("port",)}
+            "monitor_stop": ("vif",), "usb_reset": ("port",), "biscuit_node": ("vif", "device")}
 REQUIRED = {"scan": ("iface",), "tune": ("iface",), "untune": ("iface",), "monitor_start": ("iface",),
-            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",)}
+            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",),
+            "biscuit_node": ("vif", "device")}
 TOOLS = {"iw": ("/usr/sbin/iw", "/sbin/iw", "/usr/bin/iw"), "ip": ("/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip")}
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
 _VIF = re.compile(r"qmmon[0-9]")
@@ -426,6 +429,9 @@ class System:
     def capture(self, vif, mgmt_only):
         return Capture(vif, bpf_program(mgmt_only=mgmt_only))
 
+    def node_socket(self, vif):
+        return NodeSocket(vif, bytes.fromhex(self.mac(vif).replace(":", "")))
+
     def usb_device(self, port):
         """(vendor:product, bus number, device number, has a network interface) of a USB device, or None."""
         node = os.path.join(self.sys_usb, port)
@@ -678,6 +684,38 @@ class Session:
         relay.start()
         return {}
 
+    def do_biscuit_node(self, vif, device):
+        """Biscuit node mode on a monitor this connection owns, with nothing else running on it. It joins the
+        Biscuit that answers, as CodeHedge's Pager node does; pairing is done on the Biscuit. Its messages come
+        back as B frames: {"kind": "status" | "error", ...}."""
+        vif, entry = self._owned(vif)
+        if device not in BISCUIT_DEVICES:
+            raise Refused("bad device")
+        for part in ("relay", "hopper", "node"):
+            worker = entry.get(part)
+            if worker is not None and worker.is_alive():
+                raise Refused("the monitor is busy")
+        allowed = self.system.phy_info(entry["phy"])["freqs"]
+        if BISCUIT_HOME not in allowed:
+            raise Refused("channel 6 is not allowed on this radio")
+        channels = {(f - 5950) // 5 for f in allowed if 5955 <= f <= 7115 and (f - 5955) % 20 == 0}
+        if not channels:
+            raise Refused("no 6 GHz channels: this adapter or the Wi-Fi country has none")
+        radio = self.system.node_socket(vif)
+        ifindex = entry.get("ifindex")
+
+        def report(kind, payload):
+            try:
+                self.send(b"B", json.dumps(dict(payload, kind=kind), separators=(",", ":")).encode())
+            except socket.timeout:
+                pass
+            except OSError:
+                node.stop()
+        node = entry["node"] = BiscuitNode(lambda freq: self.system.set_freq(vif, ifindex, freq), radio, report,
+                                           channels)
+        node.start()
+        return {"channels": len(channels)}
+
     def do_usb_reset(self, port):
         """Reset a known USB Wi-Fi adapter that is on the bus but has no network interface: what a brownout leaves.
         A working adapter, any other device and the built-in radio are refused, and resets are spaced out."""
@@ -708,10 +746,12 @@ class Session:
         entry = self.monitors.get(vif)
         if entry is None:
             return
-        for part in ("relay", "hopper"):
+        for part in ("relay", "hopper", "node"):
             worker = entry.pop(part, None)
             if worker is not None:
                 worker.stop()
+                if part == "node" and worker is not threading.current_thread():
+                    worker.join(2)
         undo_monitor(self.system, entry)
         self.monitors.pop(vif, None)
         self.helper.remember()
@@ -804,6 +844,453 @@ class Relay(threading.Thread):
             self.lost_batches += 1
         except OSError:
             self.stopped.set()
+
+    def stop(self):
+        self.stopped.set()
+
+
+BISCUIT_FIRMWARE = b"Pager:v1.1.0"
+BISCUIT_DEVICES = ("cardputer", "pi")
+BISCUIT_HOME = 2437
+ESPRESSIF = b"\x18\xfe\x34"
+BROADCAST = b"\xff" * 6
+ENOW_TEXT = 200
+CORE_REQUEST, CORE_REPLY, NODE_HEARTBEAT, NODE_TEXT, ROLE_ASSIGN, OTA_COMMAND, FW_VERSION = 1, 2, 3, 4, 5, 6, 7
+STOP_SCAN, STOP_ACK, CONFIG_UPDATE, CONFIG_ACK, CONFIG_REQUEST, ROLE_ACK = 8, 9, 10, 11, 12, 15
+WARDRIVE_BATCH, RELEASE = 19, 26
+SCAN_ROLE, AP6_RECORD, BATCH_ROOM, SEND_PER_VISIT = 1, 0x04, 242, 12
+PSC_6GHZ = tuple(range(5, 230, 16))
+ALL_6GHZ = tuple(range(1, 234, 4))
+NODE_DWELL, NODE_SCAN, NODE_HOME = 0.11, 0.9, 0.15
+REQUEST_GAP, HEARTBEAT_GAP, FIRMWARE_GAP, FIRMWARE_AGAIN = 0.3, 3.0, 2.0, 30.0
+RESEND_SECONDS, LOST_SECONDS, ACK_WINDOW, STATUS_GAP = 5.0, 20.0, 0.05, 1.0
+NODE_RADIOTAP = struct.pack("<BBHIBxH", 0, 0, 12, 1 << 2 | 1 << 15, 2, 0)
+NODE_FILTER = ((0x30, 0, 0, 3), (0x64, 0, 0, 8), (0x07, 0, 0, 0), (0x30, 0, 0, 2), (0x0C, 0, 0, 0),
+               (0x07, 0, 0, 0), (0x50, 0, 0, 0), (0x15, 3, 0, 0x80), (0x15, 2, 0, 0x50), (0x15, 1, 0, 0xD0),
+               (0x15, 0, 1, 0xD4), (0x06, 0, 0, 4096), (0x06, 0, 0, 0))
+AKM_8021X, AKM_PSK, AKM_SAE, AKM_OWE, AKM_SUITE_B = {1, 3, 5}, {2, 4, 6}, {8, 9, 24, 25}, {18}, {11, 12}
+
+
+def biscuit_name(mac, text=b""):
+    for word in text.replace(b",", b" ").replace(b";", b" ").replace(b"&", b" ").split():
+        key, _, value = word.partition(b"=")
+        if key.lower() in (b"name", b"model", b"device", b"dev") and value.strip():
+            return value.decode("utf-8", "replace").strip()[:24]
+    return "Biscuit " + mac.hex()[-4:].upper()
+
+
+def enow(kind, counter=0, text=b""):
+    text = bytes(text)[:ENOW_TEXT]
+    return struct.pack("<4sBIH", b"ENOW", kind, counter & 0xFFFFFFFF, len(text)) + text.ljust(ENOW_TEXT + 1, b"\0")
+
+
+def read_enow(payload):
+    if len(payload) < 11 or payload[:4] != b"ENOW":
+        return None
+    counter, size = struct.unpack_from("<IH", payload, 5)
+    return payload[4], counter, bytes(payload[11:11 + min(size, ENOW_TEXT)])
+
+
+def espnow_frame(dst, src, seq, payload, nonce=None):
+    if not 5 <= len(payload) <= 250:
+        raise ValueError("ESP-NOW payloads are 5 to 250 bytes")
+    nonce = os.urandom(4) if nonce is None else nonce
+    header = struct.pack("<HH6s6s6sH", 0x00D0, 0, dst, src, BROADCAST, (seq & 0xFFF) << 4)
+    return header + b"\x7f" + ESPRESSIF + nonce + b"\xdd" + bytes([len(payload) + 5]) + ESPRESSIF + b"\x04\x01" + \
+        payload
+
+
+def read_espnow(frame):
+    if len(frame) < 39 or frame[0] & 0xFC != 0xD0:
+        return None
+    body = frame[24:]
+    if body[0] != 0x7F or body[1:4] != ESPRESSIF or body[8] != 0xDD or body[10:13] != ESPRESSIF or body[13] != 4:
+        return None
+    end = 10 + body[9]
+    if end > len(body) or body[9] < 5:
+        return None
+    return bytes(frame[4:10]), bytes(frame[10:16]), bytes(body[15:end])
+
+
+def ap6_record(bssid, channel, rssi, code, ssid):
+    ssid = bytes(ssid)[:32]
+    return bytes([AP6_RECORD]) + bytes(bssid) + struct.pack("<BbBB", channel, max(-128, min(127, int(rssi))), code,
+                                                            len(ssid)) + ssid
+
+
+def wardrive_batches(seq, records):
+    out, body, ids, used = [], [], [], 0
+    for bssid, raw in records:
+        if body and used + len(raw) > BATCH_ROOM:
+            out.append((b"ENOW" + bytes((WARDRIVE_BATCH, 2, seq & 0xFF, len(body))) + b"".join(body), ids))
+            seq, body, ids, used = seq + 1, [], [], 0
+        body.append(raw)
+        ids.append(bssid)
+        used += len(raw)
+    if body:
+        out.append((b"ENOW" + bytes((WARDRIVE_BATCH, 2, seq & 0xFF, len(body))) + b"".join(body), ids))
+        seq += 1
+    return seq & 0xFF, out
+
+
+def radiotap_head(buf):
+    """(header length, frame end, dBm or None, MHz or None) of a radiotap frame, or None."""
+    n = len(buf)
+    if n < 8 or buf[0] != 0:
+        return None
+    length = buf[2] | buf[3] << 8
+    if length < 8 or length > n:
+        return None
+    first = present = int.from_bytes(buf[4:8], "little")
+    at = 8
+    while present & 0x80000000:
+        if at + 4 > length:
+            return None
+        present = int.from_bytes(buf[at:at + 4], "little")
+        at += 4
+    flags, freq, rssi = 0, None, None
+    for bit, size, align in ((0, 8, 8), (1, 1, 1), (2, 1, 1), (3, 4, 2), (4, 2, 1), (5, 1, 1)):
+        if not first >> bit & 1:
+            continue
+        at = (at + align - 1) & ~(align - 1)
+        if at + size > length:
+            return None
+        if bit == 1:
+            flags = buf[at]
+        elif bit == 3:
+            freq = buf[at] | buf[at + 1] << 8
+        elif bit == 5:
+            rssi = buf[at] - 256 if buf[at] > 127 else buf[at]
+        at += size
+    if flags & 0x40:
+        return None
+    end = n - 4 if flags & 0x10 else n
+    return (length, end, rssi, freq) if end >= length else None
+
+
+def _akms(body):
+    if len(body) < 8:
+        return set()
+    at = 6
+    count = body[at] | body[at + 1] << 8
+    at += 2 + 4 * count
+    if len(body) < at + 2:
+        return set()
+    count = body[at] | body[at + 1] << 8
+    at += 2
+    return {body[at + 4 * i + 3] for i in range(count) if len(body) >= at + 4 * i + 4 and
+            body[at + 4 * i:at + 4 * i + 3] == b"\x00\x0f\xac"}
+
+
+def six_ghz_network(frame, rssi, freq):
+    """(bssid, channel, rssi, security code, ssid bytes) of a 6 GHz beacon or probe response, or None."""
+    if len(frame) < 36 or frame[0] not in (0x80, 0x50) or rssi is None or not 5925 <= (freq or 0) <= 7125:
+        return None
+    privacy = bool((frame[34] | frame[35] << 8) & 0x10)
+    ssid, rsn, wpa, wpa_eap, he = b"", None, False, False, None
+    at, n = 36, len(frame)
+    while at + 2 <= n:
+        ie, size = frame[at], frame[at + 1]
+        body = frame[at + 2:at + 2 + size]
+        if len(body) < size:
+            break
+        if ie == 0:
+            ssid = bytes(body[:32]) if bytes(body[:32]).strip(b"\0") else b""
+        elif ie == 48:
+            rsn = _akms(bytes(body))
+        elif ie == 221 and body[:4] == b"\x00\x50\xf2\x01":
+            wpa = True
+            wpa_eap = b"\x00\x50\xf2\x01" in bytes(body[4:])[12:]
+        elif ie == 255 and size >= 7 and body[0] == 36:
+            params = body[1] | body[2] << 8 | body[3] << 16
+            o = 7 + (3 if params >> 14 & 1 else 0) + (1 if params >> 15 & 1 else 0)
+            if params >> 17 & 1 and size >= o + 5:
+                he = body[o]
+        at += 2 + size
+    channel = he or (freq - 5950) // 5
+    if not 1 <= channel <= 233 or (channel - 1) % 4:
+        return None
+    if rsn is not None:
+        if rsn & AKM_OWE:
+            code = 0x0D
+        elif rsn & AKM_SUITE_B:
+            code = 0x07
+        elif rsn & AKM_8021X:
+            code = 0x0F if rsn & AKM_SAE else 0x06
+        elif rsn & AKM_SAE:
+            code = 0x09 if rsn & AKM_PSK else 0x04
+        else:
+            code = 0x05 if wpa else 0x03
+    elif wpa:
+        code = 0x0E if wpa_eap else 0x02
+    else:
+        code = 0x01 if privacy else 0x00
+    return bytes(frame[16:22]), channel, rssi, code, ssid
+
+
+class NodeSocket:
+    """The node's own packet socket on its monitor interface: it reads beacons, probe responses, action and ACK
+    frames, and sends only what the node builds."""
+
+    def __init__(self, vif, mac):
+        self.mac = mac
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
+        try:
+            code = array.array("B", _pack_program(NODE_FILTER))
+            sock.setsockopt(socket.SOL_SOCKET, SO_ATTACH_FILTER,
+                            struct.pack("HP", len(NODE_FILTER), code.buffer_info()[0]))
+            sock.setsockopt(socket.SOL_SOCKET, SO_LOCK_FILTER, 1)
+            sock.bind((vif, socket.htons(ETH_P_ALL)))
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+        self.seq = 0
+
+    def send(self, dst, payload):
+        self.seq = (self.seq + 1) & 0xFFF
+        try:
+            self.sock.send(NODE_RADIOTAP + espnow_frame(dst, self.mac, self.seq, payload))
+            return True
+        except OSError:
+            return False
+
+    def recv(self, timeout):
+        ready, _, _ = select.select([self.sock], [], [], max(0.0, timeout))
+        out = []
+        for _ in range(64 if ready else 0):
+            try:
+                out.append(self.sock.recv(4096, socket.MSG_DONTWAIT))
+            except BlockingIOError:
+                break
+        return out
+
+    def close(self):
+        self.sock.close()
+
+
+class BiscuitNode(threading.Thread):
+    """A Biscuit Pager node on one monitor interface: it reports as a Pager node, scans 6 GHz and nothing else,
+    and goes to channel 6 only to talk to the Biscuit."""
+
+    def __init__(self, tune, radio, report, channels, clock=time.monotonic):
+        super().__init__(daemon=True, name="biscuit-node")
+        self.tune_to, self.radio, self.report, self.channels = tune, radio, report, channels
+        self.clock = clock
+        self.stopped = threading.Event()
+        self.core, self.ap6, self.role, self.name = None, False, 0, ""
+        self.state = "searching"
+        self.hb = self.seq = self.sent = self.tx_errors = self.acks = self.sweeps = self.tune_failures = 0
+        self.outbox, self.sent_ids, self.heard, self.pending, self.last_sent, self.seen = [], set(), set(), {}, {}, {}
+        self.last_unicast, self.last_ack, self.last_heard = -1e9, None, None
+        self.firmware_tries, self.channel, self.freq = 0, None, None
+        self.plan, self.at = [], 0
+        self.next = {"request": 0.0, "firmware": 0.0, "heartbeat": 0.0, "status": 0.0}
+
+    def tune(self, freq):
+        if freq == self.freq:
+            return True
+        try:
+            self.tune_to(freq)
+        except Exception:
+            self.tune_failures += 1
+            return False
+        self.freq = freq
+        return True
+
+    def send(self, dst, payload):
+        if self.radio.send(dst, payload):
+            if dst != BROADCAST:
+                self.last_unicast = self.clock()
+            return True
+        self.tx_errors += 1
+        return False
+
+    def frame(self, raw):
+        head = radiotap_head(raw)
+        if head is None:
+            return
+        length, end, rssi, freq = head
+        fr = raw[length:end]
+        if len(fr) >= 10 and fr[0] == 0xD4:
+            if fr[4:10] == self.radio.mac and self.clock() - self.last_unicast < ACK_WINDOW:
+                self.acks += 1
+            return
+        if fr[:1] in (b"\x80", b"\x50"):
+            if self.state == "scanning":
+                found = six_ghz_network(fr, rssi, freq)
+                if found is not None:
+                    self.sighting(*found)
+            return
+        got = read_espnow(fr)
+        if got is None:
+            return
+        dst, src, payload = got
+        if src == self.radio.mac or dst not in (self.radio.mac, BROADCAST):
+            return
+        now, key = self.clock(), (src, (fr[22] | fr[23] << 8) >> 4)
+        if now - self.seen.get(key, -9.0) < 2.0:
+            return
+        self.seen[key] = now
+        if len(self.seen) > 512:
+            self.seen = {k: v for k, v in self.seen.items() if now - v < 2.0}
+        message = read_enow(payload)
+        if message is not None:
+            self.handle(src, *message)
+
+    def sighting(self, bssid, channel, rssi, code, ssid):
+        self.heard.add(bssid)
+        last = self.last_sent.get(bssid)
+        if last is not None and self.clock() - last[0] < RESEND_SECONDS:
+            return
+        held = self.pending.get(bssid)
+        if held is None or rssi > held[1]:
+            self.pending[bssid] = (channel, rssi, code, ssid)
+
+    def handle(self, src, kind, counter, text):
+        now = self.clock()
+        if kind == CORE_REPLY:
+            if b"wdbatch=" not in text and b"nodecfg=" not in text:
+                return
+            if self.core is not None:
+                if src == self.core:
+                    self.firmware_tries, self.next["firmware"] = 0, now
+                return
+            if b"encrypt=1" in text:
+                self.state = "secure"
+                return
+            self.core, self.ap6, self.role = src, b"ap6=1" in text, 0
+            self.name = biscuit_name(src, text)
+            self.state = "joined" if self.ap6 else "old"
+            self.last_heard, self.last_ack = now, None
+            self.firmware_tries = 0
+            self.next.update(firmware=now, heartbeat=now)
+            return
+        if self.core is None or src != self.core:
+            return
+        self.last_heard = now
+        if kind == ROLE_ASSIGN:
+            if len(text) == 5:
+                self.role, token = text[0], text[1:5]
+            else:
+                self.role, token = (text[0] if text else counter & 0xFF), b""
+            self.send(self.core, enow(ROLE_ACK, self.role, token))
+            self.firmware_tries, self.next["firmware"] = 0, now
+            if self.ap6:
+                self.state = "scanning" if self.role == SCAN_ROLE else "joined"
+        elif kind == CONFIG_UPDATE:
+            self.send(self.core, enow(CONFIG_ACK))
+        elif kind == STOP_SCAN:
+            self.role = 0
+            self.outbox.clear()
+            self.pending.clear()
+            if self.ap6:
+                self.state = "joined"
+            self.send(self.core, enow(STOP_ACK))
+        elif kind == RELEASE:
+            self.lost()
+
+    def lost(self):
+        self.core, self.role, self.ap6, self.last_ack = None, 0, False, None
+        self.outbox.clear()
+        self.state = "searching"
+
+    def listen(self, seconds):
+        end = self.clock() + seconds
+        while not self.stopped.is_set():
+            left = end - self.clock()
+            if left <= 0:
+                return
+            for raw in self.radio.recv(min(left, 0.05)):
+                try:
+                    self.frame(raw)
+                except (IndexError, struct.error, ValueError):
+                    pass
+
+    def home(self, seconds):
+        self.tune(BISCUIT_HOME)
+        self.channel = None
+        now = self.clock()
+        if self.core is not None and self.last_ack is not None and now - self.last_ack > LOST_SECONDS:
+            self.lost()
+        if self.core is None:
+            if now >= self.next["request"]:
+                self.send(BROADCAST, enow(CORE_REQUEST, 0, b"bsc=1"))
+                self.next["request"] = now + REQUEST_GAP
+        else:
+            self.check_in(now)
+        acks = self.acks
+        self.listen(seconds)
+        if self.acks > acks:
+            self.last_ack = self.clock()
+
+    def check_in(self, now):
+        if now >= self.next["firmware"]:
+            self.send(self.core, enow(FW_VERSION, 0, BISCUIT_FIRMWARE))
+            self.firmware_tries += 1
+            self.next["firmware"] = now + (FIRMWARE_GAP if self.firmware_tries < 3 else FIRMWARE_AGAIN)
+        if now >= self.next["heartbeat"]:
+            self.send(self.core, enow(NODE_HEARTBEAT, self.hb))
+            self.hb += 1
+            self.next["heartbeat"] = now + HEARTBEAT_GAP
+        for _ in range(min(len(self.outbox), SEND_PER_VISIT)):
+            payload, ids = self.outbox[0]
+            if not self.send(self.core, payload):
+                break
+            self.outbox.pop(0)
+            self.sent += len(ids)
+            self.sent_ids.update(ids)
+            self.stopped.wait(0.008)
+
+    def scan(self):
+        end = self.clock() + NODE_SCAN
+        while not self.stopped.is_set() and self.state == "scanning" and self.clock() < end:
+            if self.at >= len(self.plan):
+                self.sweeps += 1
+                every = [c for c in ALL_6GHZ if c in self.channels]
+                psc = [c for c in PSC_6GHZ if c in self.channels] or every
+                self.plan, self.at = (every if self.sweeps % 4 == 0 else psc), 0
+            channel = self.plan[self.at]
+            self.at += 1
+            if self.tune(5950 + 5 * channel):
+                self.channel = channel
+                self.listen(NODE_DWELL)
+        now = self.clock()
+        records = []
+        for bssid, (channel, rssi, code, ssid) in self.pending.items():
+            records.append((bssid, ap6_record(bssid, channel, rssi, code, ssid)))
+            self.last_sent[bssid] = (now, rssi)
+        self.pending.clear()
+        if len(self.last_sent) > 4096:
+            self.last_sent = {k: v for k, v in self.last_sent.items() if now - v[0] < RESEND_SECONDS}
+        self.seq, packed = wardrive_batches(self.seq, records)
+        self.outbox.extend(packed)
+        del self.outbox[:-200]
+
+    def status(self, final=False):
+        return {"state": self.state, "biscuit": ":".join("%02X" % b for b in self.core) if self.core else None,
+                "name": self.name, "ap6": self.ap6, "role": self.role, "heard": len(self.heard), "sent": len(self.sent_ids),
+                "updates": self.sent, "queued": sum(len(ids) for _, ids in self.outbox), "acks": self.acks,
+                "tx_errors": self.tx_errors, "channel": self.channel, "sweeps": self.sweeps,
+                "heard_ago": round(self.clock() - self.last_heard, 1) if self.last_heard is not None else None,
+                "tune_failures": self.tune_failures, "final": final}
+
+    def run(self):
+        try:
+            while not self.stopped.is_set():
+                if self.state == "scanning":
+                    self.scan()
+                    self.home(NODE_HOME)
+                else:
+                    self.home(0.25)
+                if self.clock() >= self.next["status"]:
+                    self.report("status", self.status())
+                    self.next["status"] = self.clock() + STATUS_GAP
+            self.report("status", self.status(final=True))
+        except Exception as exc:
+            self.report("error", {"error": ("%s: %s" % (type(exc).__name__, exc))[:120]})
+        finally:
+            self.radio.close()
 
     def stop(self):
         self.stopped.set()

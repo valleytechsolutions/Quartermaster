@@ -70,6 +70,8 @@ SECTIONS = [
         ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
          "name or update them here."),
         ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5 board, or update a node."),
+        ("biscuit_node", "Biscuit node", None, "Be a Pager 6 GHz node for a Biscuit or Biscuit Pro, with a 6 GHz "
+         "USB adapter. Add it from a node search on the Biscuit."),
     ]),
     ("LOGGING", [
         ("log_rows", "Rows per device", [("extremes", "Closest + furthest"), ("track", "Full track")],
