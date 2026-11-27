@@ -152,13 +152,22 @@ def test_without_the_module_list_only_the_kernel_version_decides_there_is_no_dri
     assert why(item("1234:5678"), where)["why"] == hardware.STALLED
 
 
-def test_firmware_is_found_plain_or_compressed(tmp_path):
+def test_firmware_is_found_in_updates_or_the_standard_directory(tmp_path):
     (tmp_path / "rtw88").mkdir()
     (tmp_path / "rtw88" / "rtw8821c_fw.bin.zst").write_text("fw")
     (tmp_path / "rt2870.bin.xz").write_text("fw")
-    assert hardware.has_firmware("rtw88/rtw8821c_fw", tmp_path) and hardware.has_firmware("rt2870", tmp_path)
-    assert not hardware.has_firmware("rtw88/rtw8822b_fw", tmp_path)
+    assert hardware.has_firmware("rt2870", tmp_path)
+    (tmp_path / "updates" / "rtw88").mkdir(parents=True)
+    (tmp_path / "updates" / "rtw88" / "rtw8822b_fw.bin").write_text("fw")
+    assert hardware.has_firmware("rtw88/rtw8821c_fw", tmp_path)
+    assert hardware.has_firmware("rtw88/rtw8822b_fw", tmp_path)
+    assert not hardware.has_firmware("rtw88/rtw8812a_fw", tmp_path)
     assert not hardware.has_firmware("rtw89/rtw8852b_fw", tmp_path)
+
+    for name in ("htc_9271", "htc_7010"):
+        assert not hardware.has_firmware("ath9k_htc/" + name, tmp_path)
+        (tmp_path / "updates" / (name + ".fw")).write_text("fw")
+        assert hardware.has_firmware("ath9k_htc/" + name, tmp_path)
 
 
 def test_every_reason_fits_on_its_card():
@@ -221,12 +230,11 @@ def test_the_package_brings_usb_modeswitch_and_the_wifi_firmware():
     build_deb = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build_deb)
     depends = [part.strip() for part in build_deb.DEPENDS.split(",")]
-    for package in ("usb-modeswitch", "firmware-realtek", "firmware-mediatek", "firmware-atheros"):
-        assert package in depends
+    assert "usb-modeswitch" in depends
     # The CardputerZero image lacks it and the AppStore never runs apt-get update, so it would stop the install.
     assert "firmware-misc-nonfree" not in build_deb.DEPENDS
     needed = {chip[3] for chip in hardware.CHIPS.values() if chip[3]}
-    assert needed - {"firmware-misc-nonfree"} <= set(depends)
+    assert needed - {"firmware-misc-nonfree"} <= set(build_deb.WIFI_FIRMWARE)
 
 
 def test_only_power_trouble_since_the_adapter_was_plugged_in_counts(tmp_path):

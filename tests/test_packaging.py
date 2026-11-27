@@ -151,6 +151,8 @@ def test_the_package_passes_the_store_checks(tmp_path):
                             text=True, check=True).stdout
     assert "Version: 1.2.10" in fields and "Architecture: all" in fields
     depends = subprocess.check_output(["dpkg-deb", "-f", str(deb), "Depends"], text=True)
+    for package in ("firmware-realtek", "firmware-mediatek", "firmware-atheros"):
+        assert package + " | gh0st-wifi" in depends.strip().split(", ")
     assert not any(pkg in depends for pkg in ("luma.lcd", "gpiozero", "rpi-lgpio", "rpi.gpio"))
     unpacked = tmp_path / "unpacked"
     subprocess.run(["dpkg-deb", "-x", str(deb), str(unpacked)], check=True)

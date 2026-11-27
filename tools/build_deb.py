@@ -33,8 +33,8 @@ UNITS = ("quartermaster-radio.socket", "quartermaster-radio.service")
 # never runs apt-get update, so asking for it could stop the whole install. The Hardware screen names it instead.
 DEPENDS = ("python3 (>= 3.9), python3-pil, python3-numpy, python3-serial, python3-dbus, iw, iproute2, "
            "ca-certificates, network-manager, bluez, alsa-utils, rtl-sdr, python3-spidev, "
-           "python3-smbus | python3-smbus2, python3-libgpiod, python3-cryptography, usb-modeswitch, "
-           "firmware-realtek, firmware-mediatek, firmware-atheros")
+           "python3-smbus | python3-smbus2, python3-libgpiod, python3-cryptography, usb-modeswitch")
+WIFI_FIRMWARE = ("firmware-realtek", "firmware-mediatek", "firmware-atheros")
 
 
 def cardputer_layout(stage, manifest):
@@ -122,7 +122,8 @@ def build(out, target="cardputer"):
             shutil.copytree(HERE / "docs/screens/diy", doc / "screens/diy")
             (control / "conffiles").write_text("/etc/quartermaster/display\n")
         size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file()) // 1024
-        depends = DEPENDS
+        # Gh0st OS supplies firmware for a subset of USB adapters in its own package.
+        depends = DEPENDS + ", " + ", ".join(pkg if pi else pkg + " | gh0st-wifi" for pkg in WIFI_FIRMWARE)
         if pi:
             depends += ", python3-luma.lcd, python3-rpi-lgpio | python3-rpi.gpio, python3-gpiozero"
         (control / "control").write_text(

@@ -99,6 +99,9 @@ def test_pi_installer_contains_both_profiles_and_an_unprivileged_launcher(tmp_pa
     meta = subprocess.check_output(["dpkg-deb", "-f", str(deb)], text=True)
     assert "Package: quartermaster-pi\n" in meta and "Conflicts: quartermaster\n" in meta
     assert "python3-luma.lcd" in meta and "python3-gpiozero" in meta
+    depends = subprocess.check_output(["dpkg-deb", "-f", str(deb), "Depends"], text=True).strip().split(", ")
+    assert {"firmware-realtek", "firmware-mediatek", "firmware-atheros"} <= set(depends)
+    assert "gh0st-wifi" not in meta
     stage = tmp_path / "unpack"
     subprocess.run(["dpkg-deb", "--raw-extract", str(deb), str(stage)], check=True)
     launcher = stage / "usr/bin/quartermaster"
