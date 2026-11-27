@@ -22,8 +22,10 @@ The **Hardware** screen has a **BSC** line with what the node is doing, how many
 
 ## What it does on air
 
-- It listens on the 15 main 6 GHz channels on every sweep, and on a sixth of the other 6 GHz channels each time, so it hears every 6 GHz channel every few sweeps. 6 GHz is only listened to.
-- About once a second it goes back to 2.4 GHz channel 6, talks to the Biscuit there and sends what it heard.
+- It works the way CodeHedge's Biscuit Pager Node payload for the Hak5 WiFi Pineapple Pager does, and it comes up on the Biscuit as a **Pager** (firmware `Pager:v1.1.0`). Every Quartermaster version does the same, so you only ever see one kind of 6 GHz node.
+- It listens 110 ms on each channel: the 15 main 6 GHz channels on three sweeps, and all 59 6 GHz channels on every fourth. 6 GHz is only listened to.
+- After about 0.9 s of listening it goes back to 2.4 GHz channel 6 for 150 ms. There it talks to the Biscuit and sends what it heard. Each network is sent again after 5 s at the soonest.
+- If the Biscuit stops answering for 20 s, the node looks for it again.
 - The only frames it sends are the Biscuit's own short ESP-NOW messages, from the adapter's own address, on channel 6. The radio helper refuses to send anything else.
 - While node mode runs, the adapter does not scan 2.4 and 5 GHz for Quartermaster. The built-in Wi-Fi, other adapters, nodes and Bluetooth keep scanning as before.
 
@@ -39,6 +41,6 @@ The **Hardware** screen has a **BSC** line with what the node is doing, how many
 | Needs a USB Wi-Fi 6E adapter (MT7921AU or MT7925U) | Plug in such an adapter before you start the wardrive. |
 | No 6 GHz channels: set the Wi-Fi country | The Cardputer's Wi-Fi country does not allow 6 GHz. |
 
-The message format follows the Biscuit Pager Node payload by GSHD and Hedge for the Hak5 WiFi Pineapple Pager. Quartermaster's node is written separately from it.
+The reference for this node is CodeHedge's [Biscuit Pager Node payload](https://github.com/hak5/wifipineapplepager-payloads/pull/396) by GSHD and Hedge, for the Hak5 WiFi Pineapple Pager. Quartermaster's node is written separately but behaves the same way.
 
 [Back to the guide](README.md)

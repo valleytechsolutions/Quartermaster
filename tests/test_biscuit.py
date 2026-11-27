@@ -76,7 +76,7 @@ def test_messages_have_the_biscuits_framing_and_odd_ones_are_ignored():
 
 def test_a_node_asks_for_a_biscuit_until_one_answers_then_says_who_it_is():
     clock = Clock()
-    node = Node(clock, fw="Quartermaster:v9")
+    node = Node(clock, fw="Test:v9")
     first = node.outgoing()
     assert [(dst, biscuit.parse_msg(p)) for dst, p, _ in first] == [(biscuit.BROADCAST, (1, 0, b"bsc=1"))]
     assert node.outgoing() == []
@@ -87,7 +87,7 @@ def test_a_node_asks_for_a_biscuit_until_one_answers_then_says_who_it_is():
     sends = node.outgoing()
     assert all(dst == BISCUIT for dst, _, _ in sends)
     assert kinds(sends)[:2] == [MSG["FW_VERSION"], MSG["HEARTBEAT"]]
-    assert biscuit.parse_msg(sends[0][1])[2] == b"Quartermaster:v9"
+    assert biscuit.parse_msg(sends[0][1])[2] == b"Test:v9"
     node.receive(OTHER, msg("CORE_REPLY", 0, REPLY))
     assert node.core == BISCUIT
 
@@ -166,15 +166,29 @@ def test_old_biscuit_firmware_holds_6_ghz_and_says_to_update():
     assert node.status()["words"] == biscuit.OLD_FIRMWARE and node.status()["held"] == 1
 
 
-def test_a_silent_biscuit_is_given_up_and_looked_for_again():
+def test_like_the_pager_a_biscuit_that_stops_acking_is_given_up_after_20_s():
     node, clock = joined()
     node.outgoing()
-    clock.now += biscuit.CONTACT_TIMEOUT - 1
-    node.contact()
-    clock.now += biscuit.CONTACT_TIMEOUT - 1
+    clock.now += 600
+    assert node.outgoing() and node.core == BISCUIT
+    node.ack()
+    clock.now += biscuit.ACK_TIMEOUT - 1
+    node.ack()
+    clock.now += biscuit.ACK_TIMEOUT - 1
     assert node.core == BISCUIT and node.outgoing()
     clock.now += 2
     assert kinds(node.outgoing()) == [MSG["CORE_REQUEST"]] and node.core is None
+    node.ack()
+    assert node.last_ack is None
+
+
+def test_every_quartermaster_comes_up_on_the_biscuit_as_a_pager():
+    assert biscuit.FW == "Pager:v1.1.0"
+    node, _ = joined(role=False)
+    sends = node.outgoing()
+    firmware = [biscuit.parse_msg(p)[2] for _, p, _ in sends if biscuit.parse_msg(p)[0] == MSG["FW_VERSION"]]
+    assert firmware == [b"Pager:v1.1.0"]
+    assert MSG["CONFIG_REQUEST"] not in kinds(sends)
 
 
 def test_retries_of_one_message_count_once():
@@ -198,19 +212,23 @@ def test_security_codes():
     assert code({"capabilities": "", "privacy": True}) == biscuit.UNKNOWN
 
 
-def test_the_sweeps_cover_every_6_ghz_channel_and_come_back_to_channel_6_about_once_a_second():
-    heard = set()
-    for turn in range(biscuit.REST_SHARE):
+def test_like_the_pager_three_main_channel_sweeps_then_all_59_back_on_channel_6_about_once_a_second():
+    psc = {biscuit.freq6(c) for c in biscuit.PSC6}
+    sweeps = []
+    for turn in range(5):
         steps = biscuit.scan_plan(turn)
         assert len(steps) <= 64 and all(60 <= d <= 1000 and w == 20 for _, w, d in steps)
         assert steps[0][0] == biscuit.HOME_FREQ
+        assert all(d == 110 for f, _, d in steps if f != biscuit.HOME_FREQ)
+        assert all(d == 150 for f, _, d in steps if f == biscuit.HOME_FREQ)
         gap = 0.0
         for freq, _, dwell in steps:
             gap = 0.0 if freq == biscuit.HOME_FREQ else gap + dwell / 1000.0
             assert gap <= 0.9
-        heard |= {f for f, _, _ in steps if f != biscuit.HOME_FREQ}
-        assert {biscuit.freq6(c) for c in biscuit.PSC6} <= heard
-    assert heard == {biscuit.freq6(c) for c in biscuit.ALL6}
+        sweeps.append({f for f, _, _ in steps if f != biscuit.HOME_FREQ})
+    assert sweeps[0] == sweeps[1] == sweeps[2] == psc
+    assert sweeps[3] | sweeps[4] == {biscuit.freq6(c) for c in biscuit.ALL6} and not sweeps[3] & sweeps[4]
+    assert biscuit.scan_plan(5) == biscuit.scan_plan(0)
     assert biscuit.scan_plan(0, allowed={2437, 5975}) == [[2437, 20, 150], [5975, 20, 110]]
     assert biscuit.scan_plan(0, allowed={2412, 5975}) == [] and biscuit.scan_plan(0, allowed={2437}) == []
 
@@ -331,10 +349,15 @@ def test_an_ack_to_the_node_keeps_the_biscuit_and_one_to_others_does_not():
     mode.own = OWN
     mode.node.receive(BISCUIT, msg("CORE_REPLY", 0, REPLY))
     ack = bytes((0xd4, 0, 0, 0)) + OWN
-    clock.now += biscuit.CONTACT_TIMEOUT - 1
+    mode._batch(relayed(radiotap(2437) + ack))
+    clock.now += biscuit.ACK_TIMEOUT - 1
     mode._batch(relayed(radiotap(2437) + ack, radiotap(2437) + bytes((0xd4, 0, 0, 0)) + OTHER))
-    clock.now += biscuit.CONTACT_TIMEOUT - 1
+    clock.now += biscuit.ACK_TIMEOUT - 1
     assert mode.node.outgoing() and mode.node.core == BISCUIT
+    clock.now += 2
+    mode._batch(relayed(radiotap(2437) + bytes((0xd4, 0, 0, 0)) + OTHER))
+    mode.node.outgoing()
+    assert mode.node.core is None
 
 
 def test_a_full_helper_queue_keeps_the_batch_for_the_next_turn():

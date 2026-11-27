@@ -8,8 +8,12 @@ with its own GPS. Quartermaster logs them too, with the Cardputer's GPS.
 6 GHz is only ever listened to. The only frames that are sent are the Biscuit's own short ESP-NOW messages, on
 2.4 GHz channel 6, and the radio helper refuses anything else.
 
-The message format follows the Biscuit Pager Node payload by GSHD and Hedge (CodeHedge), for the Hak5 WiFi Pineapple
-Pager: https://github.com/hak5/wifipineapplepager-payloads/pull/396. This is an implementation of its own, written
+The reference is CodeHedge's Biscuit Pager Node payload (by GSHD and Hedge) for the Hak5 WiFi Pineapple Pager:
+https://github.com/hak5/wifipineapplepager-payloads/pull/396. Every Quartermaster version works the way that payload
+does and comes up on the Biscuit as a Pager, with the payload's firmware name, so a Biscuit owner sees one kind of
+6 GHz node, not two. Its timings are the payload's too: 110 ms per 6 GHz channel, back on channel 6 for 150 ms after
+about 0.9 s of listening, the 15 main 6 GHz channels on three sweeps and all 59 on every fourth, each network sent
+again after 5 s at the soonest, and the Biscuit given up 20 s after its last radio ACK. The code is written separately
 for Quartermaster.
 """
 
@@ -18,7 +22,7 @@ import struct
 import threading
 import time
 
-from . import __version__, faults, monitor, radio_helper
+from . import faults, monitor, radio_helper
 
 HOME_FREQ = 2437
 OUI = b"\x18\xfe\x34"
@@ -32,18 +36,18 @@ ROLE_WIFI = 1
 REC_AP6 = 0x04
 BATCH_VERSION = 2
 BATCH_BODY = 242
-FW = "Quartermaster:v%s" % __version__
+# The name CodeHedge's payload gives itself, so the Biscuit shows Quartermaster as a Pager node.
+FW = "Pager:v1.1.0"
 
 PSC6 = tuple(range(5, 234, 16))
 ALL6 = tuple(range(1, 234, 4))
-REST6 = tuple(c for c in ALL6 if c not in PSC6)
-REST_SHARE = 6
+FULL_EVERY = 4
 DWELL6, HOME_DWELL, SEARCH_DWELL = 110, 150, 1000
 HOME_EVERY = 8
+HALF = 32
 
 REQUEST_EVERY, HEARTBEAT_EVERY, FW_EVERY, FW_TRIES = 0.3, 3.0, 2.0, 3
-CONFIG_EVERY = 30.0
-CONTACT_TIMEOUT = 30.0
+ACK_TIMEOUT = 20.0
 RESEND = 5.0
 DUPLICATE_WINDOW = 2.0
 MAX_PENDING = 1024
@@ -158,10 +162,18 @@ def home_plan(allowed=None):
     return [[HOME_FREQ, 20, SEARCH_DWELL]]
 
 
+def sweep_channels(turn):
+    """The 6 GHz channels of one plan. As in the Pager payload: the 15 main channels on three sweeps and all 59 on
+    the fourth. The helper takes 64 steps a plan at most, so the full sweep goes in two plans one after the other."""
+    step = turn % (FULL_EVERY + 1)
+    if step < FULL_EVERY - 1:
+        return list(PSC6)
+    return list(ALL6[:HALF] if step == FULL_EVERY - 1 else ALL6[HALF:])
+
+
 def scan_plan(turn, allowed=None):
-    """One sweep: the 15 main 6 GHz channels and a sixth of the others, back on channel 6 every 8 channels."""
-    channels = list(PSC6) + list(REST6[turn % REST_SHARE::REST_SHARE])
-    freqs = [freq6(c) for c in channels if allowed is None or freq6(c) in allowed]
+    """One plan of the sweeps, back on channel 6 after every 8 channels (about 0.9 s of listening)."""
+    freqs = [freq6(c) for c in sweep_channels(turn) if allowed is None or freq6(c) in allowed]
     if not freqs or allowed is not None and HOME_FREQ not in allowed:
         return []
     steps = []
@@ -196,8 +208,9 @@ class Node:
         self.held = 0
         self.dropped = 0
         self.last_contact = None
+        self.last_ack = None
         self.joined_at = None
-        self.due = {"request": 0.0, "fw": 0.0, "hb": 0.0, "config": 0.0}
+        self.due = {"request": 0.0, "fw": 0.0, "hb": 0.0}
         self._recent = {}
 
     @property
@@ -206,6 +219,12 @@ class Node:
 
     def contact(self, now=None):
         self.last_contact = self.clock() if now is None else now
+
+    def ack(self, now=None):
+        """A radio ACK to the node while it has a Biscuit. As in the Pager payload, the Biscuit is given up only
+        20 s after the last ACK that was heard; a Biscuit that was never heard to ACK is kept."""
+        if self.core is not None:
+            self.last_ack = self.clock() if now is None else now
 
     def receive(self, src, payload, seq=None, now=None):
         now = self.clock() if now is None else now
@@ -233,8 +252,9 @@ class Node:
             self.state, self.role = JOINED, 0
             self.fw_tries = 0
             self.joined_at = now
+            self.last_ack = None
             self.contact(now)
-            self.due.update(fw=now, hb=now, config=now + CONFIG_EVERY)
+            self.due.update(fw=now, hb=now)
             return
         if self.core is None or src != self.core:
             return
@@ -312,8 +332,9 @@ class Node:
     def outgoing(self, now=None):
         """[(destination, payload, batch)] to send now: replies, then the regular messages, then the networks."""
         now = self.clock() if now is None else now
-        if self.core is not None and self.last_contact is not None and now - self.last_contact > CONTACT_TIMEOUT:
+        if self.core is not None and self.last_ack is not None and now - self.last_ack > ACK_TIMEOUT:
             self._search()
+            self.last_ack = None
         if self.core is None:
             if now >= self.due["request"]:
                 self.due["request"] = now + REQUEST_EVERY
@@ -329,9 +350,6 @@ class Node:
             self.due["hb"] = now + HEARTBEAT_EVERY
             sends.append((self.core, text_msg(MSG["HEARTBEAT"], self.hb), None))
             self.hb += 1
-        if now >= self.due["config"]:
-            self.due["config"] = now + CONFIG_EVERY
-            sends.append((self.core, text_msg(MSG["CONFIG_REQUEST"]), None))
         self._batches(now)
         while self.out and len(sends) < SEND_EACH_TURN:
             body, payload = self.out.pop(0)
@@ -511,7 +529,7 @@ class NodeMode:
             if len(frame) >= 10 and frame[0] == 0xD4:
                 if self.own and bytes(frame[4:10]) == self.own:
                     with self._lock:
-                        self.node.contact(now)
+                        self.node.ack(now)
                 continue
             if len(frame) >= 39 and frame[0] == 0xD0:
                 found = espnow_payload(frame, self.own)
