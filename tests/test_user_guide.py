@@ -14,7 +14,7 @@ GUIDE = ROOT / "docs" / "guide"
 VERSION = json.loads((ROOT / "app-builder.json").read_text(encoding="utf-8"))["version"]
 DIY = "## On a DIY Raspberry Pi"
 DIY_PAGES = ("install", "first-start", "wardrive", "settings", "files", "uploads", "alerts", "aircraft-and-lora",
-             "power", "troubleshooting", "wifi-adapters", "deep-scan", "more-networks", "nodes")
+             "power", "troubleshooting", "wifi-adapters", "deep-scan", "more-networks", "nodes", "biscuit")
 LINK = re.compile(r"\]\(([^)\s]+)\)|<img src=\"([^\"]+)\"")
 PICTURE = re.compile(r"<img src=\"\.\./screens/diy/(128|240)/([a-z-]+)\.png\" width=\"(\d+)\" alt=\"[^\"]+\">")
 SCREEN_WORDS = {

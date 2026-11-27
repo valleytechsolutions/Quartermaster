@@ -7,6 +7,7 @@ from PIL import Image
 
 from .. import __version__, accounts, qr
 from . import icons, recon_screens, screens, sky_screens
+from .biscuit_screen import BiscuitNode
 from .gfx import (AMBER, BG, CYAN, FOOTER_H, GOLD, GOLD_INK, GREEN, H, LINE, MUTED, RED, STATUS_H,
                   SURFACE, SURFACE_2, TEXT, W, Canvas, clock, font)
 from .gfx import ago as gfx_ago
@@ -499,6 +500,8 @@ class SquareUI:
         elif isinstance(screen, sky_screens.Captures):
             self.captures(c, app, screen)
             foot = "K2 back · K3 actions"
+        elif isinstance(screen, BiscuitNode):
+            foot = screen.square(self, c, app)
         elif isinstance(screen, screens.About):
             y = self.paragraph(c, "Quartermaster " + __version__, self.top + 3, GOLD)
             y = self.paragraph(c, "Raspberry Pi DIY", y + 2)

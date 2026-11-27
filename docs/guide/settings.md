@@ -50,6 +50,7 @@ If the radio helper is not ready, the help line says "Helper:" and what to do.
 | --- | --- |
 | Nodes | ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, name or update them here. See [Nodes](nodes.md). |
 | Flash a node | Puts the node firmware on an ESP32-C5 board, or updates a node. |
+| Biscuit node | Pairs with a Biscuit or Biscuit Pro and scans 6 GHz for it with a 6 GHz USB adapter. See [Biscuit node](biscuit.md). |
 
 ## Logging
 
