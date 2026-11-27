@@ -3,8 +3,10 @@
 systemd starts it on the first connection to /run/quartermaster/radio.sock, as a dynamic user holding only
 CAP_NET_ADMIN and CAP_NET_RAW. It takes a fixed set of JSON commands from members of the quartermaster-radio group
 and checks every argument. It has no command for the regulatory domain, never touches a radio that is not on USB,
-never sends a frame, and runs no shell. Everything a connection changes is put back when that connection closes, and
-what a crash left behind is put back at the next start.
+and runs no shell. The one kind of frame it sends is a Biscuit node message (a short ESP-NOW vendor action frame from
+the adapter's own address), only on 2.4 GHz channel 6 and only while the monitor is tuned there. Everything a
+connection changes is put back when that connection closes, and what a crash left behind is put back at the next
+start.
 """
 
 import array
@@ -32,7 +34,7 @@ SYS_USB = "/sys/bus/usb/devices"
 DEV_USB = "/dev/bus/usb"
 PROC_ROUTE = "/proc/net/route"
 MAX_MESSAGE = 4096
-MAX_CLIENTS = 2
+MAX_CLIENTS = 3
 MAX_MONITORS = 6
 MAX_SCANS = 4
 MAX_ID = 2 ** 31 - 1
@@ -48,10 +50,18 @@ RESET_IDS = frozenset({"0e8d:7961", "0e8d:7925", "0e8d:7612", "0e8d:7610", "0bda
 RESET_GAP, RESET_MAX, RESET_WINDOW = 5.0, 3, 600.0
 USBDEVFS_RESET = 0x5514
 COMMANDS = {"hello": (), "adapters": (), "scan": ("iface", "freqs"), "tune": ("iface",), "untune": ("iface",),
-            "monitor_start": ("iface",), "hop_plan": ("vif", "plan"), "capture": ("vif", "mgmt_only"),
-            "monitor_stop": ("vif",), "usb_reset": ("port",)}
+            "monitor_start": ("iface",), "hop_plan": ("vif", "plan"), "capture": ("vif", "mgmt_only", "node"),
+            "monitor_stop": ("vif",), "usb_reset": ("port",), "node_send": ("vif", "dst", "payload")}
 REQUIRED = {"scan": ("iface",), "tune": ("iface",), "untune": ("iface",), "monitor_start": ("iface",),
-            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",)}
+            "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",),
+            "node_send": ("vif", "dst", "payload")}
+# Biscuit node mode: the node's own messages to the Biscuit, sent only on this channel.
+NODE_FREQ = 2437
+NODE_OUI = b"\x18\xfe\x34"
+NODE_TYPES = frozenset({1, 3, 7, 9, 11, 12, 15, 19})
+NODE_QUEUE, NODE_RATE, NODE_GAP, NODE_TAIL = 32, 40, 0.008, 0.012
+NODE_RADIOTAP = struct.pack("<BBHIBxH", 0, 0, 12, (1 << 2) | (1 << 15), 2, 0)
+_HEX = re.compile(r"(?:[0-9a-f]{2}){5,250}")
 TOOLS = {"iw": ("/usr/sbin/iw", "/sbin/iw", "/usr/bin/iw"), "ip": ("/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip")}
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
 _VIF = re.compile(r"qmmon[0-9]")
@@ -79,13 +89,14 @@ class Refused(Exception):
     pass
 
 
-def bpf_program(ouis=FLOCK_OUIS, mgmt_only=False):
+def bpf_program(ouis=FLOCK_OUIS, mgmt_only=False, ack_to=None):
     """The fixed classic BPF the capture socket gets, as (code, jt, jf, k) rows.
 
     X holds the radiotap length. Kept: beacons, probe requests and responses, deauth, disassoc and action frames at
     up to 2048 bytes; other management frames and data frames only when a Flock prefix sends them or, for data,
-    is sent to, at header length. Everything else, control frames and protocol versions other than 0 are dropped
-    in the kernel."""
+    is sent to, at header length. With ack_to (a Biscuit node's own 6-byte address), also the ACK frames sent to it,
+    at header length. Everything else, other control frames and protocol versions other than 0 are dropped in the
+    kernel."""
     rows, labels = [], {}
 
     def op(code, k=0, jt=None, jf=None):
@@ -119,6 +130,18 @@ def bpf_program(ouis=FLOCK_OUIS, mgmt_only=False):
     addr_check(16, "head24")
     op(0x06, 0)
     label("notmgmt")
+    if ack_to is not None:
+        ack_to = bytes(ack_to)
+        if len(ack_to) != 6:
+            raise ValueError("bad address")
+        op(0x15, 0x04, None, "notctl")
+        op(0x60, 0)
+        op(0x15, 0xd4, None, "drop")
+        op(0x40, 4)
+        op(0x15, int.from_bytes(ack_to[:4], "big"), None, "drop")
+        op(0x48, 8)
+        op(0x15, int.from_bytes(ack_to[4:], "big"), "head24", "drop")
+        label("notctl")
     op(0x15, 0x08, None, "drop")
     if mgmt_only:
         op(0x06, 0)
@@ -320,6 +343,82 @@ class Capture:
         self._sock.close()
 
 
+def node_frame(src, dst, payload, seq, nonce):
+    """A Biscuit node message as it goes on air: radiotap at 1 Mbit/s, then an ESP-NOW vendor action frame."""
+    if len(src) != 6 or len(dst) != 6 or len(nonce) != 4 or not 5 <= len(payload) <= 250:
+        raise Refused("bad node message")
+    header = struct.pack("<HH6s6s6sH", 0x00D0, 0, dst, src, b"\xff" * 6, (seq & 0xFFF) << 4)
+    body = b"\x7f" + NODE_OUI + nonce + b"\xdd" + bytes([len(payload) + 5]) + NODE_OUI + b"\x04\x01" + payload
+    return NODE_RADIOTAP + header + body
+
+
+class Sender:
+    """A send-only packet socket on one monitor interface, for Biscuit node messages."""
+
+    def __init__(self, vif):
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)
+        try:
+            sock.bind((vif, 0))
+        except BaseException:
+            sock.close()
+            raise
+        self._sock = sock
+
+    def send(self, frame):
+        return self._sock.send(frame)
+
+    def close(self):
+        self._sock.close()
+
+
+class NodeQueue:
+    """Biscuit node messages waiting for the monitor to be on channel 6, sent from the adapter's own address."""
+
+    def __init__(self, sender, src, clock=time.monotonic):
+        self.sender, self.src, self.clock = sender, src, clock
+        self.items = []
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.seq = 0
+        self.sent_at = []
+        self.sent = self.failed = 0
+
+    def put(self, dst, payload):
+        with self.lock:
+            if len(self.items) >= NODE_QUEUE:
+                raise Refused("node queue full")
+            self.items.append((dst, payload))
+            self.ready.set()
+            return len(self.items)
+
+    def drain(self, until, stopped):
+        """Send what waits until shortly before `until`, spaced out and at most NODE_RATE a second."""
+        while not stopped.is_set():
+            now = self.clock()
+            if now >= until - NODE_TAIL:
+                return
+            with self.lock:
+                self.sent_at = [at for at in self.sent_at if now - at < 1.0]
+                item = self.items.pop(0) if self.items and len(self.sent_at) < NODE_RATE else None
+                if not self.items:
+                    self.ready.clear()
+            if item is None:
+                self.ready.wait(max(0.0, min(0.05, until - NODE_TAIL - now)))
+                continue
+            dst, payload = item
+            self.seq = (self.seq + 1) & 0xFFF
+            try:
+                self.sender.send(node_frame(self.src, dst, payload, self.seq, os.urandom(4)))
+                self.sent += 1
+            except OSError:
+                self.failed += 1
+            self.sent_at.append(self.clock())
+            stopped.wait(NODE_GAP)
+
+    def stop(self):
+        self.sender.close()
+
+
 class System:
     """What the helper reads and runs. Every command is a fixed tool with a list of checked words: never a shell."""
 
@@ -423,8 +522,11 @@ class System:
                 raise Refused("channel change failed: %s" % err[:60])
             return False
 
-    def capture(self, vif, mgmt_only):
-        return Capture(vif, bpf_program(mgmt_only=mgmt_only))
+    def capture(self, vif, mgmt_only, ack_to=None):
+        return Capture(vif, bpf_program(mgmt_only=mgmt_only, ack_to=ack_to))
+
+    def sender(self, vif):
+        return Sender(vif)
 
     def usb_device(self, port):
         """(vendor:product, bus number, device number, has a network interface) of a USB device, or None."""
@@ -461,6 +563,7 @@ class Hopper(threading.Thread):
         self.stopped = threading.Event()
         self.freq, self.switched_at, self.error = 0, 0.0, ""
         self.cycle_ms = None
+        self.node = None
 
     def replace(self, plan):
         self.pending = plan
@@ -481,7 +584,11 @@ class Hopper(threading.Thread):
                     self.stopped.wait(1.0)
                     continue
                 self.freq, self.switched_at = freq, time.monotonic()
-                self.stopped.wait((dwell if fast else max(dwell, IW_DWELL)) / 1000.0)
+                until = self.switched_at + (dwell if fast else max(dwell, IW_DWELL)) / 1000.0
+                node = self.node
+                if node is not None and freq == NODE_FREQ:
+                    node.drain(until, self.stopped)
+                self.stopped.wait(max(0.0, until - time.monotonic()))
             self.cycle_ms = round(1000 * (time.monotonic() - began))
 
     def stop(self):
@@ -664,19 +771,60 @@ class Session:
             hopper.replace(steps)
         else:
             hopper = entry["hopper"] = Hopper(self.system, vif, entry.get("ifindex"), steps)
+            hopper.node = entry.get("node")
             hopper.start()
         return {"steps": len(steps), "cycle_ms": hopper.cycle_ms}
 
-    def do_capture(self, vif, mgmt_only=False):
+    def do_capture(self, vif, mgmt_only=False, node=False):
         vif, entry = self._owned(vif)
         if not isinstance(mgmt_only, bool):
             raise Refused("bad mgmt_only")
+        if not isinstance(node, bool):
+            raise Refused("bad node")
+        extra = {}
+        if node:
+            mac = entry.get("mac") or ""
+            if not _MAC.fullmatch(mac):
+                raise Refused("no adapter address")
+            extra["ack_to"] = bytes.fromhex(mac.replace(":", ""))
         old = entry.pop("relay", None)
         if old is not None:
             old.stop()
-        relay = entry["relay"] = Relay(self, self.system.capture(vif, mgmt_only), entry)
+        relay = entry["relay"] = Relay(self, self.system.capture(vif, mgmt_only, **extra), entry)
         relay.start()
         return {}
+
+    def do_node_send(self, vif, dst, payload):
+        """Queue one Biscuit node message. It goes on air from the adapter's own address the next time the monitor
+        is on 2.4 GHz channel 6 (a plan step at 2437 MHz), and only then."""
+        vif, entry = self._owned(vif)
+        if not isinstance(dst, str) or not _MAC.fullmatch(dst):
+            raise Refused("bad destination")
+        if not isinstance(payload, str) or not _HEX.fullmatch(payload):
+            raise Refused("bad node message")
+        raw = bytes.fromhex(payload)
+        if raw[:4] != b"ENOW" or raw[4] not in NODE_TYPES:
+            raise Refused("not a node message")
+        target = bytes.fromhex(dst.replace(":", ""))
+        if target == b"\xff" * 6:
+            if raw[4] != 1:
+                raise Refused("only a Biscuit request goes to everyone")
+        elif target[0] & 1:
+            raise Refused("bad destination")
+        mac = entry.get("mac") or ""
+        if not _MAC.fullmatch(mac):
+            raise Refused("no adapter address")
+        hopper = entry.get("hopper")
+        if hopper is None or not any(freq == NODE_FREQ for freq, _ in hopper.pending or hopper.plan):
+            raise Refused("the hop plan has no channel 6")
+        home = self.system.phy_info(entry["phy"])["freqs"].get(NODE_FREQ)
+        if home is None or home.get("no_ir"):
+            raise Refused("channel 6 may not send here")
+        node = entry.get("node")
+        if node is None:
+            node = entry["node"] = NodeQueue(self.system.sender(vif), bytes.fromhex(mac.replace(":", "")))
+            hopper.node = node
+        return {"queued": node.put(target, raw)}
 
     def do_usb_reset(self, port):
         """Reset a known USB Wi-Fi adapter that is on the bus but has no network interface: what a brownout leaves.
@@ -708,7 +856,7 @@ class Session:
         entry = self.monitors.get(vif)
         if entry is None:
             return
-        for part in ("relay", "hopper"):
+        for part in ("relay", "hopper", "node"):
             worker = entry.pop(part, None)
             if worker is not None:
                 worker.stop()

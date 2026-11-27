@@ -41,6 +41,7 @@ See [Deep scan and the radio helper](deep-scan.md) for the full story.
 | Monitor adapter | **Auto**, or one of your USB adapters | Auto picks a spare adapter, and never the only 6 GHz one. |
 | Direct scans | **Off**, On | USB adapters scan through Quartermaster's radio helper instead of NetworkManager, for fresher results. |
 | Radio tuning | **Off**, During a wardrive | Power saving off and full legal transmit power on USB adapters, put back after. The country is never changed. |
+| Biscuit 6 GHz node | **Off**, On | A Wi-Fi 6E USB adapter becomes the 6 GHz node of your Biscuit while you wardrive. See [Biscuit 6 GHz node](biscuit-node.md). |
 
 If the radio helper is not ready, the help line says "Helper:" and what to do.
 

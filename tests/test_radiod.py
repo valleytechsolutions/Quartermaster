@@ -273,6 +273,7 @@ def test_another_connection_cannot_touch_a_monitor_it_did_not_start(radios):
     vif = ask(sess, cmd="monitor_start", iface="wlan2")["vif"]
     assert ask(other, cmd="monitor_stop", vif=vif)["error"] == "not this connection's monitor"
     assert ask(other, cmd="capture", vif=vif)["ok"] is False
+    assert helper.open_session(lambda data: None) is not None
     assert helper.open_session(lambda data: None) is None
     assert ask(other, cmd="monitor_start", iface="wlan1")["ok"]
     for n in range(3, 8):

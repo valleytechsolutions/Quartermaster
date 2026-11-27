@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 
-from . import adsb, deepscan, faults, hardware, lora, mesh, powerguard, radios, wigle
+from . import adsb, biscuit, deepscan, faults, hardware, lora, mesh, powerguard, radios, wigle
 from .config import is_mac
 from .ble import BleScanner
 from .drive_watch import DriveWatch
@@ -166,7 +166,8 @@ def _record(device):
 class Wardrive:
     def __init__(self, cfg, gps, root=DEFAULT_ROOT, adapters=None, ble=None, fleet=WifiFleet, clock=time.time,
                  nodes=None, receiver=adsb.Receiver, sdr=None, cap=None, listener=mesh.Listener, alerts=DriveWatch,
-                 player=None, deep=deepscan.DeepScan, guard=powerguard.PowerGuard, *, display_profile="cardputer"):
+                 player=None, deep=deepscan.DeepScan, guard=powerguard.PowerGuard, *, display_profile="cardputer",
+                 node_mode=biscuit.NodeMode):
         self.cfg = dict(cfg)
         self.display_profile = display_profile
         self.guard_class, self.guard = guard, None
@@ -174,6 +175,7 @@ class Wardrive:
         self._staged = threading.Lock()
         self._sky_waiting = False
         self.deep_class, self.deep = deep, None
+        self.node_mode_class, self.biscuit = node_mode, None
         self.alerts, self.player = alerts, player
         self.watch = None
         self.sdr = sdr
@@ -282,6 +284,7 @@ class Wardrive:
         self._started, self._stopped = None, None
         self.waiting, self._waited_at = True, None
         plan = self._guard_on(chosen)
+        chosen = self._biscuit_on(chosen)
         chosen = self._scanning = self._deep_scan(chosen)
         self.fleet = self.fleet_class(chosen, self._wifi_sink, self.cfg.get("wifi_pause", 0.0))
         if plan["stagger"] and hasattr(self.fleet, "stagger"):
@@ -396,6 +399,21 @@ class Wardrive:
         if guard is None or not guard.parked:
             return adapters
         return [a for a in adapters if a["interface"] not in guard.parked]
+
+    def _biscuit_on(self, chosen):
+        """With Biscuit 6 GHz node on: one Wi-Fi 6E adapter becomes the Biscuit's node. Returns the adapters that
+        still scan normally. Any failure leaves every adapter scanning as before."""
+        self.biscuit = None
+        if self.node_mode_class is None or self.cfg.get("biscuit_node") is not True:
+            return chosen
+        try:
+            node = self.biscuit = self.node_mode_class(self.cfg)
+            if node.open(chosen) and node.start(self._wifi_sink):
+                return node.follow(chosen)
+            node.stop()
+        except Exception:
+            faults.note("Starting Biscuit node mode")
+        return chosen
 
     def _deep_scan(self, chosen):
         """With Deep scan, Direct scans or Radio tuning on: the radio helper session. Returns the adapters that scan
@@ -706,6 +724,8 @@ class Wardrive:
             try:
                 self.adapters = hardware.wifi_adapters()
                 chosen = self._chosen_adapters()
+                if self.biscuit is not None:
+                    chosen = self.biscuit.follow(chosen, self.adapters)
                 if self.deep is not None:
                     held = list(self.guard.parked) if self.guard is not None else []
                     chosen = self.deep.follow(chosen, self.adapters, self._node_bands(), held=held)
@@ -750,6 +770,11 @@ class Wardrive:
                 self.deep.stop()
             except Exception:
                 faults.note("Stopping Deep scan")
+        if self.biscuit is not None:
+            try:
+                self.biscuit.stop()
+            except Exception:
+                faults.note("Stopping Biscuit node mode")
         for thread in self._threads:
             thread.join(timeout=5)
         with self._saving:
@@ -1056,6 +1081,7 @@ class Wardrive:
                        mesh_log=str(self.mesh_path) if self.mesh_path else "",
                        watch=self.watch.status() if self.watch is not None else None,
                        deep=self.deep.status() if self.deep is not None else None,
+                       biscuit=self.biscuit.status() if self.biscuit is not None else None,
                        power=self._power_status(),
                        adapters=self.radio_status(), ble_error=self.ble_error,
                        error=self.error, failed=self.failed, gps=fix,
@@ -1078,6 +1104,8 @@ class Wardrive:
         found = self.fleet.status() if self.fleet else []
         if self.deep is not None and self.fleet:
             found += self.deep.radio_status()
+        if self.biscuit is not None and self.fleet:
+            found += self.biscuit.radio_status()
         return found + (self.nodes.adapters() if self.nodes is not None and self.fleet else [])
 
     def _set_aside(self, devices):

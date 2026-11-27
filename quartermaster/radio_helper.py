@@ -25,6 +25,8 @@ WORDS = {
 PI_WORDS = dict(WORDS, missing="Radio helper not found. Reinstall the Pi package from GitHub.",
                 no_group="Restart the Pi once so the new permission applies.")
 SETTINGS = ("deep_scan", "direct_scan", "radio_tuning")
+# Biscuit node mode has a helper connection of its own, so it is not one of the settings that open Deep scan's.
+NODE_SETTING = "biscuit_node"
 
 
 class HelperError(RuntimeError):
@@ -33,6 +35,11 @@ class HelperError(RuntimeError):
 
 def wanted(cfg):
     return any(cfg.get(key) is True for key in SETTINGS)
+
+
+def needed(cfg):
+    """Whether any setting that is on needs the helper: Deep scan's or Biscuit node mode."""
+    return wanted(cfg) or cfg.get(NODE_SETTING) is True
 
 
 def words(state, detail="", diy=False):
@@ -205,7 +212,7 @@ def connect(path=SOCKET, client=Client):
 
 def state(cfg, path=SOCKET, client=Client, diy=False):
     """(state, words) for Settings and the Hardware screen."""
-    if not wanted(cfg):
+    if not needed(cfg):
         return "off", words("off", diy=diy)
     opened, found, detail = connect(path, client)
     if opened is not None:

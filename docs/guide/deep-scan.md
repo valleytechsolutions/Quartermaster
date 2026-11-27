@@ -96,7 +96,8 @@ How it is kept safe:
 - It starts only when Quartermaster asks for it. Nothing listens until you turn on Deep scan and start a wardrive or Recon.
 - It runs as its own user without special rights, except the two network rights it needs and the quartermaster-usbreset group, which lets it reset the 7 known adapters after a brownout.
 - It answers only members of the quartermaster-radio group, and only a fixed list of commands.
-- It has no way to change the country or to send frames, and it never touches the built-in Wi-Fi.
+- It has no way to change the country, and it never touches the built-in Wi-Fi.
+- The only frames it can send are the short messages of [Biscuit 6 GHz node](biscuit-node.md), from the node adapter's own address and only on 2.4 GHz channel 6. Deep scan never sends anything.
 - It puts every adapter back when the wardrive stops, when the app closes or crashes, and when the helper itself stops.
 
 **Restart the Cardputer once after the first install**, so that your user joins the new group. Until then, Settings and the Hardware screen say "Restart the Cardputer once so the new permission applies."

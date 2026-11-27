@@ -65,6 +65,9 @@ SECTIONS = [
         ("radio_tuning", "Radio tuning", [(False, "Off"), (True, "During a wardrive")],
          "Power save off and full legal transmit power on USB adapters, put back after. The country is never "
          "changed."),
+        ("biscuit_node", "Biscuit 6 GHz node", [(False, "Off"), (True, "On")],
+         "A Wi-Fi 6E USB adapter becomes a 6 GHz node for your Biscuit while you wardrive. Set the Biscuit to "
+         "Extended."),
     ]),
     ("NODES", [
         ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
@@ -157,7 +160,7 @@ _LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
 _KEY = re.compile(r"[0-9a-f]{32}")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _IFACE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
-HELPER_SETTINGS = ("deep_scan", "direct_scan", "radio_tuning")
+HELPER_SETTINGS = ("deep_scan", "direct_scan", "radio_tuning", "biscuit_node")
 
 
 def is_mac(text):

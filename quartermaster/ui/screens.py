@@ -472,6 +472,11 @@ class Wardrive(Screen):
             many = len(deep.get("listeners") or ())
             x += c.pill(x, y, "DEEP" + ("x%d" % many if many > 1 else "") + (" F%d" % flock if flock else ""),
                         font("monob", 8), BG, GOLD, height=11) + 4
+        node = s.get("biscuit")
+        if node and node.get("running"):
+            sending = node.get("state") == "scanning"
+            x += c.pill(x, y, "BSC %d" % node.get("sent_unique", 0) if sending else "BSC", font("monob", 8), BG,
+                        GOLD if sending else MUTED, height=11) + 4
         guard, notice = drive.guard, (s.get("power") or {}).get("notice")
         if notice and guard is not None and guard.said != notice["id"]:
             guard.said = notice["id"]
@@ -651,6 +656,9 @@ class Hardware(Screen):
         if monitor is not None:
             originals.add(monitor.get("original"))
         joining = set((deep or {}).get("joining") or ())
+        node = status.get("biscuit") if status is not None else None
+        if node and node.get("running"):
+            originals |= {node.get("vif"), node.get("original")}
         for adapter in app.hw.adapters:
             live = scanning.get(adapter["interface"])
             if monitor is not None and adapter["interface"] == monitor.get("interface"):
@@ -684,6 +692,9 @@ class Hardware(Screen):
             if name not in shown and (monitor is None or name != monitor.get("interface")):
                 cards.append(self.listen_card(item))
         card = self.deep_card(app, deep)
+        if card is not None:
+            cards.append(card)
+        card = self.biscuit_card(app, node)
         if card is not None:
             cards.append(card)
         cards.extend(self.power_cards(app, guard))
@@ -840,6 +851,27 @@ class Hardware(Screen):
             return {"tag": "DEEP", "color": AMBER, "title": "Deep scan unavailable", "detail": deep["unavailable"],
                     "detail_color": AMBER}
         return None
+
+    @staticmethod
+    def biscuit_card(app, node):
+        """Biscuit 6 GHz node: the adapter it uses and how far it got, or why it does not run."""
+        if not app.cfg.get("biscuit_node"):
+            return None
+        title = "Biscuit 6 GHz node"
+        if node is None:
+            return {"tag": "BSC", "color": MUTED, "title": title, "detail": "Starts with the next wardrive."}
+        if not node.get("running"):
+            return {"tag": "BSC", "color": AMBER, "edge": AMBER, "title": title,
+                    "detail": node.get("error") or node.get("unavailable") or "Not running", "detail_color": AMBER}
+        detail = node.get("words", "")
+        if node.get("state") == "scanning" and node.get("ap6"):
+            detail = "%s sent to the Biscuit" % plural(node.get("sent_unique", 0), "network")
+        card = {"tag": "BSC", "color": GOLD, "title": "%s  %s" % (node.get("vif", ""), node.get("adapter", "")),
+                "detail": detail, "right": "%d on 6 GHz" % node.get("seen", 0)}
+        if node.get("error") or node.get("state") == "secure" or node.get("state") == "scanning" and \
+                not node.get("ap6"):
+            card.update(detail=node.get("error") or detail, detail_color=AMBER, edge=AMBER)
+        return card
 
     @staticmethod
     def aircraft_card(app, status):

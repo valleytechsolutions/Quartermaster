@@ -771,6 +771,7 @@ A DIY Pi has the same settings, except **LoRa mesh** and **Cap and Grove power**
 | | Monitor adapter | Auto, or one USB adapter | Auto |
 | | Direct scans | Off, On | Off |
 | | Radio tuning | Off, During a wardrive | Off |
+| | Biscuit 6 GHz node | Off, On | Off |
 | Nodes | Nodes | The nodes in use, and new ones to add | |
 | | Flash a node | Install or update the node firmware | |
 | Logging | Rows per device | Closest + furthest, Full track | Closest + furthest |
@@ -912,7 +913,7 @@ Deep scan is off until you turn it on in **Settings > Deep scan**. With it on, o
 - **Radio tuning.** During a wardrive, power saving goes off on USB adapters and their transmit power goes up to the limit your country allows, as the kernel reports it. Both are put back at the end. The country setting is never changed. The install keeps the 7 adapters that can listen, u-blox GPS receivers and nodes on the ESP32-C5's own USB port from going to sleep while they are plugged in.
 - **Bluetooth** works exactly as before.
 
-Deep scan needs the radio helper, a small service that the install adds. It starts only when Quartermaster asks for it. It runs as its own user, with only the two network rights it needs. It takes only a fixed list of commands, and only from the users that the install lets in. It cannot change the country or send frames, and it never touches the built-in radio. It puts every adapter back when the wardrive stops, when the app closes or crashes, and when the helper itself is stopped. It can also reach the known Wi-Fi adapters on USB, but only to reset one that stopped working. After the first install, restart the Cardputer once, so that Quartermaster may use the helper. A ready Pi image needs no restart for this.
+Deep scan needs the radio helper, a small service that the install adds. It starts only when Quartermaster asks for it. It runs as its own user, with only the two network rights it needs. It takes only a fixed list of commands, and only from the users that the install lets in. It cannot change the country, and it never touches the built-in radio. The only frames it can send are the short messages of [Biscuit 6 GHz node](docs/guide/biscuit-node.md), from the node adapter's own address and only on 2.4 GHz channel 6. Deep scan itself never sends. It puts every adapter back when the wardrive stops, when the app closes or crashes, and when the helper itself is stopped. It can also reach the known Wi-Fi adapters on USB, but only to reset one that stopped working. After the first install, restart the Cardputer once, so that Quartermaster may use the helper. A ready Pi image needs no restart for this.
 
 When a busy street costs too much CPU with several adapters listening, they go back to normal scans one at a time. With one listening adapter, Deep scan first drops data frames. Then it reads beacons less often, and then it stays on channels 11, 6 and 1. At last it hands the adapter back to normal scans, and the Hardware screen says so.
 

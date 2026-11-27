@@ -276,6 +276,8 @@ class Bpf:
                     a = load(x + k, 1)
                 elif code == 0x40:
                     a = load(x + k, 4)
+                elif code == 0x48:
+                    a = load(x + k, 2)
                 elif code == 0x60:
                     a = mem[k]
                 elif code == 0x02:

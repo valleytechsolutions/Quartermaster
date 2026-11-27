@@ -28,6 +28,7 @@ A few words used everywhere in this guide:
 - [Deep scan and the radio helper](deep-scan.md)
 - [Drive Alerts and Recon](alerts.md): warnings about cameras, trackers and more.
 - [Nodes](nodes.md): extra ESP32-C5 scanners, plugged in or wireless.
+- [Biscuit 6 GHz node](biscuit-node.md): your Cardputer as the 6 GHz node of a Biscuit.
 - [Aircraft and LoRa mesh](aircraft-and-lora.md): ADS-B, Meshtastic, MeshCore and LoRaWAN.
 - [Uploads](uploads.md): WiGLE, WDGWars and Wardrift keys, and the phone setup page.
 - [Files and logs](files.md): where everything is kept.

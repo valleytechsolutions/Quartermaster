@@ -1,5 +1,11 @@
 # Changelog
 
+## Next
+
+- New: **Biscuit 6 GHz node**, under **Settings > Deep scan**. It is off by default. With it on, a Wi-Fi 6E USB adapter (MT7921AU or MT7925U, such as the ALFA AWUS036AXM) becomes the 6 GHz node of a BiscuitShop Biscuit during a wardrive. It listens on 6 GHz and sends the networks it hears to the Biscuit over ESP-NOW, on 2.4 GHz channel 6. Quartermaster logs them too. The Biscuit needs firmware with 6 GHz node support, in Extended node mode. See [Biscuit 6 GHz node](docs/guide/biscuit-node.md).
+- The radio helper can now send one kind of frame: these short Biscuit messages, from the node adapter's own address, only on 2.4 GHz channel 6 and only while the adapter is tuned there. It refuses anything else. Deep scan still never sends.
+- The message format follows the Biscuit Pager Node payload by GSHD and Hedge for the Hak5 WiFi Pineapple Pager.
+
 ## 1.2.10
 
 - On a Pi, the messages on the HAT screen now name the Pi, not the Cardputer. For example, the Hardware screen can say "No permission yet. Restart the Pi once." about the RTL-SDR stick.
