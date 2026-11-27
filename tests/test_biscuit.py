@@ -8,9 +8,13 @@ import pytest
 
 from quartermaster import biscuit, config, radio_helper
 from quartermaster.ui import biscuit_screen, screens
-from tests.test_pi_words import device, look, said  # noqa: F401
-from tests.test_radiod import ask, radiod, radios, session  # noqa: F401
+from tests import test_pi_words, test_radiod
+from tests.test_pi_words import look, said
+from tests.test_radiod import ask, radiod, session
 from tests.test_ui import make_app, press
+
+device = test_pi_words.device
+radios = test_radiod.radios
 
 PAGER = bytes.fromhex("00c0ca000002")
 BISCUIT = bytes.fromhex("24ec4a0000b1")
