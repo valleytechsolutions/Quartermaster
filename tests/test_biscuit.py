@@ -154,7 +154,7 @@ def test_the_node_reports_as_a_pager_then_scans_6ghz_only_for_its_own_biscuit():
     assert set(radio.tuned) - {2437} and all(f == 2437 or 5955 <= f <= 7115 for f in radio.tuned)
     assert all(freq == 2437 and dst in (BISCUIT, radiod.BROADCAST) for dst, _, freq in radio.sent)
     sent = [r[1:7] for r in fake.records]
-    assert sent == [NET6]
+    assert set(sent) == {NET6} and 1 < len(sent) <= 30 / radiod.RESEND_SECONDS + 1
     record = fake.records[0]
     assert record[0] == radiod.AP6_RECORD and record[7] == 5 and struct.unpack("b", record[8:9])[0] == -60
     assert record[9] == 4 and record[11:] == b"six-gig"

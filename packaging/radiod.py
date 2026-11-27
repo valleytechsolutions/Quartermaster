@@ -870,7 +870,7 @@ PSC_6GHZ = tuple(range(5, 230, 16))
 ALL_6GHZ = tuple(range(1, 234, 4))
 NODE_DWELL, NODE_SCAN, NODE_HOME = 0.11, 0.9, 0.15
 REQUEST_GAP, HEARTBEAT_GAP, CONFIG_GAP, FIRMWARE_GAP = 0.3, 3.0, 30.0, 2.0
-RESEND_SECONDS, RESEND_GAIN, LOST_SECONDS, ACK_WINDOW, STATUS_GAP = 30.0, 6, 20.0, 0.05, 1.0
+RESEND_SECONDS, LOST_SECONDS, ACK_WINDOW, STATUS_GAP = 5.0, 20.0, 0.05, 1.0
 NODE_RADIOTAP = struct.pack("<BBHIBxH", 0, 0, 12, 1 << 2 | 1 << 15, 2, 0)
 NODE_FILTER = ((0x30, 0, 0, 3), (0x64, 0, 0, 8), (0x07, 0, 0, 0), (0x30, 0, 0, 2), (0x0C, 0, 0, 0),
                (0x07, 0, 0, 0), (0x50, 0, 0, 0), (0x15, 3, 0, 0x80), (0x15, 2, 0, 0x50), (0x15, 1, 0, 0xD0),
@@ -1135,7 +1135,7 @@ class BiscuitNode(threading.Thread):
     def sighting(self, bssid, channel, rssi, code, ssid):
         self.heard.add(bssid)
         last = self.last_sent.get(bssid)
-        if last is not None and self.clock() - last[0] < RESEND_SECONDS and rssi < last[1] + RESEND_GAIN:
+        if last is not None and self.clock() - last[0] < RESEND_SECONDS:
             return
         held = self.pending.get(bssid)
         if held is None or rssi > held[1]:

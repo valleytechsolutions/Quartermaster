@@ -32,7 +32,7 @@ In node mode Quartermaster works exactly like the Biscuit Pager node for the Hak
 2. Start a wardrive on the Biscuit. The screen says **Scanning** and counts:
    - **6 GHz heard**: networks the adapter heard on 6 GHz.
    - **Sent**: networks sent to the Biscuit.
-   - **Updates**: every send, counting a network again when it is heard much closer or after 30 seconds.
+   - **Updates**: every send, counting a network again each time it is sent, at most every 5 seconds.
    - **Waiting**: networks waiting for the next moment on channel 6.
 3. **Esc** goes back. Node mode keeps running and **Settings > Biscuit node** shows its state.
 4. Press **OK** on the Biscuit node screen to stop. The adapter goes back to normal.
