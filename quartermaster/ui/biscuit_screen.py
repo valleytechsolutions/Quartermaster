@@ -1,4 +1,4 @@
-"""Settings > Biscuit node: pair with a Biscuit or Biscuit Pro and run as its 6 GHz node."""
+"""Settings > Biscuit node: run as a Biscuit or Biscuit Pro's 6 GHz node, added from a node search on the Biscuit."""
 
 from .. import biscuit
 from .gfx import AMBER, CONTENT_BOTTOM, CYAN, FAINT, GOLD, GREEN, MUTED, RED, SURFACE, TEXT, W, clock, font
@@ -6,19 +6,20 @@ from .screens import TOP, Screen
 
 WORDS = {
     biscuit.STARTING: ("Starting", "Putting the 6 GHz adapter in node mode.", GOLD),
-    biscuit.PAIRING: ("Pairing", "Looking for Biscuits on channel 6.", GOLD),
-    biscuit.SEARCHING: ("Searching", "Looking for your Biscuit on channel 6.", AMBER),
+    biscuit.SEARCHING: ("Waiting", "Search for nodes in the Biscuit manager app and add this one. It shows as a "
+                        "Pager.", AMBER),
     biscuit.JOINED: ("Joined", "Start a wardrive on the Biscuit to scan 6 GHz for it.", GOLD),
     biscuit.SCANNING: ("Scanning", "Scanning 6 GHz for the Biscuit.", GREEN),
     biscuit.SECURE: ("Secure mode", "Set the Biscuit to Extended node mode.", RED),
-    biscuit.OLD: ("Old firmware", "This Biscuit takes no 6 GHz nodes. Update it.", AMBER),
+    biscuit.OLD: ("Old firmware", "This Biscuit takes no 6 GHz nodes. Update it to v1.7.0 or newer.", AMBER),
     biscuit.STOPPING: ("Stopping", "Putting the adapter back.", GOLD),
     biscuit.FAILED: ("Stopped", "Node mode stopped.", RED),
     biscuit.OFF: ("Off", "", MUTED),
 }
 BUSY = "Stop the wardrive and Recon first: node mode scans 6 GHz and nothing else."
-HELP = ("Set your Biscuit or Biscuit Pro to Extended node mode, then press OK. This reports to it as a Pager 6 GHz "
-        "node and scans 6 GHz only, with a 6 GHz USB adapter.")
+HELP = ("Set your Biscuit or Biscuit Pro to Extended node mode and press OK here. Then search for nodes in the "
+        "Biscuit manager app and add this one. It shows on the Biscuit as a Pager and scans 6 GHz only, with a 6 GHz "
+        "USB adapter.")
 
 
 def summary(app):
@@ -27,26 +28,16 @@ def summary(app):
     if link.running:
         word, _, color = WORDS.get(link.state, WORDS[biscuit.FAILED])
         return word, color
-    return ("Paired", MUTED) if link.mac else ("Not paired", MUTED)
+    return ("Stopped", AMBER) if link.state == biscuit.FAILED else ("Off", MUTED)
 
 
 class BiscuitNode(Screen):
     title = "BISCUIT NODE"
     refresh = 0.5
 
-    def __init__(self):
-        self.index = 0
-        self.start_after = False
-
     def hints(self, app):
-        link = app.biscuit
-        if link.running and link.pairing_mode:
-            return [("OK", "Pair"), ("Esc", "Cancel")]
-        if link.running:
-            return [("OK", "Stop node"), ("Esc", "Back")]
-        if not link.mac:
-            return [("OK", "Search"), ("Esc", "Back")]
-        return [("OK", "Start node"), ("P", "Pair again"), ("D", "Forget"), ("Esc", "Back")]
+        return [("OK", "Stop node"), ("Esc", "Back")] if app.biscuit.running else [("OK", "Start node"),
+                                                                                  ("Esc", "Back")]
 
     def ready(self, app):
         link = app.biscuit
@@ -56,57 +47,13 @@ class BiscuitNode(Screen):
             return False
         return True
 
-    def pair(self, app):
-        if self.ready(app):
-            self.index = 0
-            app.biscuit.start(pair=True)
-
-    def tick(self, app):
-        link = app.biscuit
-        if self.start_after and link.state in (biscuit.OFF, biscuit.FAILED):
-            self.start_after = False
-            if self.ready(app):
-                link.start()
-
-    def pick(self, app):
-        found = app.biscuit.status()["found"]
-        if not found:
-            return
-        chosen = found[min(self.index, len(found) - 1)]
-        if chosen["secure"]:
-            app.toast("That Biscuit is in Secure node mode. Set it to Extended node mode first.", AMBER, 5)
-            return
-        app.biscuit.pair_with(chosen["mac"], chosen["name"])
-        app.biscuit.stop()
-        self.start_after = True
-        app.toast("Paired with %s" % chosen["name"], GREEN)
-
     def handle(self, key, app):
         link = app.biscuit
-        if key.name in ("UP", "DOWN") and link.running and link.pairing_mode:
-            count = len(link.found)
-            if count:
-                self.index = (self.index + (1 if key == "DOWN" else -1)) % count
-            return True
         if key == "ENTER" and not key.repeat:
-            if link.running and link.pairing_mode:
-                self.pick(app)
-            elif link.running:
+            if link.running:
                 link.stop()
-            elif not link.mac:
-                self.pair(app)
             elif self.ready(app):
                 link.start()
-            return True
-        if key == "P" and not link.running:
-            self.pair(app)
-            return True
-        if key == "D" and not link.running and link.mac:
-            app.confirm("Forget %s?" % link.name, "Pair again to feed a Biscuit.", "Forget", link.forget,
-                        danger=True)
-            return True
-        if key in ("ESC", "BACKSPACE") and link.running and link.pairing_mode:
-            link.stop()
             return True
         return super().handle(key, app)
 
@@ -118,32 +65,18 @@ class BiscuitNode(Screen):
         return y
 
     def render(self, c, app):
-        self.tick(app)
         link = app.biscuit
         s = link.status()
-        if link.running and link.pairing_mode:
-            self.render_pairing(c, s)
-        elif link.running:
+        if link.running:
             self.render_node(c, app, s)
         else:
             self.render_off(c, app, s)
 
     def square(self, ui, c, app):
         """The layout for a square HAT: one column, the words wrapped to the screen."""
-        self.tick(app)
         link = app.biscuit
         s = link.status()
         y = ui.top + 3
-        if link.running and link.pairing_mode:
-            found = s["found"]
-            y = ui.paragraph(c, "Looking for Biscuits…", y, GOLD, face=ui.small)
-            if not found:
-                ui.paragraph(c, "Set the Biscuit to Extended node mode.", y + 2, MUTED, face=ui.small)
-                return "K2 cancel"
-            self.index = min(self.index, len(found) - 1)
-            ui.rows(c, ["%s%s" % (entry["name"], " (Secure)" if entry["secure"] else "") for entry in found],
-                    self.index, start=y + 2)
-            return "OK pair · K2 cancel"
         if link.running:
             word, detail, color = WORDS.get(s["state"], WORDS[biscuit.FAILED])
             y = ui.paragraph(c, word, y, color, face=ui.bold)
@@ -153,52 +86,21 @@ class BiscuitNode(Screen):
                 y = ui.paragraph(c, "6 GHz channel %d" % s["channel"], y + 1, MUTED, face=ui.small)
             ui.paragraph(c, detail, y + 2, MUTED, face=ui.small)
             return "OK stop · K2 back"
-        if link.mac:
-            y = ui.paragraph(c, link.name, y, GOLD, face=ui.bold)
-            text = "OK starts node mode: it reports as a Pager 6 GHz node and scans 6 GHz only."
-            foot = "OK start · K3 actions"
-        else:
-            y = ui.paragraph(c, "Pair with a Biscuit", y, GOLD, face=ui.bold)
-            text = "Set your Biscuit or Biscuit Pro to Extended node mode, then press OK. Needs a 6 GHz USB adapter."
-            foot = "OK search · K2 back"
+        y = ui.paragraph(c, "Biscuit node", y, GOLD, face=ui.bold)
         if s["error"] and link.state == biscuit.FAILED:
             y = ui.paragraph(c, s["error"], y + 2, RED, face=ui.small)
-        ui.paragraph(c, text, y + 3, TEXT, face=ui.small)
-        return foot
+        ui.paragraph(c, "Set the Biscuit to Extended node mode, press OK, then add this node from a search on the "
+                     "Biscuit. Needs a 6 GHz USB adapter.", y + 3, TEXT, face=ui.small)
+        return "OK start · K2 back"
 
     def render_off(self, c, app, s):
         link = app.biscuit
         y = TOP + 2
-        if link.mac:
-            c.text((10, y), link.name, font("display", 17), GOLD, width=W - 20)
-            c.text((10, y + 24), "Paired · " + link.mac, font("mono", 8), MUTED)
-            y += 40
-            text = ("OK starts node mode. The 6 GHz USB adapter reports to the Biscuit as a Pager 6 GHz node and "
-                    "scans 6 GHz only until you stop it.")
-        else:
-            c.text((10, y), "Pair with a Biscuit", font("display", 17), GOLD)
-            y += 26
-            text = HELP
+        c.text((10, y), "Biscuit node", font("display", 17), GOLD)
+        y += 26
         if s["error"] and link.state == biscuit.FAILED:
             y = self.paragraph(c, s["error"], y, RED, 9, lines=3) + 3
-        self.paragraph(c, text, y, TEXT, 10, lines=max(1, (CONTENT_BOTTOM - y) // 13))
-
-    def render_pairing(self, c, s):
-        found = s["found"]
-        c.text((10, TOP + 2), "Looking for Biscuits on channel 6…", font("bold", 10), GOLD)
-        if not found:
-            self.paragraph(c, "Set the Biscuit or Biscuit Pro to Extended node mode. It shows up here when it "
-                           "answers.", TOP + 22, MUTED, 10)
-            return
-        self.index = min(self.index, len(found) - 1)
-        for i, entry in enumerate(found[:7]):
-            y = TOP + 20 + i * 16
-            if i == self.index:
-                c.select(y - 1, 15)
-            word = "Secure mode" if entry["secure"] else "6 GHz ready" if entry["ap6"] else "Old firmware"
-            color = RED if entry["secure"] else GREEN if entry["ap6"] else AMBER
-            c.text((12, y), "%s  %s" % (entry["name"], entry["mac"][-8:]), font("ui", 10), TEXT, width=W - 110)
-            c.text_right(W - 12, y + 1, word, font("ui", 9), color)
+        self.paragraph(c, HELP, y, TEXT, 10, lines=max(1, (CONTENT_BOTTOM - y) // 13))
 
     def render_node(self, c, app, s):
         word, detail, color = WORDS.get(s["state"], WORDS[biscuit.FAILED])
@@ -214,7 +116,7 @@ class BiscuitNode(Screen):
         x0 = 170
         c.text((x0, TOP + 2), word, font("display", 15), color, width=W - x0 - 6)
         y = self.paragraph(c, detail, TOP + 24, TEXT, 9, x=x0, width=W - x0 - 6, lines=3)
-        lines = [app.biscuit.name or "Biscuit"]
+        lines = [app.biscuit.name or "No Biscuit yet"]
         if s.get("adapter"):
             lines.append("Adapter " + s["adapter"])
         if s.get("channel"):

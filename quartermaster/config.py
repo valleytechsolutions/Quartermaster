@@ -19,7 +19,6 @@ COUNTRIES = [("US", "United States"), ("CA", "Canada"), ("GB", "United Kingdom")
              ("KR", "South Korea"), ("ES", "Spain"), ("SE", "Sweden"), ("CH", "Switzerland"), ("TW", "Taiwan"),
              ("01", "Anywhere else")]
 
-_BISCUIT = re.compile(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}")
 # (section, [(key, label, choices, help)]). choices is None for a setting that opens its own screen.
 SECTIONS = [
     ("SCANNING", [
@@ -71,8 +70,8 @@ SECTIONS = [
         ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
          "name or update them here."),
         ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5 board, or update a node."),
-        ("biscuit_node", "Biscuit node", None, "Pair with a Biscuit or Biscuit Pro and scan 6 GHz for it, with a "
-         "6 GHz USB adapter."),
+        ("biscuit_node", "Biscuit node", None, "Be a Pager 6 GHz node for a Biscuit or Biscuit Pro, with a 6 GHz "
+         "USB adapter. Add it from a node search on the Biscuit."),
     ]),
     ("LOGGING", [
         ("log_rows", "Rows per device", [("extremes", "Closest + furthest"), ("track", "Full track")],
@@ -298,11 +297,6 @@ def load(path=PATH):
         cfg["wardrift_sequence"] = sequence
     if cluster_key(data.get("cluster_key")):
         cfg["cluster_key"] = cluster_key(data["cluster_key"])
-    mac = data.get("biscuit_mac")
-    if isinstance(mac, str) and _BISCUIT.fullmatch(mac.upper()):
-        cfg["biscuit_mac"] = mac.upper()
-        name = data.get("biscuit_name")
-        cfg["biscuit_name"] = "".join(ch for ch in name if ch.isprintable())[:24] if isinstance(name, str) else ""
     return cfg
 
 
@@ -311,7 +305,7 @@ def save(cfg, path=PATH):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name("." + path.name)
     keys = list(DEFAULTS) + list(LISTS) + ["drive_alert_sounds", "cluster_key", "country_set", "adsb_set",
-                                           "wardrift_reporter", "wardrift_sequence", "biscuit_mac", "biscuit_name"]
+                                           "wardrift_reporter", "wardrift_sequence"]
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as out:

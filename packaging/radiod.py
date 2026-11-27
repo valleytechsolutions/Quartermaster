@@ -51,7 +51,7 @@ RESET_GAP, RESET_MAX, RESET_WINDOW = 5.0, 3, 600.0
 USBDEVFS_RESET = 0x5514
 COMMANDS = {"hello": (), "adapters": (), "scan": ("iface", "freqs"), "tune": ("iface",), "untune": ("iface",),
             "monitor_start": ("iface",), "hop_plan": ("vif", "plan"), "capture": ("vif", "mgmt_only"),
-            "monitor_stop": ("vif",), "usb_reset": ("port",), "biscuit_node": ("vif", "target", "pair", "device")}
+            "monitor_stop": ("vif",), "usb_reset": ("port",), "biscuit_node": ("vif", "device")}
 REQUIRED = {"scan": ("iface",), "tune": ("iface",), "untune": ("iface",), "monitor_start": ("iface",),
             "hop_plan": ("vif", "plan"), "capture": ("vif",), "monitor_stop": ("vif",), "usb_reset": ("port",),
             "biscuit_node": ("vif", "device")}
@@ -684,18 +684,13 @@ class Session:
         relay.start()
         return {}
 
-    def do_biscuit_node(self, vif, device, target=None, pair=False):
-        """Biscuit node mode on a monitor this connection owns, with nothing else running on it. Its messages come
-        back as B frames: {"kind": "status" | "found" | "error", ...}."""
+    def do_biscuit_node(self, vif, device):
+        """Biscuit node mode on a monitor this connection owns, with nothing else running on it. It joins the
+        Biscuit that answers, as CodeHedge's Pager node does; pairing is done on the Biscuit. Its messages come
+        back as B frames: {"kind": "status" | "error", ...}."""
         vif, entry = self._owned(vif)
-        if device not in BISCUIT_LABELS:
+        if device not in BISCUIT_DEVICES:
             raise Refused("bad device")
-        if not isinstance(pair, bool):
-            raise Refused("bad pair")
-        if target is not None and (not isinstance(target, str) or not _TARGET.fullmatch(target)):
-            raise Refused("bad target")
-        if pair == (target is not None):
-            raise Refused("pair, or give a target")
         for part in ("relay", "hopper", "node"):
             worker = entry.get(part)
             if worker is not None and worker.is_alive():
@@ -717,8 +712,7 @@ class Session:
             except OSError:
                 node.stop()
         node = entry["node"] = BiscuitNode(lambda freq: self.system.set_freq(vif, ifindex, freq), radio, report,
-                                           channels, target=bytes.fromhex(target.replace(":", "")) if target else None,
-                                           pair=pair, label=BISCUIT_LABELS[device])
+                                           channels)
         node.start()
         return {"channels": len(channels)}
 
@@ -856,8 +850,7 @@ class Relay(threading.Thread):
 
 
 BISCUIT_FIRMWARE = b"Pager:v1.1.0"
-BISCUIT_LABELS = {"cardputer": b"Pager 6GHz node: Quartermaster, CardputerZero",
-                  "pi": b"Pager 6GHz node: Quartermaster, DIY Pi"}
+BISCUIT_DEVICES = ("cardputer", "pi")
 BISCUIT_HOME = 2437
 ESPRESSIF = b"\x18\xfe\x34"
 BROADCAST = b"\xff" * 6
@@ -869,14 +862,21 @@ SCAN_ROLE, AP6_RECORD, BATCH_ROOM, SEND_PER_VISIT = 1, 0x04, 242, 12
 PSC_6GHZ = tuple(range(5, 230, 16))
 ALL_6GHZ = tuple(range(1, 234, 4))
 NODE_DWELL, NODE_SCAN, NODE_HOME = 0.11, 0.9, 0.15
-REQUEST_GAP, HEARTBEAT_GAP, CONFIG_GAP, FIRMWARE_GAP = 0.3, 3.0, 30.0, 2.0
+REQUEST_GAP, HEARTBEAT_GAP, FIRMWARE_GAP, FIRMWARE_AGAIN = 0.3, 3.0, 2.0, 30.0
 RESEND_SECONDS, LOST_SECONDS, ACK_WINDOW, STATUS_GAP = 5.0, 20.0, 0.05, 1.0
 NODE_RADIOTAP = struct.pack("<BBHIBxH", 0, 0, 12, 1 << 2 | 1 << 15, 2, 0)
 NODE_FILTER = ((0x30, 0, 0, 3), (0x64, 0, 0, 8), (0x07, 0, 0, 0), (0x30, 0, 0, 2), (0x0C, 0, 0, 0),
                (0x07, 0, 0, 0), (0x50, 0, 0, 0), (0x15, 3, 0, 0x80), (0x15, 2, 0, 0x50), (0x15, 1, 0, 0xD0),
                (0x15, 0, 1, 0xD4), (0x06, 0, 0, 4096), (0x06, 0, 0, 0))
 AKM_8021X, AKM_PSK, AKM_SAE, AKM_OWE, AKM_SUITE_B = {1, 3, 5}, {2, 4, 6}, {8, 9, 24, 25}, {18}, {11, 12}
-_TARGET = re.compile(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}")
+
+
+def biscuit_name(mac, text=b""):
+    for word in text.replace(b",", b" ").replace(b";", b" ").replace(b"&", b" ").split():
+        key, _, value = word.partition(b"=")
+        if key.lower() in (b"name", b"model", b"device", b"dev") and value.strip():
+            return value.decode("utf-8", "replace").strip()[:24]
+    return "Biscuit " + mac.hex()[-4:].upper()
 
 
 def enow(kind, counter=0, text=b""):
@@ -1071,21 +1071,21 @@ class NodeSocket:
 
 class BiscuitNode(threading.Thread):
     """A Biscuit Pager node on one monitor interface: it reports as a Pager node, scans 6 GHz and nothing else,
-    and goes to channel 6 only to talk to the Biscuit. `pair` only lists the Biscuits that answer."""
+    and goes to channel 6 only to talk to the Biscuit."""
 
-    def __init__(self, tune, radio, report, channels, target=None, pair=False, label=b"", clock=time.monotonic):
+    def __init__(self, tune, radio, report, channels, clock=time.monotonic):
         super().__init__(daemon=True, name="biscuit-node")
         self.tune_to, self.radio, self.report, self.channels = tune, radio, report, channels
-        self.target, self.pair, self.label, self.clock = target, pair, label, clock
+        self.clock = clock
         self.stopped = threading.Event()
-        self.core, self.ap6, self.role = None, False, 0
-        self.state = "pairing" if pair else "searching"
+        self.core, self.ap6, self.role, self.name = None, False, 0, ""
+        self.state = "searching"
         self.hb = self.seq = self.sent = self.tx_errors = self.acks = self.sweeps = self.tune_failures = 0
-        self.outbox, self.sent_ids, self.heard, self.pending, self.last_sent, self.found = [], set(), set(), {}, {}, {}
+        self.outbox, self.sent_ids, self.heard, self.pending, self.last_sent, self.seen = [], set(), set(), {}, {}, {}
         self.last_unicast, self.last_ack, self.last_heard = -1e9, None, None
-        self.firmware_tries, self.told, self.channel, self.freq = 0, False, None, None
+        self.firmware_tries, self.channel, self.freq = 0, None, None
         self.plan, self.at = [], 0
-        self.next = {"request": 0.0, "firmware": 0.0, "heartbeat": 0.0, "config": 0.0, "status": 0.0}
+        self.next = {"request": 0.0, "firmware": 0.0, "heartbeat": 0.0, "status": 0.0}
 
     def tune(self, freq):
         if freq == self.freq:
@@ -1128,6 +1128,12 @@ class BiscuitNode(threading.Thread):
         dst, src, payload = got
         if src == self.radio.mac or dst not in (self.radio.mac, BROADCAST):
             return
+        now, key = self.clock(), (src, (fr[22] | fr[23] << 8) >> 4)
+        if now - self.seen.get(key, -9.0) < 2.0:
+            return
+        self.seen[key] = now
+        if len(self.seen) > 512:
+            self.seen = {k: v for k, v in self.seen.items() if now - v < 2.0}
         message = read_enow(payload)
         if message is not None:
             self.handle(src, *message)
@@ -1146,23 +1152,19 @@ class BiscuitNode(threading.Thread):
         if kind == CORE_REPLY:
             if b"wdbatch=" not in text and b"nodecfg=" not in text:
                 return
-            secure = b"encrypt=1" in text
-            if self.pair:
-                if src not in self.found:
-                    self.found[src] = {"mac": ":".join("%02X" % b for b in src), "secure": secure,
-                                       "ap6": b"ap6=1" in text, "text": text.decode("ascii", "replace")[:80]}
-                    self.report("found", self.found[src])
+            if self.core is not None:
+                if src == self.core:
+                    self.firmware_tries, self.next["firmware"] = 0, now
                 return
-            if self.core is not None or (self.target and src != self.target):
-                return
-            if secure:
+            if b"encrypt=1" in text:
                 self.state = "secure"
                 return
             self.core, self.ap6, self.role = src, b"ap6=1" in text, 0
+            self.name = biscuit_name(src, text)
             self.state = "joined" if self.ap6 else "old"
             self.last_heard, self.last_ack = now, None
-            self.firmware_tries, self.told = 0, False
-            self.next.update(firmware=now, heartbeat=now, config=now)
+            self.firmware_tries = 0
+            self.next.update(firmware=now, heartbeat=now)
             return
         if self.core is None or src != self.core:
             return
@@ -1173,6 +1175,7 @@ class BiscuitNode(threading.Thread):
             else:
                 self.role, token = (text[0] if text else counter & 0xFF), b""
             self.send(self.core, enow(ROLE_ACK, self.role, token))
+            self.firmware_tries, self.next["firmware"] = 0, now
             if self.ap6:
                 self.state = "scanning" if self.role == SCAN_ROLE else "joined"
         elif kind == CONFIG_UPDATE:
@@ -1213,7 +1216,7 @@ class BiscuitNode(threading.Thread):
         if self.core is None:
             if now >= self.next["request"]:
                 self.send(BROADCAST, enow(CORE_REQUEST, 0, b"bsc=1"))
-                self.next["request"] = now + (5.0 if self.state == "secure" else REQUEST_GAP)
+                self.next["request"] = now + REQUEST_GAP
         else:
             self.check_in(now)
         acks = self.acks
@@ -1222,19 +1225,14 @@ class BiscuitNode(threading.Thread):
             self.last_ack = self.clock()
 
     def check_in(self, now):
-        if self.firmware_tries < 3 and now >= self.next["firmware"]:
+        if now >= self.next["firmware"]:
             self.send(self.core, enow(FW_VERSION, 0, BISCUIT_FIRMWARE))
             self.firmware_tries += 1
-            self.next["firmware"] = now + FIRMWARE_GAP
-            if not self.told and self.label:
-                self.told = self.send(self.core, enow(NODE_TEXT, 0, self.label))
+            self.next["firmware"] = now + (FIRMWARE_GAP if self.firmware_tries < 3 else FIRMWARE_AGAIN)
         if now >= self.next["heartbeat"]:
             self.send(self.core, enow(NODE_HEARTBEAT, self.hb))
             self.hb += 1
             self.next["heartbeat"] = now + HEARTBEAT_GAP
-        if now >= self.next["config"]:
-            self.send(self.core, enow(CONFIG_REQUEST))
-            self.next["config"] = now + CONFIG_GAP
         for _ in range(min(len(self.outbox), SEND_PER_VISIT)):
             payload, ids = self.outbox[0]
             if not self.send(self.core, payload):
@@ -1271,7 +1269,7 @@ class BiscuitNode(threading.Thread):
 
     def status(self, final=False):
         return {"state": self.state, "biscuit": ":".join("%02X" % b for b in self.core) if self.core else None,
-                "ap6": self.ap6, "role": self.role, "heard": len(self.heard), "sent": len(self.sent_ids),
+                "name": self.name, "ap6": self.ap6, "role": self.role, "heard": len(self.heard), "sent": len(self.sent_ids),
                 "updates": self.sent, "queued": sum(len(ids) for _, ids in self.outbox), "acks": self.acks,
                 "tx_errors": self.tx_errors, "channel": self.channel, "sweeps": self.sweeps,
                 "heard_ago": round(self.clock() - self.last_heard, 1) if self.last_heard is not None else None,

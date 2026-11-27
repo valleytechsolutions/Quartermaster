@@ -43,16 +43,16 @@ The built-in Wi-Fi of a Zero W, Zero 2 W or 3B covers 2.4 GHz. A 3B+ or 4B also 
 Each Raspberry Pi release has two ready SD card images, one for each HAT. They boot straight into Quartermaster. You do not need to type any commands.
 
 1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on your computer. Use the newest version.
-2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.11/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
+2. Download [quartermaster.rpi-imager-manifest](https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.12/quartermaster.rpi-imager-manifest) and open it. It is a small file that tells Imager where the two images are. Imager starts with the Quartermaster images in its list.
 
    If opening the file does not start Imager, open Imager yourself. Click **App Options**, then **Edit** beside **Content Repository**. Choose **Use custom file**, pick the file you downloaded and click **Apply & Restart**.
 3. Choose your Pi model and click **Next**.
-4. Click **Quartermaster 1.2.11**, choose the image for your HAT and click **Next**. Imager downloads the image for you.
+4. Click **Quartermaster 1.2.12**, choose the image for your HAT and click **Next**. Imager downloads the image for you.
 
 | Your HAT | Image to choose |
 | --- | --- |
-| 1.44inch HAT (128×128) | Quartermaster 1.2.11 for the Waveshare 1.44inch LCD HAT (128×128) |
-| 1.3inch HAT (240×240) | Quartermaster 1.2.11 for the Waveshare 1.3inch LCD HAT (240×240) |
+| 1.44inch HAT (128×128) | Quartermaster 1.2.12 for the Waveshare 1.44inch LCD HAT (128×128) |
+| 1.3inch HAT (240×240) | Quartermaster 1.2.12 for the Waveshare 1.3inch LCD HAT (240×240) |
 
 5. Choose your microSD card and click **Next**. Use one of 8 GB or more.
 6. Imager shows its set-up pages one after another. Go through them with **Next**. You can leave a page empty, except **Localisation**: there **Next** works only after you choose a city. We recommend filling in two pages.
@@ -95,7 +95,7 @@ The real folders are in `/var/lib/quartermaster/quartermaster/`. Any user in the
 - **Wrong HAT?** Put the card in your computer. Windows may then show another drive from the card and offer to format it. Click **Cancel**, because formatting it erases Quartermaster. Then open the drive called **bootfs**, and open `quartermaster.txt` in a text editor. Change the last line to `display=st7735-128` for the 1.44inch HAT or `display=st7789-240` for the 1.3inch HAT. Save it, then put the card back in the Pi.
 - **Wi-Fi country.** Wi-Fi and Bluetooth are switched on from the first start, so scanning works right away. The image does not choose a country for you. Until you set yours, Wi-Fi keeps to the channels that are allowed everywhere, which leaves out 6 GHz and a few other channels. Set it on Imager's **Localisation** page in step 6, or log in and run `sudo raspi-config nonint do_wifi_country US` with your own two-letter country code in place of `US`. The Pi reminds you at each login until a country is set.
 - Quartermaster runs under its own built-in `_quartermaster` account, which has no password and cannot log in. It starts the same way whichever login user you have.
-- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.11) also has the two image files under **Assets**, each named after its HAT: `quartermaster-pi-1.2.11-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.11-waveshare-1.3inch-lcd-hat.img.xz`. Write one with **Use custom** in Imager or with balenaEtcher. Neither needs the file unpacked. Some other tools, such as Win32 Disk Imager, need it unpacked first. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`, as **The Pi never shows up on the network** under [Troubleshooting](#troubleshooting) shows.
+- **Flashing an image file yourself.** Each [Pi release](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12) also has the two image files under **Assets**, each named after its HAT: `quartermaster-pi-1.2.12-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.12-waveshare-1.3inch-lcd-hat.img.xz`. Write one with **Use custom** in Imager or with balenaEtcher. Neither needs the file unpacked. Some other tools, such as Win32 Disk Imager, need it unpacked first. Raspberry Pi Imager 2 shows no set-up pages for a file chosen this way, so the card starts with the default login and without your Wi-Fi network or country. Set the country as shown above, and join a network from the Pi with `sudo nmtui`, as **The Pi never shows up on the network** under [Troubleshooting](#troubleshooting) shows.
 - The images work on the Zero W, Zero 2 W, 3B, 3B+ and 4B. The images of the newest Pi release are rebuilt every month with the latest Raspberry Pi OS updates.
 - **Updating.** To update only Quartermaster, log in and run the commands of step 3 under [Assemble and install manually](#assemble-and-install-manually) on the Pi, then restart the Pi with `sudo reboot`. Skip steps 4 and 5 there, because the image has already done them. Step 3 fetches the version this guide is for, and the guide of each Pi release has the commands for its own version. The package does not change what the image set up. So on a card that was flashed with an image older than 1.2.9, your login can still read only `~/quartermaster/logs` after the update. To read `~/quartermaster/recon` and `~/quartermaster/aircraft` too, flash the newest image.
 - **Flashing the newest image.** Flashing erases the card. Before you flash, copy all three folders, `logs`, `recon` and `aircraft`, to your computer, as [Log in](#log-in) shows. On a card that was flashed with an image older than 1.2.9, your login cannot read `recon` and `aircraft` yet. So log in first and type `sudo chmod -R g+rX ~/quartermaster/recon ~/quartermaster/aircraft` on the Pi. If the Pi says that one of them does not exist, there is nothing in it to copy. Your settings and upload keys are erased too, so set them again after flashing. After flashing, the Pi has new SSH keys and your computer may refuse to connect. Type `ssh-keygen -R quartermaster.local` on your computer once, then connect again. If you connect with another name or with the Pi's address, type that in place of `quartermaster.local`, for example `ssh-keygen -R 192.168.1.23`.
@@ -109,18 +109,18 @@ Use the steps below instead if you want to install Quartermaster on a card you a
 
 1. With the Pi powered off, align pin 1 and seat the HAT on the GPIO header. Plug in the GPS. On a Zero use the micro-USB port marked **USB** for data and **PWR IN** for power.
 2. For a new build, write Raspberry Pi OS Lite (Trixie) to the microSD. Zero 2 W, 3B, 3B+ and 4B can use 32-bit or 64-bit. The original Zero W needs 32-bit. RaspyJack's DIY guide uses the 32-bit edition. In Raspberry Pi Imager, set a username, a network and SSH. If your existing build runs Raspberry Pi OS Bookworm with the standard Raspberry Pi repositories, you can install on that card starting at step 3.
-3. Boot the Pi and log in over SSH with the user you set in Imager, as [Log in](#log-in) shows. Then run these commands on the Pi. The first one makes a folder for this version and moves into it. The others download the installer and its checksum from the release [Quartermaster 1.2.11 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.11) into that folder and install it. Each version gets its own folder, so the files of an older version are never checked or installed by mistake.
+3. Boot the Pi and log in over SSH with the user you set in Imager, as [Log in](#log-in) shows. Then run these commands on the Pi. The first one makes a folder for this version and moves into it. The others download the installer and its checksum from the release [Quartermaster 1.2.12 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12) into that folder and install it. Each version gets its own folder, so the files of an older version are never checked or installed by mistake.
 
 ```sh
-mkdir -p ~/quartermaster-pi-1.2.11 && cd ~/quartermaster-pi-1.2.11
-release=https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.11
-wget "$release/quartermaster-pi_1.2.11_all.deb" "$release/SHA256SUMS"
+mkdir -p ~/quartermaster-pi-1.2.12 && cd ~/quartermaster-pi-1.2.12
+release=https://github.com/valleytechsolutions/Quartermaster/releases/download/pi-v1.2.12
+wget "$release/quartermaster-pi_1.2.12_all.deb" "$release/SHA256SUMS"
 sudo apt update
 sudo raspi-config nonint do_spi 0
-sha256sum --check SHA256SUMS && sudo apt install ./quartermaster-pi_1.2.11_all.deb
+sha256sum --check SHA256SUMS && sudo apt install ./quartermaster-pi_1.2.12_all.deb
 ```
 
-Check that the checksum command reports `OK` before installing. To build the same version from source, check out `pi-v1.2.11` and run `python3 tools/build_deb.py --target pi` on Raspberry Pi OS or Debian Trixie. The Pi package is written to `build/`. Use that path for the install command.
+Check that the checksum command reports `OK` before installing. To build the same version from source, check out `pi-v1.2.12` and run `python3 tools/build_deb.py --target pi` on Raspberry Pi OS or Debian Trixie. The Pi package is written to `build/`. Use that path for the install command.
 
 4. The installed display setting is for the 1.44inch HAT. For the **1.3inch HAT**, choose its setting before you restart.
 
@@ -290,11 +290,11 @@ These pictures show the main DIY screens on both HATs. The 1.44inch HAT is on th
 | --- | --- |
 | <img src="screens/diy/128/recon.png" width="256" alt="Recon on the 1.44inch HAT in the CardputerZero layout: four flagged devices, a Flock camera, an Axon body camera, a Ring camera and an AirTag"> | <img src="screens/diy/240/recon.png" width="240" alt="Recon on the 1.3inch HAT in the CardputerZero layout: four flagged devices, a Flock camera, an Axon body camera, a Ring camera and an AirTag"> |
 
-**About.** This screen shows the version, 1.2.11, and **Raspberry Pi DIY**, which tells you that this is the DIY version. On a CardputerZero, this screen says "for the CardputerZero" instead. **K3** offers **Tips**, with a few tips on the controls, wardrives, uploads and Recon.
+**About.** This screen shows the version, 1.2.12, and **Raspberry Pi DIY**, which tells you that this is the DIY version. On a CardputerZero, this screen says "for the CardputerZero" instead. **K3** offers **Tips**, with a few tips on the controls, wardrives, uploads and Recon.
 
 | Waveshare 1.44inch LCD HAT | Waveshare 1.3inch LCD HAT |
 | --- | --- |
-| <img src="screens/diy/128/about.png" width="256" alt="The About screen on the 1.44inch HAT: Quartermaster 1.2.11, Raspberry Pi DIY, Valleytech Solutions and GPL-3.0"> | <img src="screens/diy/240/about.png" width="240" alt="The About screen on the 1.3inch HAT: Quartermaster 1.2.11, Raspberry Pi DIY, Valleytech Solutions and GPL-3.0"> |
+| <img src="screens/diy/128/about.png" width="256" alt="The About screen on the 1.44inch HAT: Quartermaster 1.2.12, Raspberry Pi DIY, Valleytech Solutions and GPL-3.0"> | <img src="screens/diy/240/about.png" width="240" alt="The About screen on the 1.3inch HAT: Quartermaster 1.2.12, Raspberry Pi DIY, Valleytech Solutions and GPL-3.0"> |
 
 ## Using Quartermaster on the HAT
 
@@ -420,8 +420,8 @@ Both versions are Quartermaster, made from the same code, with the same screens 
 | Device | The M5Stack CardputerZero, with its 320×170 screen and its keyboard | A Raspberry Pi Zero W or WH, Zero 2 W or WH, 3B, 3B+ or 4B, with a Waveshare 1.44inch LCD HAT (128×128) or a Waveshare 1.3inch LCD HAT (240×240) |
 | Controls | The keys of the Cardputer | The joystick, **K1**, **K2** and **K3**, or a USB keyboard |
 | How to install | From the CardputerZero AppStore (share code **WARD**), or with the one command in the [README](../README.md) | With a ready SD card image for your HAT, or with the Pi package on Raspberry Pi OS |
-| Package | `quartermaster`, downloaded as `quartermaster.deb` | `quartermaster-pi`, downloaded as `quartermaster-pi_1.2.11_all.deb` |
-| Releases on GitHub | Their tags start with `v`. The newest one has GitHub's **Latest** badge. | Their tags start with `pi-v`, such as [pi-v1.2.11](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.11), and their names end in "for Raspberry Pi". They never have the **Latest** badge. A new Pi release is marked **Pre-release** until it has been tested. |
+| Package | `quartermaster`, downloaded as `quartermaster.deb` | `quartermaster-pi`, downloaded as `quartermaster-pi_1.2.12_all.deb` |
+| Releases on GitHub | Their tags start with `v`. The newest one has GitHub's **Latest** badge. | Their tags start with `pi-v`, such as [pi-v1.2.12](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.12), and their names end in "for Raspberry Pi". They never have the **Latest** badge. A new Pi release is marked **Pre-release** until it has been tested. |
 | Updates | From the AppStore | From the newest Pi release: its package or its image |
 | GPS | A USB GPS, the Cap LoRa-1262, a Grove GPS or gpsd | A USB GPS or gpsd |
 | LoRa mesh and LoRaWAN | With the Cap LoRa-1262 | None |

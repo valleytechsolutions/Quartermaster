@@ -183,7 +183,7 @@ See also [Troubleshooting](../diy.md#troubleshooting) in the DIY guide.
 | --- | --- |
 | Restart the Pi once | Restart the Pi with `sudo reboot`. |
 | Update Quartermaster | Install the newest Pi package, as **Updating** under [Good to know](../diy.md#good-to-know) in the DIY guide shows. Run only step 3 of the manual install, then restart the Pi. |
-| Reinstall Quartermaster | Run the commands of step 3 of the [manual install](../diy.md#assemble-and-install-manually), but type the last one with `--reinstall`: `sha256sum --check SHA256SUMS && sudo apt install --reinstall ./quartermaster-pi_1.2.11_all.deb`. Without it, apt does nothing when this version is already installed. Then restart the Pi. |
+| Reinstall Quartermaster | Run the commands of step 3 of the [manual install](../diy.md#assemble-and-install-manually), but type the last one with `--reinstall`: `sha256sum --check SHA256SUMS && sudo apt install --reinstall ./quartermaster-pi_1.2.12_all.deb`. Without it, apt does nothing when this version is already installed. Then restart the Pi. |
 | Radio helper not found. Reinstall the Pi package from GitHub. | Switch the radio helper on with `sudo systemctl enable --now quartermaster-radio.socket`. If the message stays, reinstall the Pi package as the line above shows. |
 
 **Quartermaster closed.** After **Quit** on the menu, Quartermaster stays closed until the Pi starts again. Restart the Pi to open it. If Quartermaster stops because of an error, it opens again by itself after a few seconds.

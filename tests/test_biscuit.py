@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from quartermaster import biscuit, config, radio_helper
+from quartermaster import biscuit, radio_helper
 from quartermaster.ui import biscuit_screen, screens
 from tests import test_pi_words, test_radiod
 from tests.test_pi_words import look, said
@@ -44,6 +44,7 @@ class FakeBiscuit:
         self.reply, self.mac = reply, mac
         self.firmware, self.texts, self.acks, self.records = [], [], [], []
         self.assigned = False
+        self.seq = 0
 
     def heard(self, dst, payload, out):
         if payload[4] == radiod.WARDRIVE_BATCH:
@@ -69,8 +70,10 @@ class FakeBiscuit:
         elif kind == radiod.ROLE_ACK:
             self.acks.append((counter, text))
 
-    def say(self, payload):
-        return radiotap(2437, -40) + radiod.espnow_frame(PAGER, self.mac, 1, payload, nonce=b"1234")
+    def say(self, payload, seq=None):
+        self.seq += 1
+        return radiotap(2437, -40) + radiod.espnow_frame(PAGER, self.mac, self.seq if seq is None else seq, payload,
+                                                         nonce=b"1234")
 
 
 class FakeRadio:
@@ -111,11 +114,11 @@ class FakeRadio:
         self.closed = True
 
 
-def run_node(biscuits, target=None, pair=False, limit=30.0, channels=None, label=b"Pager 6GHz node: test"):
+def run_node(biscuits, limit=30.0, channels=None):
     radio = FakeRadio(biscuits, limit)
     reports = []
     node = radiod.BiscuitNode(radio.tune, radio, lambda kind, body: reports.append((kind, body)),
-                              channels or set(radiod.ALL_6GHZ), target=target, pair=pair, label=label,
+                              channels or set(radiod.ALL_6GHZ),
                               clock=radio.clock)
     radio.node = node
     node.run()
@@ -136,20 +139,42 @@ def test_frames_and_messages_round_trip():
     assert seq == (254 + len(packed)) & 0xFF
 
 
-def test_pairing_lists_every_biscuit_and_joins_none():
-    node, radio, reports = run_node([FakeBiscuit(), FakeBiscuit(b"wdbatch=1 encrypt=1", OTHER)], pair=True, limit=3)
-    found = {body["mac"]: body for kind, body in reports if kind == "found"}
-    assert found["24:EC:4A:00:00:B1"]["ap6"] and not found["24:EC:4A:00:00:B1"]["secure"]
-    assert found["24:EC:4A:00:00:C2"]["secure"]
-    assert node.core is None and radio.closed
-    assert all(dst == radiod.BROADCAST for dst, _, _ in radio.sent)
+def test_the_node_joins_the_biscuit_that_answers_with_no_pairing_on_the_node():
+    good = FakeBiscuit(b"wdbatch=1 ap6=1 name=Pro", OTHER)
+    node, radio, reports = run_node([FakeBiscuit(b"wdbatch=1 encrypt=1"), good], limit=6)
+    assert node.core == OTHER and good.firmware[0] == b"Pager:v1.1.0"
+    assert radio.sent[0][0] == radiod.BROADCAST and radiod.read_enow(radio.sent[0][1])[0] == radiod.CORE_REQUEST
+    final = [body for kind, body in reports if kind == "status"][-1]
+    assert final["biscuit"] == "24:EC:4A:00:00:C2" and final["name"] == "Pro"
+
+
+def test_the_pager_name_is_sent_again_so_the_biscuit_keeps_it():
+    fake = FakeBiscuit()
+    node, _, _ = run_node([fake], limit=70)
+    assert len(fake.firmware) >= 5 and set(fake.firmware) == {b"Pager:v1.1.0"}
+    before = len(fake.firmware)
+    node.handle(BISCUIT, radiod.ROLE_ASSIGN, 0, b"\x01TOKN")
+    node.check_in(node.clock())
+    assert len(fake.firmware) == before + 1
+
+
+def test_a_repeated_frame_is_handled_once():
+    fake = FakeBiscuit()
+    node, radio, _ = run_node([fake], limit=1)
+    acks = len(fake.acks)
+    again = fake.say(radiod.enow(radiod.ROLE_ASSIGN, 0, b"\x01TOKN"), seq=900)
+    node.frame(again)
+    node.frame(again)
+    assert len([p for d, p, _ in radio.sent if p[4] == radiod.ROLE_ACK]) == acks + 1
 
 
 def test_the_node_reports_as_a_pager_then_scans_6ghz_only_for_its_own_biscuit():
     fake = FakeBiscuit()
-    node, radio, reports = run_node([fake, FakeBiscuit(mac=OTHER)], target=BISCUIT)
+    node, radio, reports = run_node([fake, FakeBiscuit(mac=OTHER)])
     assert node.core == BISCUIT and node.state == "scanning"
-    assert fake.firmware[0] == b"Pager:v1.1.0" and fake.texts == [b"Pager 6GHz node: test"]
+    assert fake.firmware[0] == b"Pager:v1.1.0" and fake.texts == []
+    assert {p[4] for _, p, _ in radio.sent} <= {radiod.CORE_REQUEST, radiod.NODE_HEARTBEAT, radiod.FW_VERSION,
+                                                radiod.ROLE_ACK, radiod.WARDRIVE_BATCH}
     assert fake.acks[0] == (1, b"TOKN")
     assert set(radio.tuned) - {2437} and all(f == 2437 or 5955 <= f <= 7115 for f in radio.tuned)
     assert all(freq == 2437 and dst in (BISCUIT, radiod.BROADCAST) for dst, _, freq in radio.sent)
@@ -163,10 +188,10 @@ def test_the_node_reports_as_a_pager_then_scans_6ghz_only_for_its_own_biscuit():
 
 
 def test_a_secure_biscuit_and_old_firmware_get_no_scan():
-    node, radio, _ = run_node([FakeBiscuit(b"wdbatch=1 encrypt=1")], target=BISCUIT, limit=3)
+    node, radio, _ = run_node([FakeBiscuit(b"wdbatch=1 encrypt=1")], limit=3)
     assert node.core is None and node.state == "secure"
     old = FakeBiscuit(b"wdbatch=1")
-    node, radio, _ = run_node([old], target=BISCUIT, limit=6)
+    node, radio, _ = run_node([old], limit=6)
     assert node.state == "old" and set(radio.tuned) == {2437} and old.records == []
 
 
@@ -232,20 +257,19 @@ def test_the_helper_runs_a_node_only_on_its_own_free_monitor_and_stops_it_with_t
     _, sess = session(radios, sent)
     sockets = []
     sess.system.node_socket = lambda vif: sockets.append(QuietSocket(PAGER)) or sockets[-1]
-    assert ask(sess, cmd="biscuit_node", vif="qmmon0", device="cardputer", pair=True)["ok"] is False
+    assert ask(sess, cmd="biscuit_node", vif="qmmon0", device="cardputer")["ok"] is False
     vif = ask(sess, cmd="monitor_start", iface="wlan2")["vif"]
-    for bad in ({"device": "laptop", "pair": True}, {"device": "pi"}, {"device": "pi", "pair": "yes"},
-                {"device": "pi", "target": "24:ec:4a:00:00:b1"}, {"device": "pi", "target": "x" * 17},
-                {"device": "pi", "target": "24:EC:4A:00:00:B1", "pair": True}, {"device": "pi", "text": "hi"}):
+    for bad in ({"device": "laptop"}, {}, {"device": "pi", "pair": True}, {"device": "pi", "target": "24:EC:4A:00:00:B1"},
+                {"device": "pi", "text": "hi"}):
         assert ask(sess, cmd="biscuit_node", vif=vif, **bad)["ok"] is False, bad
     assert ask(sess, cmd="hop_plan", vif=vif, plan=[[2412, 20, 100]])["ok"]
-    assert ask(sess, cmd="biscuit_node", vif=vif, device="pi", pair=True)["error"] == "the monitor is busy"
+    assert ask(sess, cmd="biscuit_node", vif=vif, device="pi")["error"] == "the monitor is busy"
     ask(sess, cmd="monitor_stop", vif=vif)
     vif = ask(sess, cmd="monitor_start", iface="wlan2")["vif"]
-    answer = ask(sess, cmd="biscuit_node", vif=vif, device="pi", target="24:EC:4A:00:00:B1")
+    answer = ask(sess, cmd="biscuit_node", vif=vif, device="pi")
     assert answer == {"ok": True, "channels": 2}
     node = sess.monitors[vif]["node"]
-    assert node.label == radiod.BISCUIT_LABELS["pi"] and node.target == BISCUIT and node.channels == {1, 33}
+    assert node.channels == {1, 33}
     deadline = time.monotonic() + 3
     while not any(m.startswith(b"B") for m in sent) and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -268,7 +292,7 @@ def test_the_helper_needs_6ghz_and_channel_6_on_the_adapter(radios):  # noqa: F8
         info["freqs"] = {f: v for f, v in info["freqs"].items() if f < 5900}
         return info
     sess.system.phy_info = no_six
-    assert "no 6 GHz channels" in ask(sess, cmd="biscuit_node", vif=vif, device="pi", pair=True)["error"]
+    assert "no 6 GHz channels" in ask(sess, cmd="biscuit_node", vif=vif, device="pi")["error"]
 
 
 def test_the_client_hands_biscuit_messages_to_its_sink():
@@ -300,8 +324,8 @@ def test_picking_the_adapter():
     assert biscuit.pick_adapter(five) is None and "6 GHz" in biscuit.why_none(five)
     busy = [dict(ADAPTERS6[1], connected=True)]
     assert biscuit.pick_adapter(busy) is None and "in use" in biscuit.why_none(busy)
-    assert biscuit.name_of("24:EC:4A:00:00:B1") == "Biscuit 00B1"
-    assert biscuit.name_of("24:EC:4A:00:00:B1", "wdbatch=1 name=Pro") == "Pro"
+    assert radiod.biscuit_name(BISCUIT) == "Biscuit 00B1"
+    assert radiod.biscuit_name(BISCUIT, b"wdbatch=1 name=Pro") == "Pro"
 
 
 class FakeClient:
@@ -340,9 +364,7 @@ def wait_for(check, seconds=3):
     return False
 
 
-def test_the_link_pairs_runs_and_stops_through_the_helper(tmp_path):
-    cfg = config.load(tmp_path / "config.json")
-    saved = []
+def test_the_link_runs_and_stops_through_the_helper():
     clients = []
 
     def connect(script):
@@ -350,35 +372,24 @@ def test_the_link_pairs_runs_and_stops_through_the_helper(tmp_path):
             clients.append(FakeClient(script))
             return clients[-1], "ready", ""
         return opened
-    link = biscuit.BiscuitLink(cfg, device="pi", save=lambda: saved.append(dict(cfg)),
-                               connect=connect([{"kind": "found", "mac": "24:EC:4A:00:00:B1", "ap6": True,
-                                                 "secure": False, "text": "wdbatch=1 ap6=1"}]))
-    assert not link.start() and link.error == "Pair with a Biscuit first."
-    assert link.start(pair=True)
-    assert wait_for(lambda: link.status()["found"])
-    assert clients[-1].requests[-1] == {"cmd": "biscuit_node", "vif": "qmmon0", "device": "pi", "pair": True}
-    found = link.status()["found"][0]
-    assert found["name"] == "Biscuit 00B1" and link.state == biscuit.PAIRING
-    link.pair_with(found["mac"], found["name"])
-    link.stop(wait=True)
-    assert link.state == biscuit.OFF and clients[-1].closed.is_set() and saved
-    link.connect = connect([{"kind": "status", "state": "scanning", "heard": 4, "sent": 3}])
+    link = biscuit.BiscuitLink(device="pi", connect=connect([{"kind": "status", "state": "scanning", "heard": 4,
+                                                              "sent": 3, "name": "Biscuit Pro"}]))
     assert link.start()
     assert wait_for(lambda: link.state == biscuit.SCANNING)
-    assert clients[-1].requests[-1]["target"] == "24:EC:4A:00:00:B1"
-    assert link.status()["heard"] == 4 and link.status()["adapter"] == "wlan1"
+    assert clients[-1].requests[-1] == {"cmd": "biscuit_node", "vif": "qmmon0", "device": "pi"}
+    assert link.status()["heard"] == 4 and link.status()["adapter"] == "wlan1" and link.name == "Biscuit Pro"
     clients[-1].close()
     assert wait_for(lambda: link.state == biscuit.FAILED) and "helper" in link.error
-    config.save(cfg, tmp_path / "config.json")
-    again = config.load(tmp_path / "config.json")
-    assert again["biscuit_mac"] == "24:EC:4A:00:00:B1" and again["biscuit_name"] == "Biscuit 00B1"
-    link.forget()
-    assert not link.mac
+    link.connect = connect([])
+    assert link.start()
+    assert wait_for(lambda: link.state == biscuit.SEARCHING)
+    link.stop(wait=True)
+    assert link.state == biscuit.OFF and clients[-1].closed.is_set()
 
 
 def test_a_missing_helper_is_said_in_the_words_of_the_device(tmp_path):
-    link = biscuit.BiscuitLink({}, connect=lambda: (None, "missing", ""), diy=True)
-    assert link.start(pair=True)
+    link = biscuit.BiscuitLink(connect=lambda: (None, "missing", ""), diy=True)
+    assert link.start()
     assert wait_for(lambda: link.state == biscuit.FAILED)
     assert link.error == radio_helper.words("missing", diy=True)
 
@@ -386,62 +397,48 @@ def test_a_missing_helper_is_said_in_the_words_of_the_device(tmp_path):
 class Link:
     """Node mode in the state a test puts it in."""
 
-    def __init__(self, state=biscuit.OFF, pairing=False, found=(), **live):
-        self.state, self.pairing_mode, self.found, self.live = state, pairing, {f["mac"]: f for f in found}, live
-        self.mac, self.name, self.error, self.device, self.diy = None, "", "", "cardputer", False
-        self.started = []
+    def __init__(self, state=biscuit.OFF, **live):
+        self.state, self.live = state, live
+        self.name, self.error, self.device, self.diy = "", "", "cardputer", False
+        self.started = 0
 
     @property
     def running(self):
         return self.state not in (biscuit.OFF, biscuit.FAILED)
 
     def status(self):
-        return dict(self.live, state=self.state, error=self.error, pairing=self.pairing_mode,
-                    found=list(self.found.values()), adapter="wlan1", seconds=95)
+        return dict(self.live, state=self.state, error=self.error, adapter="wlan1", seconds=95)
 
-    def start(self, pair=False):
-        self.started.append(pair)
+    def start(self):
+        self.started += 1
+        self.state = biscuit.SEARCHING
         return True
 
     def stop(self, wait=False):
         self.state = biscuit.OFF
 
-    def pair_with(self, mac, name):
-        self.mac, self.name = mac, name
 
-    def forget(self):
-        self.mac = None
-
-
-def test_the_biscuit_screen_in_every_state_on_every_screen(device, tmp_path, drawn):  # noqa: F811
+def test_the_biscuit_screen_in_every_state_on_every_screen(device, tmp_path, drawn):
     app = make_app(tmp_path)
     app.biscuit = Link()
     app.open("Settings")
     settings = app.screen
     settings.index = next(i for i, item in enumerate(settings.items) if item[0] == "biscuit_node")
-    assert settings.value(app, "biscuit_node") == "Not paired"
+    assert settings.value(app, "biscuit_node") == "Off"
     press(app, "ENTER")
     assert isinstance(app.screen, biscuit_screen.BiscuitNode)
     look(app)
     press(app, "ENTER")
-    assert app.biscuit.started == [True]
-    app.biscuit.state, app.biscuit.pairing_mode = biscuit.PAIRING, True
+    assert app.biscuit.started == 1 and app.biscuit.state == biscuit.SEARCHING
     look(app)
-    app.biscuit.found = {"24:EC:4A:00:00:B1": {"mac": "24:EC:4A:00:00:B1", "name": "Biscuit Pro", "secure": False,
-                                               "ap6": True},
-                         "24:EC:4A:00:00:C2": {"mac": "24:EC:4A:00:00:C2", "name": "Biscuit 00C2", "secure": True,
-                                               "ap6": True}}
-    look(app)
-    press(app, "ENTER")
-    look(app)
-    assert app.biscuit.mac == "24:EC:4A:00:00:B1" and app.biscuit.started == [True, False]
-    app.biscuit.state, app.biscuit.pairing_mode = biscuit.SCANNING, False
+    assert settings.value(app, "biscuit_node") == "Waiting"
+    app.biscuit.state, app.biscuit.name = biscuit.SCANNING, "Biscuit Pro"
     app.biscuit.live = {"heard": 148, "sent": 141, "updates": 233, "queued": 7, "channel": 37}
     look(app)
     assert settings.value(app, "biscuit_node") == "Scanning"
     app.start_wardrive()
     assert not app.wardriving and app.toast_text.startswith("Biscuit node mode is on")
-    for state in (biscuit.SEARCHING, biscuit.SECURE, biscuit.OLD):
+    for state in (biscuit.JOINED, biscuit.SECURE, biscuit.OLD):
         app.biscuit.state = state
         look(app)
     press(app, "ENTER")
@@ -458,6 +455,6 @@ def test_node_mode_waits_for_a_wardrive_or_recon_to_stop(tmp_path):
     app.start_wardrive()
     app.push(biscuit_screen.BiscuitNode())
     press(app, "ENTER")
-    assert app.biscuit.started == [] and app.toast_text == biscuit_screen.BUSY
+    assert app.biscuit.started == 0 and app.toast_text == biscuit_screen.BUSY
     app.stop_wardrive()
     assert isinstance(app.screen, (screens.Summary, screens.Home, biscuit_screen.BiscuitNode))

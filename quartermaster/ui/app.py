@@ -241,7 +241,7 @@ class App:
         self.viewer_factory = viewer or (lambda: skyview.Viewer(
             root, gps, drive=lambda: self.drive if self.wardriving else None, diy=bool(self.square)))
         self.sky = None
-        self.biscuit = BiscuitLink(cfg, save=self.save)
+        self.biscuit = BiscuitLink()
         self.flasher_class = flasher_class
         self.flash_job = None
         self.updates = updates

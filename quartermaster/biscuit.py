@@ -1,9 +1,11 @@
 """Biscuit node mode: a spare USB adapter with 6 GHz scans 6 GHz for a Biscuit or Biscuit Pro, which logs it all
 with its own GPS.
 
-The radio helper runs the node on a monitor interface it owns: it reports to the Biscuit as a Biscuit Pager node,
-then says it is a Pager 6 GHz node from Quartermaster. It scans 6 GHz only and goes to 2.4 GHz channel 6 only to
-talk to the Biscuit. Closing the helper connection stops the node and puts the adapter back.
+The radio helper runs the node on a monitor interface it owns. It reports to the Biscuit as a Biscuit Pager node
+(`Pager:v1.1.0`) and sends what CodeHedge's Pager node sends. As with that node, there is no pairing here: the node
+asks on channel 6 until the Biscuit adds it from a node search in the Biscuit manager app. It scans 6 GHz only and
+goes to 2.4 GHz channel 6 only to talk to the Biscuit. Closing the helper connection stops the node and puts the
+adapter back.
 """
 
 import threading
@@ -11,20 +13,12 @@ import time
 
 from . import faults, radio_helper
 
-OFF, STARTING, PAIRING, SEARCHING, JOINED, SCANNING, SECURE, OLD, STOPPING, FAILED = (
-    "off", "starting", "pairing", "searching", "joined", "scanning", "secure", "old", "stopping", "failed")
+OFF, STARTING, SEARCHING, JOINED, SCANNING, SECURE, OLD, STOPPING, FAILED = (
+    "off", "starting", "searching", "joined", "scanning", "secure", "old", "stopping", "failed")
 FIRMWARE = "Pager:v1.1.0"
 SIX_GHZ = range(5955, 7116)
 HOME = 2437
 DRIVERS = ("mt7921u", "mt7925u")
-
-
-def name_of(mac, text=""):
-    for word in text.replace(",", " ").replace(";", " ").replace("&", " ").split():
-        key, _, value = word.partition("=")
-        if key.lower() in ("name", "model", "device", "dev") and value.strip():
-            return value.strip()[:24]
-    return "Biscuit " + mac.replace(":", "")[-4:].upper()
 
 
 def pick_adapter(adapters):
@@ -48,11 +42,10 @@ def why_none(adapters):
 class BiscuitLink:
     """Node mode as the screens see it. One thread owns each run from the helper connection to its close."""
 
-    def __init__(self, cfg, device="cardputer", connect=radio_helper.connect, save=None, diy=False):
-        self.cfg, self.device, self.connect, self.save, self.diy = cfg, device, connect, save, diy
+    def __init__(self, device="cardputer", connect=radio_helper.connect, diy=False):
+        self.device, self.connect, self.diy = device, connect, diy
         self.state, self.error = OFF, ""
-        self.pairing_mode = False
-        self.found, self.live = {}, {}
+        self.live = {}
         self.adapter = ""
         self.started = None
         self._client = None
@@ -61,42 +54,25 @@ class BiscuitLink:
         self._lock = threading.Lock()
 
     @property
-    def mac(self):
-        return self.cfg.get("biscuit_mac") or None
-
-    @property
     def name(self):
-        return self.cfg.get("biscuit_name") or (name_of(self.mac) if self.mac else "")
+        return self.live.get("name") or ""
 
     @property
     def running(self):
         return self.state not in (OFF, FAILED)
 
-    def pair_with(self, mac, name):
-        self.cfg["biscuit_mac"], self.cfg["biscuit_name"] = mac, name
-        if self.save:
-            self.save()
-
-    def forget(self):
-        self.cfg["biscuit_mac"], self.cfg["biscuit_name"] = "", ""
-        if self.save:
-            self.save()
-
-    def start(self, pair=False):
+    def start(self):
         with self._lock:
             if self.running:
                 return False
-            if not pair and not self.mac:
-                self.state, self.error = FAILED, "Pair with a Biscuit first."
-                return False
-            self.state, self.error, self.pairing_mode = STARTING, "", pair
-            self.found, self.live, self.adapter, self.started = {}, {}, "", time.monotonic()
+            self.state, self.error = STARTING, ""
+            self.live, self.adapter, self.started = {}, "", time.monotonic()
             self._wanted = True
-            self._thread = threading.Thread(target=self._run, args=(pair,), daemon=True, name="biscuit")
+            self._thread = threading.Thread(target=self._run, daemon=True, name="biscuit")
             self._thread.start()
         return True
 
-    def _run(self, pair):
+    def _run(self):
         client = None
         try:
             client, state, detail = self.connect()
@@ -109,10 +85,9 @@ class BiscuitLink:
             self.adapter = adapter["interface"]
             vif = client.request("monitor_start", iface=adapter["interface"])["vif"]
             client.biscuit = self._message
-            args = {"pair": True} if pair else {"target": self.mac.upper()}
-            client.request("biscuit_node", vif=vif, device=self.device, **args)
+            client.request("biscuit_node", vif=vif, device=self.device)
             if self._wanted:
-                self.state = PAIRING if pair else SEARCHING
+                self.state = SEARCHING
             while self._wanted and not client.closed.wait(0.5):
                 pass
             if self._wanted:
@@ -132,13 +107,9 @@ class BiscuitLink:
 
     def _message(self, message):
         kind = message.get("kind")
-        if kind == "found" and isinstance(message.get("mac"), str):
-            mac = message["mac"]
-            self.found[mac] = {"mac": mac, "name": name_of(mac, str(message.get("text", ""))),
-                               "secure": bool(message.get("secure")), "ap6": bool(message.get("ap6"))}
-        elif kind == "status":
+        if kind == "status":
             self.live = message
-            if not self.pairing_mode and self._wanted and message.get("state") in (
+            if self._wanted and message.get("state") in (
                     SEARCHING, JOINED, SCANNING, SECURE, OLD):
                 self.state = message["state"]
         elif kind == "error":
@@ -160,6 +131,5 @@ class BiscuitLink:
             thread.join(10)
 
     def status(self):
-        return dict(self.live, state=self.state, error=self.error, pairing=self.pairing_mode,
-                    found=sorted(self.found.values(), key=lambda b: b["mac"]), adapter=self.adapter,
+        return dict(self.live, state=self.state, error=self.error, adapter=self.adapter,
                     seconds=int(time.monotonic() - self.started) if self.started and self.running else 0)

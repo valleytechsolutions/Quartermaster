@@ -1,10 +1,11 @@
 # Changelog
 
-## 1.2.11
+## 1.2.12
 
-- New: **Biscuit node** mode. Under **Settings > Biscuit node**, Quartermaster pairs with a Biscuit or Biscuit Pro and becomes its 6 GHz node, with a 6 GHz USB adapter such as the ALFA AWUS036AXM. The Biscuit runs the wardrive and logs with its own GPS. See [Biscuit node](docs/guide/biscuit.md).
-- In node mode, Quartermaster works like the Biscuit Pager node for the Hak5 Pager by GSHD and CodeHedge. It reports to the Biscuit as a Pager node (`Pager:v1.1.0`), then says it is a Pager 6 GHz node from Quartermaster. It scans 6 GHz only and goes to 2.4 GHz channel 6 only to talk to the Biscuit.
-- The Biscuit must be in Extended node mode. Pairing lists every Biscuit that answers and says which ones are in Secure mode or have firmware without 6 GHz nodes.
+- New: **Biscuit node** mode. Under **Settings > Biscuit node**, Quartermaster becomes the 6 GHz node of a Biscuit or Biscuit Pro, with a 6 GHz USB adapter such as the ALFA AWUS036AXM. The Biscuit runs the wardrive and logs with its own GPS. See [Biscuit node](docs/guide/biscuit.md).
+- In node mode, Quartermaster works like the Biscuit Pager node for the Hak5 Pager by GSHD and CodeHedge. It reports to the Biscuit as a Pager node (`Pager:v1.1.0`) and sends only what the Pager node sends. It scans 6 GHz only and goes to 2.4 GHz channel 6 only to talk to the Biscuit.
+- As with the Pager node, pairing is done on the Biscuit: start node mode, then add the node from a node search in the Biscuit manager app. The Biscuit must be in Extended node mode, with firmware v1.7.0 or newer.
+- The node sends its Pager firmware name again when the Biscuit adds it or gives it a job, and every 30 seconds, so the Biscuit always shows it as a Pager and never as a plain node.
 - While node mode runs, a wardrive and Recon wait until it is stopped.
 - The radio helper runs node mode. It sends no frame but the node's own messages to the Biscuit, on channel 6, and only while node mode runs.
 
