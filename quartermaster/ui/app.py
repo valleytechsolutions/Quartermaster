@@ -237,7 +237,7 @@ class App:
                                                                    display_profile=getattr(display, "profile", "cardputer")))
         self.recon = recon or Recon(cfg, gps, root=root, nodes=self.nodes, sound=AlertSound(self.player))
         self.viewer_factory = viewer or (lambda: skyview.Viewer(
-            root, gps, drive=lambda: self.drive if self.wardriving else None))
+            root, gps, drive=lambda: self.drive if self.wardriving else None, diy=bool(self.square)))
         self.sky = None
         self.flasher_class = flasher_class
         self.flash_job = None
@@ -635,7 +635,8 @@ class App:
         def ignored(items):
             self.call_soon(lambda: self.change("ignore", list(items)))
         return self.setup_class(self.logs_dir, self.cfg, self.accounts_path, on_keys=changed, on_ignore=ignored,
-                                on_upload=lambda: self.call_soon(self.upload_now), marks=self.uploader.marks)
+                                on_upload=lambda: self.call_soon(self.upload_now), marks=self.uploader.marks,
+                                diy=bool(self.square))
 
     def sky_open(self):
         """The aircraft viewer's session, started when its screen opens."""

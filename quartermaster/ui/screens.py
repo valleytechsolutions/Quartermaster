@@ -596,9 +596,11 @@ class Summary(Screen):
         elif not saved:
             text, color = "A GPS fix is needed before rows can be logged.", MUTED
         elif not sites:
-            text, color = "Press K to add your upload keys.", AMBER
+            text, color = ("Open Keys on the menu to add your upload keys." if app.square
+                           else "Press K to add your upload keys."), AMBER
         elif not status["auto"]:
-            text, color = "Automatic uploads are off. Press U to send it.", MUTED
+            text, color = ("Automatic uploads are off. Open Uploads to send it." if app.square
+                           else "Automatic uploads are off. Press U to send it."), MUTED
         else:
             text, color = "Uploading to %s." % ", ".join(sites), GREEN
         c.text((8, TOP + 106), text, font("ui", 9), color, width=W - 16)
@@ -727,7 +729,8 @@ class Hardware(Screen):
         if guard.get("line"):
             cards.append({"tag": "USB", "color": MUTED, "title": guard["line"],
                           "detail": "Estimate. Listening adapters draw less."})
-        for title, detail, problem in powerguard.load_cards(guard.get("load") or getattr(app.hw, "power", None)):
+        for title, detail, problem in powerguard.load_cards(guard.get("load") or getattr(app.hw, "power", None),
+                                                            diy=bool(getattr(app, "square", None))):
             card = {"tag": "PWR", "color": AMBER if problem else MUTED, "title": title, "detail": detail}
             if problem:
                 card.update(edge=AMBER, detail_color=AMBER)
@@ -819,15 +822,17 @@ class Hardware(Screen):
         from .. import radio_helper
         if not app.cfg.get("deep_scan"):
             return None
+        diy = bool(getattr(app, "square", None))
         if deep is None:
             if not os.path.exists(radio_helper.SOCKET):
                 return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan",
-                        "detail": radio_helper.words("missing"), "detail_color": AMBER}
+                        "detail": radio_helper.words("missing", diy=diy), "detail_color": AMBER}
             return {"tag": "DEEP", "color": MUTED, "title": "Deep scan",
                     "detail": "Starts with the next wardrive or Recon."}
         if deep.get("state") != "ready":
             return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan",
-                    "detail": radio_helper.words(deep.get("state"), deep.get("detail", "")), "detail_color": AMBER}
+                    "detail": radio_helper.words(deep.get("state"), deep.get("detail", ""), diy=diy),
+                    "detail_color": AMBER}
         if deep.get("error"):
             return {"tag": "DEEP", "color": AMBER, "edge": AMBER, "title": "Deep scan", "detail": deep["error"],
                     "detail_color": AMBER}
@@ -857,7 +862,7 @@ class Hardware(Screen):
             state = adsb.NO_TOOLS
         else:
             state = getattr(app.hw, "sky_use", "") or adsb.READY
-        card["detail"] = adsb.WORDS[state]
+        card["detail"] = (adsb.PI_WORDS if app.square else adsb.WORDS)[state]
         view = ("K3: Aircraft" if app.square else "A: viewer") if sky_ready(app)[0] else ""
         if state in (adsb.RUNNING, adsb.SYSTEM):
             count = "%d aircraft" % live["aircraft"] if live is not None else ""
@@ -985,7 +990,7 @@ def sky_ready(app):
         if live is None:
             return False, "This wardrive does not listen for aircraft"
         state = live.status()["state"]
-        return state in (adsb.RUNNING, adsb.SYSTEM), adsb.WORDS.get(state, "")
+        return state in (adsb.RUNNING, adsb.SYSTEM), (adsb.PI_WORDS if app.square else adsb.WORDS).get(state, "")
     use = getattr(app.hw, "sky_use", "")
     if use == adsb.SYSTEM:
         return True, ""
@@ -1237,7 +1242,8 @@ class Uploads(Screen):
             line = test_line(app, service)
             if line is None:
                 line = (info["last"], MUTED) if info["last"] else \
-                    (("Ready", FAINT) if info["configured"] else ("Press K to add your key", FAINT))
+                    (("Ready", FAINT) if info["configured"] else
+                     ("Open Keys to add your key" if app.square else "Press K to add your key", FAINT))
             c.text_right(W - 10, y + 18, c.fit(line[0], W - 30 - x, font("ui", 8)), font("ui", 8), line[1])
 
     def handle(self, key, app):
@@ -1246,7 +1252,7 @@ class Uploads(Screen):
         elif key == "T":
             ready = accounts.ready(app.accounts())
             if not ready:
-                app.toast("Add a key first: press K", AMBER)
+                app.toast("Open Keys to add an upload key" if app.square else "Add a key first: press K", AMBER)
             for service in ready:
                 app.test_key(service)
         elif key == "K":
@@ -1291,12 +1297,14 @@ class Keys(Screen, ListMixin):
         c.line((8, y, W - 8, y))
         if self.index == 0:
             lines = [("Scan a QR code, then paste all your keys in a web page.", MUTED),
-                     ("Or pick a key below and type it on the Cardputer.", FAINT)]
+                     ("Or pick a key below and type it with the on-screen keyboard." if app.square
+                      else "Or pick a key below and type it on the Cardputer.", FAINT)]
         else:
             field, _, where = accounts.FIELDS[self.index - 1]
             lines = [("Find it at " + where, MUTED)]
             line = test_line(app, FIELD_SERVICE[field])
-            lines.append(line or ("Press T to check that the key works.", FAINT))
+            lines.append(line or ("Press K3 and choose Test to check that the key works." if app.square
+                                  else "Press T to check that the key works.", FAINT))
         for i, (text, color) in enumerate(lines):
             c.text((10, y + 5 + i * 13), text, font("ui", 9), color, width=W - 20)
 
@@ -1358,6 +1366,8 @@ class PhoneSetup(Screen):
             return empty_state(c, "phone", "Setup page unavailable", self.error)
         if self.server is None or not self.addresses:
             return empty_state(c, "phone", "Not on a network",
+                               "Join a network first. Log in to the Pi and run sudo nmtui. This screen updates by "
+                               "itself. You can also type keys with the on-screen keyboard." if app.square else
                                "Join Wi-Fi in the CardputerZero settings first. This screen updates by itself. "
                                "You can also type keys on the Cardputer.")
         url = "http://%s:%d" % (self.addresses[0], self.server.port)
@@ -1386,8 +1396,9 @@ class PhoneSetup(Screen):
         else:
             status, color = "Waiting for your phone…", MUTED
         c.text((x, TOP + 91), status, font("ui", 9), color, width=W - x - 4)
-        for i, line in enumerate(c.wrap("Use the same Wi-Fi as the Cardputer. The page closes when you leave "
-                                        "this screen.", W - x - 6, font("ui", 8))[:3]):
+        same = "Use the same network as the Pi." if app.square else "Use the same Wi-Fi as the Cardputer."
+        for i, line in enumerate(c.wrap(same + " The page closes when you leave this screen.", W - x - 6,
+                                        font("ui", 8))[:3]):
             c.text((x, TOP + 105 + i * 10), line, font("ui", 8), FAINT)
 
     def closed(self, app):
@@ -1461,7 +1472,7 @@ class Settings(Screen, ListMixin):
         now = time.monotonic()
         if self._helper is None or now - self._helper[0] >= self.HELPER_EVERY:
             from .. import radio_helper
-            self._helper = (now,) + radio_helper.state(app.cfg)
+            self._helper = (now,) + radio_helper.state(app.cfg, diy=bool(app.square))
         state, words = self._helper[1], self._helper[2]
         return "" if state in ("ready", "off") else words
 
@@ -1567,6 +1578,8 @@ class IgnoreList(Screen, ListMixin):
         entries = app.cfg.get("ignore", [])
         if not entries:
             empty_state(c, "wifi", "Nothing is ignored",
+                        "To add a Wi-Fi name or MAC address, such as your home network or phone hotspot, press K3 "
+                        "and choose Add. It still shows on screen but is never logged or uploaded." if app.square else
                         "Press A to add a Wi-Fi name or MAC address, such as your home network or phone hotspot. "
                         "It still shows on screen but is never logged or uploaded.")
             return

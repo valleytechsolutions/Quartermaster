@@ -439,7 +439,8 @@ def sky(app, root, shot):
     app.viewer_factory = lambda: skyview.Viewer(
         root, app.gps, launcher=fake, which=lambda name: "/usr/bin/rtl_adsb" if name == "rtl_adsb" else None,
         dongles=lambda: app.hw.sdr, feeds=(), out=root / "view", cpus=lambda: 1, kill=fake.kill,
-        tools=lambda name: None, clock=lambda: NOW + 9000 + heard[0], mono=lambda: heard[0], threads=False)
+        tools=lambda name: None, clock=lambda: NOW + 9000 + heard[0], mono=lambda: heard[0], threads=False,
+        diy=bool(app.square))
     app.open("Hardware")
     press(app, "A")
     viewer = app.sky
@@ -520,7 +521,7 @@ def listen(app, root, shot):
     shot("wardrive-mesh")
     app.open("Hardware")
     cards = app.screen.cards(app)
-    app.screen.top = max(0, next(i for i, card in enumerate(cards) if card["tag"] == "LORA") - 2)
+    app.screen.top = max(0, next((i for i, card in enumerate(cards) if card["tag"] == "LORA"), 0) - 2)
     shot("hardware-mesh")
     app.stop_wardrive()
     app.screen.s.update(ble=187, elapsed=1574)
@@ -582,6 +583,15 @@ def main():
     def shot(name):
         save(steady(app), name)
 
+    tour(app, root, shot)
+    app.shutdown()
+    if args.hats:
+        hats(root / "hats").save(out / "waveshare-preview.png")
+    print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))
+
+
+def tour(app, root, shot):
+    """Every screen of the screenshots in turn, with shot(name) called while each one is open."""
     shot("home")
     wait(app, root, shot)
     press(app, "W")
@@ -685,10 +695,6 @@ def main():
     sky(app, root, shot)
     deep_scan(app, root, shot)
     listen(app, root, shot)
-    app.shutdown()
-    if args.hats:
-        hats(root / "hats").save(out / "waveshare-preview.png")
-    print("%d screenshots in %s" % (len(list(out.glob("*.png"))), out))
 
 
 if __name__ == "__main__":

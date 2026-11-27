@@ -22,6 +22,8 @@ WORDS = {
     "off": "Deep scan is off in Settings.",
     "ready": "Radio helper ready",
 }
+PI_WORDS = dict(WORDS, missing="Radio helper not found. Reinstall the Pi package from GitHub.",
+                no_group="Restart the Pi once so the new permission applies.")
 SETTINGS = ("deep_scan", "direct_scan", "radio_tuning")
 
 
@@ -33,10 +35,10 @@ def wanted(cfg):
     return any(cfg.get(key) is True for key in SETTINGS)
 
 
-def words(state, detail=""):
+def words(state, detail="", diy=False):
     if state == "error":
         return ("Radio helper failed: %s" % detail)[:100]
-    return WORDS.get(state, state)
+    return (PI_WORDS if diy else WORDS).get(state, state)
 
 
 class Client:
@@ -201,14 +203,14 @@ def connect(path=SOCKET, client=Client):
     return opened, "ready", ""
 
 
-def state(cfg, path=SOCKET, client=Client):
+def state(cfg, path=SOCKET, client=Client, diy=False):
     """(state, words) for Settings and the Hardware screen."""
     if not wanted(cfg):
-        return "off", words("off")
+        return "off", words("off", diy=diy)
     opened, found, detail = connect(path, client)
     if opened is not None:
         opened.close()
-    return found, words(found, detail)
+    return found, words(found, detail, diy=diy)
 
 
 def split_batch(body):

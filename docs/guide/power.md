@@ -78,6 +78,6 @@ To scale further, add [nodes](nodes.md). Each ESP32-C5 node scans its own share 
 
 **On a Zero,** plug the power into the port marked **PWR IN**. The port marked **USB** is the only one for data, so a GPS and a Wi-Fi adapter together need an OTG hub. A hub with its own power supply keeps the adapters from drawing on the Pi.
 
-**The estimate.** Quartermaster uses the same numbers on a Pi. It counts about 1,000 mA for the Pi's USB ports, as for the Cardputer's port. When everything fits, the Hardware screen still says "Estimate. Within what the Cardputer's port gives."
+**The estimate.** Quartermaster uses the same numbers on a Pi. It counts about 1,000 mA for the Pi's USB ports, as for the Cardputer's port. When everything fits, the Hardware screen says "Estimate. Within what the Pi's USB ports give."
 
 **Under-voltage.** When the Pi's power supply is too weak, the Pi raises its under-voltage alarm. During a wardrive, Power guard takes that as a strong sign. The Hardware screen then shows "USB power ran short", with the reason "The Pi reports under-voltage". A powered hub helps the adapters, but the Pi itself still needs a power supply that is strong enough.

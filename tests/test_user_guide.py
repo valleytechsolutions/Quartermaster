@@ -4,7 +4,9 @@ import re
 
 import pytest
 
+from quartermaster import adsb, flasher, nodes, radio_helper
 from quartermaster.ui import hat, screens
+from tests.test_pi_words import HARDWARE, LISTS, PAGES, PHONE, UPLOADS
 from tools import imager_os_list
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,14 +24,17 @@ SCREEN_WORDS = {
     "quartermaster/ui/screens.py": ("Plug in a USB GPS or connect a receiver through gpsd.", "Check adapter",
                                     "GPS searching", "No fix yet", "Start wardrive", "Stop wardrive",
                                     "New wardrive", "Upload again", "Test keys", "Radio for aircraft (RTL-SDR)",
-                                    "K3: Aircraft", "Press K to add your upload keys.",
+                                    "K3: Aircraft", "Open Keys on the menu to add your upload keys.",
+                                    "Automatic uploads are off. Open Uploads to send it.",
                                     "GPS fix lost. Logging pauses until it is back."),
-    "quartermaster/radio_helper.py": ("Radio helper not installed. Update Quartermaster from the AppStore.",),
+    "quartermaster/radio_helper.py": ("Radio helper not found. Reinstall the Pi package from GitHub.",
+                                      "Restart the Pi once so the new permission applies."),
+    "quartermaster/adsb.py": ("No permission yet. Restart the Pi once.", "Restart the Pi once to use it"),
     "quartermaster/ui/sky_screens.py": ("Save capture", "End capture", "Captures"),
     "quartermaster/ui/recon_screens.py": ("Reset peak", "All on", "Watch list", "Mute", "Play", "Defaults",
                                           "No alerts"),
     "quartermaster/ui/app.py": ("Open Keys to add upload keys",),
-    "quartermaster/powerguard.py": ("The Pi reports under-voltage",),
+    "quartermaster/powerguard.py": ("The Pi reports under-voltage", "Estimate. Within what the Pi's USB ports give."),
     "quartermaster/updates_check.py": ("X is ready. Install the Pi package from GitHub.",
                                        "Your Pi version (X) is up to date.",
                                        "Could not find a Raspberry Pi release with an installer."),
@@ -140,6 +145,35 @@ def test_the_pi_words_in_the_guide_are_the_words_on_the_screen():
         for phrase in phrases:
             assert phrase in guide, phrase
             assert phrase.replace("X", "%s") in code, phrase
+
+
+def test_a_page_that_quotes_a_message_a_pi_words_differently_gives_the_pi_words_in_its_diy_part():
+    pairs = UPLOADS + PHONE + PAGES + HARDWARE + LISTS
+    for page in pages():
+        text = read(page)
+        diy = diy_part(text)
+        for cardputer, pi in pairs:
+            assert cardputer not in diy, (page.name, cardputer)
+            if re.search(re.escape(cardputer) + r"(?=\"| \|)", text[:len(text) - len(diy)]):
+                assert pi in diy, (page.name, pi)
+    guide = read(ROOT / "docs" / "diy.md")
+    assert [cardputer for cardputer, _ in pairs if cardputer in guide] == []
+
+
+def test_the_messages_that_ask_a_pi_to_restart_update_or_reinstall_are_ones_a_pi_shows():
+    shown = [*radio_helper.PI_WORDS.values(), *adsb.PI_WORDS.values(), nodes.NEWER, nodes.NO_SERIAL, flasher.NEWER,
+             flasher.NO_SERIAL, flasher.DAMAGED]
+    trouble = diy_part(read(GUIDE / "troubleshooting.md"))
+    table = trouble.split("**Messages that ask you to restart, update or reinstall.**", 1)[1].split("\n\n**", 1)[0]
+    rows = re.findall(r"^\| (.+?) \| .+ \|$", table, re.M)
+    assert rows[:2] == ["Where a message says", "---"] and len(rows) == 6
+    diy = read(ROOT / "docs" / "diy.md")
+    asks = next(line for line in diy.splitlines() if line.startswith("**Messages that ask you to restart"))
+    quoted = re.findall(r"\"([^\"]+)\"", asks)
+    assert len(quoted) == 4 and "`sudo reboot`" in asks and "](guide/troubleshooting.md#on-a-diy-raspberry-pi)" in asks
+    for words in rows[2:] + quoted:
+        assert any(words in message for message in shown), words
+    assert not re.search(r"Cardputer|AppStore", table + asks)
 
 
 def test_the_pi_keys_in_the_guide_match_the_buttons_of_the_hat():

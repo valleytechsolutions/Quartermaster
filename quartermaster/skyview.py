@@ -57,6 +57,7 @@ WORDS = dict(adsb.WORDS)
 WORDS.update({adsb.RUNNING: "Listening", adsb.READY: "Starting", STARTING: "Starting",
               adsb.FAILED: "The radio stopped. Trying again soon.",
               NO_DRIVE: "This wardrive does not listen for aircraft"})
+PI_WORDS = dict(WORDS, **{key: adsb.PI_WORDS[key] for key in (adsb.DENIED, adsb.DRIVER)})
 SHARED = "Listening with the wardrive"
 FULL = "Capture ended: storage is almost full"
 LARGE = "Capture ended: it reached 128 MB"
@@ -440,8 +441,9 @@ class Viewer:
 
     def __init__(self, root, gps, drive=None, launcher=subprocess.Popen, which=shutil.which,
                  dongles=hardware.rtl_sdr_dongles, feeds=adsb.SYSTEM_FEEDS, out=None, cpus=os.cpu_count, kill=None,
-                 tools=shutil.which, clock=time.time, mono=None, epoch=None, threads=True):
+                 tools=shutil.which, clock=time.time, mono=None, epoch=None, threads=True, diy=False):
         self.folder, self.gps = folder(root), gps
+        self.words = PI_WORDS if diy else WORDS
         self.drive = drive or (lambda: None)
         self.launcher, self.which, self.dongles, self.feeds = launcher, which, dongles, feeds
         self.out, self.cpus, self.kill, self.tools, self.clock = out, cpus, kill, tools, clock
@@ -827,7 +829,7 @@ class Viewer:
 
     def status(self):
         capture = self.capture
-        words = SHARED if self.shared and self.state == adsb.RUNNING else WORDS.get(self.state, "")
+        words = SHARED if self.shared and self.state == adsb.RUNNING else self.words.get(self.state, "")
         return {"state": self.state, "detail": words, "shared": self.shared, "aircraft": len(self.seen),
                 "frames": self.frames, "raw": self.feed is None, "listening": self.state in (adsb.RUNNING, adsb.SYSTEM),
                 "capture": None if capture is None else {"name": capture.stem, "points": capture.points,

@@ -60,15 +60,15 @@ Your logs and settings stay where they are. See [Files and logs](files.md).
 
 The AppStore and the one command above are only for the CardputerZero. The command always fetches the CardputerZero package from the release with GitHub's **Latest** badge, so do not run it on a Pi.
 
-The DIY version comes from the Raspberry Pi releases on GitHub. Their tags start with `pi-v` and their names end in "for Raspberry Pi". They never have the **Latest** badge. A new Pi release is marked **Pre-release** until it has been tested. The release [Quartermaster 1.2.9 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.9) has:
+The DIY version comes from the Raspberry Pi releases on GitHub. Their tags start with `pi-v` and their names end in "for Raspberry Pi". They never have the **Latest** badge. A new Pi release is marked **Pre-release** until it has been tested. The release [Quartermaster 1.2.10 DIY for Raspberry Pi](https://github.com/valleytechsolutions/Quartermaster/releases/tag/pi-v1.2.10) has:
 
-- a ready SD card image for each HAT: `quartermaster-pi-1.2.9-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.9-waveshare-1.3inch-lcd-hat.img.xz`,
+- a ready SD card image for each HAT: `quartermaster-pi-1.2.10-waveshare-1.44inch-lcd-hat.img.xz` and `quartermaster-pi-1.2.10-waveshare-1.3inch-lcd-hat.img.xz`,
 - `quartermaster.rpi-imager-manifest`, a small file that opens Raspberry Pi Imager with both images in its list,
-- the Pi package `quartermaster-pi_1.2.9_all.deb` and its checksums, for a card you already use.
+- the Pi package `quartermaster-pi_1.2.10_all.deb` and its checksums, for a card you already use.
 
 ### Flash a ready image (easiest)
 
-Flash the image for your HAT with Raspberry Pi Imager. In Imager's list, choose "Quartermaster 1.2.9 for the Waveshare 1.44inch LCD HAT (128×128)" or "Quartermaster 1.2.9 for the Waveshare 1.3inch LCD HAT (240×240)". The [DIY guide](../diy.md#easiest-way-flash-a-ready-image) has every step.
+Flash the image for your HAT with Raspberry Pi Imager. In Imager's list, choose "Quartermaster 1.2.10 for the Waveshare 1.44inch LCD HAT (128×128)" or "Quartermaster 1.2.10 for the Waveshare 1.3inch LCD HAT (240×240)". The [DIY guide](../diy.md#easiest-way-flash-a-ready-image) has every step.
 
 - The Pi starts Quartermaster by itself. The first start takes a few minutes, and the Pi may restart once. You do not need to restart it yourself.
 - The image logs in as user `pi` with password `pi`, and SSH is on. From a computer on the same network, type `ssh pi@quartermaster.local`. A user set in Raspberry Pi Imager replaces this login.
@@ -76,7 +76,7 @@ Flash the image for your HAT with Raspberry Pi Imager. In Imager's list, choose 
 
 ### Install the Pi package on a card you already use
 
-Follow [Assemble and install manually](../diy.md#assemble-and-install-manually) in the DIY guide. It ends with one restart, which also gives your user the new permissions.
+Follow [Assemble and install manually](../diy.md#assemble-and-install-manually) in the DIY guide. It ends with one restart, which also gives your user the new permissions. Until then you may see messages such as "No permission yet. Restart the Pi once."
 
 ### Checking for updates on a Pi
 
