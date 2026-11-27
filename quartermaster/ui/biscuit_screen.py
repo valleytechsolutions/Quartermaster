@@ -1,7 +1,7 @@
 """Settings > Biscuit node: run as a Biscuit or Biscuit Pro's 6 GHz node, added from a node search on the Biscuit."""
 
 from .. import biscuit
-from .gfx import AMBER, CONTENT_BOTTOM, CYAN, FAINT, GOLD, GREEN, MUTED, RED, SURFACE, TEXT, W, clock, font
+from .gfx import AMBER, CONTENT_BOTTOM, CYAN, FAINT, GOLD, GREEN, MUTED, RED, SURFACE, TEXT, W, clock, font, image
 from .screens import TOP, Screen
 
 WORDS = {
@@ -16,6 +16,7 @@ WORDS = {
     biscuit.FAILED: ("Stopped", "Node mode stopped.", RED),
     biscuit.OFF: ("Off", "", MUTED),
 }
+LOGO = "biscuitshop-logo.png"
 BUSY = "Stop the wardrive and Recon first: node mode scans 6 GHz and nothing else."
 HELP = ("Set your Biscuit or Biscuit Pro to Extended node mode and press OK here. Then search for nodes in the "
         "Biscuit manager app and add this one. It shows on the Biscuit as a Pager and scans 6 GHz only, with a 6 GHz "
@@ -77,6 +78,8 @@ class BiscuitNode(Screen):
         link = app.biscuit
         s = link.status()
         y = ui.top + 3
+        side = max(16, ui.bold.size + 6)
+        c.paste(image(LOGO, (side, side)), (ui.size - side - 3, y - 1))
         if link.running:
             word, detail, color = WORDS.get(s["state"], WORDS[biscuit.FAILED])
             y = ui.paragraph(c, word, y, color, face=ui.bold)
@@ -96,11 +99,12 @@ class BiscuitNode(Screen):
     def render_off(self, c, app, s):
         link = app.biscuit
         y = TOP + 2
+        c.paste(image(LOGO, (48, 48)), (W - 56, y))
         c.text((10, y), "Biscuit node", font("display", 17), GOLD)
         y += 26
         if s["error"] and link.state == biscuit.FAILED:
-            y = self.paragraph(c, s["error"], y, RED, 9, lines=3) + 3
-        self.paragraph(c, HELP, y, TEXT, 10, lines=max(1, (CONTENT_BOTTOM - y) // 13))
+            y = self.paragraph(c, s["error"], y, RED, 9, width=W - 76, lines=3) + 3
+        self.paragraph(c, HELP, y, TEXT, 10, width=W - 76, lines=max(1, (CONTENT_BOTTOM - y) // 13))
 
     def render_node(self, c, app, s):
         word, detail, color = WORDS.get(s["state"], WORDS[biscuit.FAILED])
@@ -114,7 +118,8 @@ class BiscuitNode(Screen):
             c.text((x + 7, y + 3), label, font("ui", 8), MUTED)
             c.text((x + 7, y + 16), format(value or 0, ","), font("display", 17), tint, width=tw - 10)
         x0 = 170
-        c.text((x0, TOP + 2), word, font("display", 15), color, width=W - x0 - 6)
+        c.paste(image(LOGO, (24, 24)), (W - 30, TOP + 2))
+        c.text((x0, TOP + 2), word, font("display", 15), color, width=W - x0 - 36)
         y = self.paragraph(c, detail, TOP + 24, TEXT, 9, x=x0, width=W - x0 - 6, lines=3)
         lines = [app.biscuit.name or "No Biscuit yet"]
         if s.get("adapter"):
