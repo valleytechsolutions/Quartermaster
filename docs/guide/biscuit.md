@@ -14,7 +14,7 @@ In node mode Quartermaster works exactly like the Biscuit Pager node for the Hak
 
 - A **6 GHz USB Wi-Fi adapter**: a Wi-Fi 6E adapter with an MT7921AU or MT7925U chip, such as the ALFA AWUS036AXM. The built-in Wi-Fi has no 6 GHz. See [Wi-Fi adapters](wifi-adapters.md).
 - A Wi-Fi country that allows 6 GHz. In most countries it does.
-- The Biscuit set to **Extended** node mode. Secure node mode does not take Pager nodes. The Biscuit also needs firmware that takes 6 GHz nodes.
+- The Biscuit set to **Extended** node mode. Secure node mode does not take Pager nodes. The Biscuit also needs firmware v1.7.0 or newer, the release that added Pager nodes.
 - Deep scan's radio helper, which comes with Quartermaster. Node mode uses it even when Deep scan is off.
 
 ## Pair with your Biscuit
