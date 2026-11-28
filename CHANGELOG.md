@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0
+
+- New: **ESP32-C3, ESP32-C6 and ESP32-S3 nodes**, next to the ESP32-C5. They scan 2.4 GHz Wi-Fi and Bluetooth LE. Quartermaster gives them the 2.4 GHz channels, so the C5s are free for the many 5 GHz channels, and a C5 only takes 2.4 GHz channels as well when that finishes a sweep sooner. Any mix of chips works, plugged in or wireless.
+- **Settings > Flash a node** flashes all four chips. It finds out which chip the board has and writes that chip's firmware. The browser flasher does the same.
+- Up to **20 nodes** in all, plugged in and wireless together: up to 8 plugged in and up to 17 wireless.
+- New: **wireless nodes relay**. A wireless node that cannot reach the hub reaches it through other wireless nodes, up to 3 hops, over ESP-NOW with the same cluster key. It picks the path with the fewest hops and the strongest weakest link, and goes back to the hub as soon as the hub answers it again. The node screen says which node it is heard through, and Quartermaster gives it a slightly smaller share of the channels, as it has further to send.
+- New: the hub also takes nodes of **JustCallMeKoko's ESP32 Dual Band Wardriver** (node mode, without encryption) and **Hamspiced's Piglet** mesh nodes. They show up while pairing is open and are added like any wireless node. Each is given one run of its own channel list from Quartermaster's plan. They keep their own lights and settings. The hub must be on channel 6, as it is unless it was changed.
+- The light of a node is chosen from the boards of its own chip: XIAO, DevKit and Super Mini boards of the C3, C6 and S3 are in the list.
+- Node firmware 1.2.0. A node with 1.1.x keeps working. Update it from **Settings > Flash a node** to let it relay and to have 17 wireless nodes on one hub.
+- On the CardputerZero the screens look as they did. Only some words change, such as "ESP32 board" in place of "ESP32-C5 board".
+
 ## 1.2.12
 
 - New: **Biscuit node** mode. Under **Settings > Biscuit node**, Quartermaster becomes the 6 GHz node of a Biscuit or Biscuit Pro, with a 6 GHz USB adapter such as the ALFA AWUS036AXM. The Biscuit runs the wardrive and logs with its own GPS. See [Biscuit node](docs/guide/biscuit.md).

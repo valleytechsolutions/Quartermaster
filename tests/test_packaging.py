@@ -101,10 +101,10 @@ def test_the_store_listing_declares_the_background_service():
                                           "background_service", "external_display"])
     assert all(isinstance(v, bool) for v in permissions.values())
     assert permissions["background_service"] is True
-    assert manifest["version"] == "1.2.12"
+    assert manifest["version"] == "1.3.0"
     from quartermaster import __version__
     assert __version__ == manifest["version"]
-    assert "## 1.2.12" in (ROOT / "CHANGELOG.md").read_text()
+    assert "## 1.3.0" in (ROOT / "CHANGELOG.md").read_text()
     assert "## Deep scan" in (ROOT / "README.md").read_text()
 
 
@@ -149,7 +149,7 @@ def test_the_package_passes_the_store_checks(tmp_path):
         assert not any(DANGEROUS.search(line) for line in path.read_text().splitlines())
     fields = subprocess.run(["dpkg-deb", "-f", str(deb), "Version", "Architecture"], capture_output=True,
                             text=True, check=True).stdout
-    assert "Version: 1.2.12" in fields and "Architecture: all" in fields
+    assert "Version: 1.3.0" in fields and "Architecture: all" in fields
     depends = subprocess.check_output(["dpkg-deb", "-f", str(deb), "Depends"], text=True)
     for package in ("firmware-realtek", "firmware-mediatek", "firmware-atheros"):
         assert package + " | gh0st-wifi" in depends.strip().split(", ")

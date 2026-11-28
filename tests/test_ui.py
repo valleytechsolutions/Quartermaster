@@ -1032,7 +1032,7 @@ def test_a_board_without_node_firmware_is_flashed_with_progress_plain_errors_and
     assert hardware.port_holder(path) is None and rig.manager.found() == []
     open_setting(app, "flash_node")
     text = screen_text(app, drawn)
-    assert "ESP32-C5 on ttyACM0" in text and "No node firmware" in text and "Update keeps its settings." in text
+    assert "ESP32 on ttyACM0" in text and "No node firmware" in text and "Update keeps its settings." in text
     assert "ttyUSB0" not in text and [port["name"] for port in app.hw.serial_ports] == ["ttyACM0", "ttyUSB0"]
     press(app, "ENTER")
     assert isinstance(app.screen, screens.Confirm) and app.screen.choice == 1
@@ -1959,7 +1959,7 @@ def test_a_flash_that_cannot_work_again_offers_no_retry_and_another_layout_offer
     log = []
     app, rig = node_app(tmp_path, configured=(TWO,))
     target = next(target for target in screens.flash_targets(app) if target["node"] == TWO)
-    app.flasher_class = FakeFlasher(log, error=flasher.EARLY % (0, 1))
+    app.flasher_class = FakeFlasher(log, error=flasher.EARLY % ("ESP32-C5", 0, 1))
     app.flash(target, "update")
     finish(app)
     assert app.screen.hints(app) == [("Esc", "Back")]

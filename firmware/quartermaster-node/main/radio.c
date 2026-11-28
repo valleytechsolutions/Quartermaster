@@ -182,6 +182,13 @@ static void hmac(const uint8_t key[WIRE_KEY], const char *label, const uint8_t *
     mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, WIRE_KEY, in, l + n, out);
 }
 
+void radio_tag(const uint8_t key[WIRE_KEY], const uint8_t *msg, size_t n, uint8_t tag[WIRE_TAG])
+{
+    uint8_t h[32];
+    mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, WIRE_KEY, msg, n, h);
+    memcpy(tag, h, WIRE_TAG);
+}
+
 void radio_pmk(const uint8_t key[WIRE_KEY])
 {
     uint8_t k[32];
@@ -201,6 +208,27 @@ bool radio_peer(const uint8_t mac[6], const uint8_t key[WIRE_KEY], const uint8_t
         uplink_log("wireless: peer refused: %s", esp_err_to_name(err));
     }
     return err == ESP_OK;
+}
+
+bool radio_send_plain(const uint8_t mac[6], const void *d, size_t n)
+{
+    bool temp = false;
+    if (!started) {
+        return false;
+    }
+    if (!esp_now_is_peer_exist(mac)) {
+        esp_now_peer_info_t p = {.ifidx = WIFI_IF_STA, .encrypt = false};
+        memcpy(p.peer_addr, mac, 6);
+        if (esp_now_add_peer(&p) != ESP_OK) {
+            return false;
+        }
+        temp = true;
+    }
+    bool ok = radio_send(mac, d, n);
+    if (temp) {
+        esp_now_del_peer(mac);
+    }
+    return ok;
 }
 
 void radio_unpeer(const uint8_t mac[6])

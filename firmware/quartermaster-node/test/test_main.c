@@ -1,6 +1,8 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "enow.h"
 #include "proto.h"
 #include "seen.h"
 #include "wire.h"
@@ -228,6 +230,12 @@ static void test_led_and_ident(void)
     CHECK(led("#LED,rgb,27", &l) != NULL);
     CHECK(led("#LED", &l) != NULL);
     CHECK(led("#LED,gpio,27,2", &l) != NULL);
+    proto_led_pins((1ULL << 21) | (1ULL << 48));
+    CHECK(led("#LED,gpio,21,1", &l) == NULL && l.gpio == 21);
+    CHECK(led("#LED,ws2812,48", &l) == NULL && l.gpio == 48);
+    CHECK(led("#LED,gpio,27", &l) != NULL);
+    CHECK(led("#LED,gpio,49", &l) != NULL);
+    proto_led_pins(0x1f8007ffULL);
 
     proto_cmd_t c;
     unsigned s = 0;
@@ -632,7 +640,7 @@ static void test_pairing(void)
         CHECK(wire_pair_heard(&p, other, -60, &j, 11000 + i, &tell) && tell);
     }
     CHECK(wire_pair_find(&p, node_mac, 12000) != NULL);
-    other[5] = 7;
+    other[5] = WIRE_NODES - 1;
     CHECK(wire_pair_heard(&p, other, -60, &j, 12000, &tell) && tell);
     CHECK(wire_pair_find(&p, node_mac, 12000) == NULL);
     other[5] = 0;
@@ -831,18 +839,27 @@ static void test_hub_lines(void)
     snprintf(want, sizeof(want), "@%s*%02X\n", body, proto_xor(body, strlen(body)));
     SAME(b, want);
 
-    wire_node_t n = {.state = PEER_UP, .heard_ok = 1, .rssi = -67, .ago = 850, .frames = 120, .resent = 4};
+    wire_node_t n = {.state = PEER_UP, .heard_ok = 1, .rssi = -67, .ago = 850, .frames = 120, .resent = 4,
+                     .hops = 1};
     memcpy(n.mac, node_mac, 6);
     wire_node_line(b, sizeof(b), 41, &n);
-    CHECK(strncmp(b, "@N,41,a0b1c2d3e4f5,up,850,-67,120,4*", 36) == 0);
+    CHECK(strncmp(b, "@N,41,a0b1c2d3e4f5,up,850,-67,120,4,,1*", 39) == 0);
     n.ago = WIRE_SILENCE_MS;
     wire_node_line(b, sizeof(b), 42, &n);
-    CHECK(strncmp(b, "@N,42,a0b1c2d3e4f5,lost,60000,-67,120,4*", 40) == 0);
+    CHECK(strncmp(b, "@N,42,a0b1c2d3e4f5,lost,60000,-67,120,4,,1*", 43) == 0);
     n.state = PEER_NEW;
     n.heard_ok = 0;
     n.frames = n.resent = 0;
     wire_node_line(b, sizeof(b), 43, &n);
-    CHECK(strncmp(b, "@N,43,a0b1c2d3e4f5,new,,,0,0*", 29) == 0);
+    CHECK(strncmp(b, "@N,43,a0b1c2d3e4f5,new,,,0,0,,1*", 32) == 0);
+    n.state = PEER_UP;
+    n.heard_ok = 1;
+    n.ago = 20;
+    n.has_via = 1;
+    n.hops = 3;
+    memcpy(n.via, (const uint8_t[]){0x10, 0x20, 0x30, 0x40, 0x50, 0x60}, 6);
+    wire_node_line(b, sizeof(b), 44, &n);
+    CHECK(strncmp(b, "@N,44,a0b1c2d3e4f5,up,20,-67,0,0,102030405060,3*", 48) == 0);
 
     wire_joiner_t j = {.rssi = -48, .fw = "1.1.0", .board = "c5,*x"};
     memcpy(j.mac, node_mac, 6);
@@ -971,6 +988,248 @@ static void test_a_second_key_under_one_node_id_is_refused(void)
     CHECK(c && tell && !c->clash && wire_pair_find(&p, node_mac, 30000) == c);
 }
 
+static void test_relayed_answers(void)
+{
+    uint8_t f[WIRE_FRAME_MAX];
+    wire_peer_t p;
+    wire_peer_init(&p, node_mac, PEER_UP, 0);
+    wire_peer_cmd(&p, "#IDENT,5", 8);
+    int n = wire_ack_put(f, sizeof(f), &p, 7, 3, WA_RUN);
+    wire_ack_t *a = calloc(1, sizeof(*a));
+    CHECK(wire_ack_get(f, n, a) == 0 && a->ncmd == 1 && a->next_ms == 0 && a->ncarried == 0);
+    n = wire_ack_relay(f, sizeof(f), n, 640);
+    CHECK(n > 0 && wire_ack_get(f, n, a) == 0 && a->next_ms == 640 && a->ncarried == 0 && a->ncmd == 1);
+    const uint8_t kid[6] = {1, 2, 3, 4, 5, 6}, far[6] = {6, 5, 4, 3, 2, 1};
+    wire_queued_t q[2] = {{.id = 9, .len = 6, .line = "#HELLO"}, {.id = 10, .len = 8, .line = "#IDENT,3"}};
+    n = wire_ack_carry(f, sizeof(f), n, kid, WC_CMDS, q, 2);
+    n = wire_ack_carry(f, sizeof(f), n, far, WC_BYE, NULL, 0);
+    CHECK(n > 0 && wire_ack_get(f, n, a) == 0 && a->ncarried == 2);
+    CHECK(memcmp(a->carried[0].mac, kid, 6) == 0 && a->carried[0].kind == WC_CMDS && a->carried[0].ncmd == 2);
+    CHECK(a->carried[0].cmd[1].id == 10 && a->carried[0].cmd[1].len == 8 &&
+          memcmp(a->carried[0].cmd[1].line, "#IDENT,3", 8) == 0);
+    CHECK(a->carried[1].kind == WC_BYE && a->carried[1].ncmd == 0);
+    CHECK(wire_ack_get(f, n - 1, a) < 0);
+    CHECK(wire_ack_carry(f, n + 5, n, kid, WC_CMDS, q, 2) < 0);
+    f[n - 2] = 7;
+    CHECK(wire_ack_get(f, n, a) < 0);
+
+    wire_peer_t r;
+    wire_peer_init(&r, kid, PEER_UP, 0);
+    wire_peer_take(&r, &a->carried[0]);
+    CHECK(r.ncmd == 2 && r.cmd[0].id == 9 && strcmp(r.cmd[0].line, "#HELLO") == 0 && r.synced);
+    wire_data_t d = {.session = 1, .seq = 1, .flags = WD_CMD_ACK, .cmd_ack = 9};
+    wire_peer_data(&r, &d, -40, 5);
+    CHECK(r.ncmd == 1 && r.cmd[0].id == 10);
+    free(a);
+}
+
+static void test_offers(void)
+{
+    uint8_t f[64], hub[6];
+    wire_offer_t o = {.hub = {9, 8, 7, 6, 5, 4}, .hops = 2, .rssi = -71, .next_ms = 700, .tag = "12345678"}, g;
+    int n = wire_offer_put(f, sizeof(f), &o);
+    CHECK(n == 21 && wire_type(f, n) == WIRE_OFFER && wire_offer_get(f, n, &g) == 0);
+    CHECK(memcmp(g.hub, o.hub, 6) == 0 && g.hops == 2 && g.rssi == -71 && g.next_ms == 700 &&
+          memcmp(g.tag, "12345678", 8) == 0);
+    CHECK(wire_offer_get(f, n - 1, &g) < 0);
+    f[9] = WIRE_HOPS;
+    CHECK(wire_offer_get(f, n, &g) < 0);
+    f[9] = 0;
+    CHECK(wire_offer_get(f, n, &g) < 0);
+    n = wire_ask_put(f, sizeof(f), o.hub);
+    CHECK(n == 9 && wire_ask_get(f, n, hub) == 0 && memcmp(hub, o.hub, 6) == 0);
+    CHECK(wire_ask_get(f, 8, hub) < 0);
+    uint8_t msg[32];
+    size_t len = 0;
+    wire_offer_signed(&o, node_mac, msg, &len);
+    CHECK(len == 21 && memcmp(msg, "qm-offer", 8) == 0 && memcmp(msg + 8, node_mac, 6) == 0 && msg[20] == 2);
+}
+
+static void test_carried_lines(void)
+{
+    char b[PROTO_LINE_MAX + 1], c[PROTO_LINE_MAX + 1], inner[PROTO_LINE_MAX + 1], id[13];
+    const uint8_t relay[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60}, hubmac[6] = {1, 1, 1, 1, 1, 1};
+    uint8_t who[6];
+    const char *w = "@W,9,1740,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,1c,486f6d65";
+    int n = wire_carry(b, sizeof(b), node_mac, w, strlen(w), 100, 0, who);
+    SAME(b, "@R,a0b1c2d3e4f5,@W,9,1840,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,1c,486f6d65");
+    CHECK(n == (int)strlen(b) && memcmp(who, node_mac, 6) == 0);
+    n = wire_carry(c, sizeof(c), relay, b, n, 60, 0, who);
+    SAME(c, "@R,a0b1c2d3e4f5,@W,9,1900,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,1c,486f6d65");
+    CHECK(memcmp(who, node_mac, 6) == 0);
+    n = wire_carry(b, sizeof(b), hubmac, c, n, 40, 1, who);
+    CHECK(n > 0 && wire_unrelay(b, n, id, inner, sizeof(inner)) > 0 && strcmp(id, "a0b1c2d3e4f5") == 0);
+    SAME(inner, "@W,9,1940,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,1c,486f6d65*71\n");
+    CHECK(wire_carry(b, sizeof(b), relay, "@R,A0B1C2D3E4F5,@W,1,2", 22, 0, 0, who) < 0);
+    CHECK(wire_carry(b, sizeof(b), relay, "@R,a0b1c2d3e4f5,@R,1", 20, 0, 0, who) < 0);
+    CHECK(wire_carry(b, sizeof(b), relay, "@R,a0b1c2d3e4f5,W,1", 19, 0, 0, who) < 0);
+    const char *h = "@H,1,a0b1c2d3e4f5,1.2.0,0.4,4,0,c3,wifi24+ble+espnow,US,0,idle";
+    n = wire_carry(b, sizeof(b), relay, h, strlen(h), 999, 0, who);
+    CHECK(n > 0 && strcmp(b + 16, h) == 0 && memcmp(who, relay, 6) == 0);
+
+    char longest[WIRE_LINE_MAX];
+    memset(longest, 'f', sizeof(longest));
+    memcpy(longest, "@B,4294967295,4294967295,", 25);
+    size_t ln = WIRE_LINE_MAX - 4;
+    n = wire_carry(b, sizeof(b), node_mac, longest, ln, 4294967295u, 0, who);
+    CHECK(n > 0 && n <= WIRE_CARRY_MAX);
+    n = wire_carry(c, sizeof(c), relay, b, n, 5, 0, who);
+    CHECK(n > 0 && n <= WIRE_CARRY_MAX);
+    n = wire_carry(b, sizeof(b), hubmac, c, n, 5, 1, who);
+    CHECK(n > 0 && n <= PROTO_LINE_MAX);
+}
+
+static void test_via_lines(void)
+{
+    char b[PROTO_LINE_MAX + 1];
+    wire_via_t v = {.id = {0xa0, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5}, .ago = 1200, .rssi = -77, .frames = 30, .resent = 2,
+                    .has_ack = 1, .cmd_ack = 12}, g;
+    int n = wire_via_line(b, sizeof(b), &v);
+    SAME(b, "@V,a0b1c2d3e4f5,1200,-77,30,2,12");
+    CHECK(wire_via_get(b, n, &g) == 0 && memcmp(g.id, v.id, 6) == 0 && g.ago == 1200 && g.rssi == -77 &&
+          g.frames == 30 && g.resent == 2 && g.has_ack && g.cmd_ack == 12);
+    v.has_ack = 0;
+    n = wire_via_line(b, sizeof(b), &v);
+    SAME(b, "@V,a0b1c2d3e4f5,1200,-77,30,2,");
+    CHECK(wire_via_get(b, n, &g) == 0 && !g.has_ack);
+    CHECK(wire_via_get("@V,a0b1c2d3e4f5,1,-1,1", 22, &g) < 0);
+    CHECK(wire_via_get("@V,a0b1c2d3e4f5,1,-200,1,1,", 27, &g) < 0);
+    CHECK(wire_via_get("@V,a0b1c2d3e4fz,1,-1,1,1,", 25, &g) < 0);
+    CHECK(wire_via_get("@V,a0b1c2d3e4f5,1,-1,1,1,300", 28, &g) < 0);
+
+    wire_peer_t p;
+    const uint8_t relay[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+    wire_peer_init(&p, v.id, PEER_NEW, 0);
+    wire_peer_cmd(&p, "#HELLO", 6);
+    CHECK(!wire_peer_up(&p, 100));
+    v.has_ack = 1;
+    v.cmd_ack = 40;
+    wire_peer_via(&p, relay, &v, 5000);
+    CHECK(p.state == PEER_UP && p.has_via && p.via_heard == 3800 && p.cmd[0].id == 41 && p.ncmd == 1);
+    CHECK(wire_peer_up(&p, 3800 + WIRE_SILENCE_MS - 1) && !wire_peer_up(&p, 3800 + WIRE_SILENCE_MS));
+    v.cmd_ack = 41;
+    wire_peer_via(&p, relay, &v, 6000);
+    CHECK(p.ncmd == 0);
+    wire_node_t nd;
+    wire_peer_node(&p, 6000, &nd);
+    CHECK(nd.heard_ok && nd.has_via && nd.hops == 2 && nd.ago == 1200 && memcmp(nd.via, relay, 6) == 0);
+}
+
+static void test_relay_timing(void)
+{
+    wire_offer_t near = {.hops = 1, .rssi = -60}, far = {.hops = 2, .rssi = -40};
+    CHECK(wire_offer_better(&near, -80, &far, -30));
+    CHECK(!wire_offer_better(&far, -30, &near, -80));
+    wire_offer_t weak = {.hops = 1, .rssi = -88};
+    CHECK(wire_offer_better(&near, -70, &weak, -50));
+    CHECK(!wire_offer_better(&near, -70, &near, -70));
+
+    wire_window_t w = {0};
+    CHECK(wire_window_next(&w, 100) == 0);
+    wire_window_mark(&w, 1000);
+    CHECK(wire_window_next(&w, 1100) == 0);
+    wire_window_mark(&w, 1800);
+    CHECK(w.period == 800 && wire_window_next(&w, 1900) == 700);
+    wire_window_mark(&w, 2400);
+    CHECK(w.period == 750 && wire_window_next(&w, 3500) == 0);
+    wire_window_mark(&w, 9000);
+    CHECK(w.period == 750);
+
+    CHECK(wire_relay_budget(1000, 1, 2000, 900) == 0);
+    CHECK(wire_relay_budget(1000, 1, 1200, 900) == 200 + WIRE_LATE_MS);
+    CHECK(wire_relay_budget(1000, 1, 900, 900) == WIRE_EARLY_MS + WIRE_LATE_MS);
+    CHECK(wire_relay_budget(1000, 0, 0, 900) == WIRE_EARLY_MS + WIRE_LATE_MS);
+    CHECK(wire_relay_budget(10000, 1, 12000, 1000) == 2000 + WIRE_LATE_MS);
+}
+
+static void test_enow_frames(void)
+{
+    uint8_t f[ENOW_MSG_LEN + 4];
+    enow_msg_t m;
+    CHECK(enow_put(f, sizeof(f), ENOW_TEXT, 7, "AA:BB:CC:DD:EE:FF,Home,[WPA2_PSK],6,-61,W") == ENOW_MSG_LEN);
+    CHECK(enow_get(f, ENOW_MSG_LEN, &m) == 0);
+    CHECK(m.type == ENOW_TEXT && m.counter == 7 && m.len == 41);
+    SAME(m.text, "AA:BB:CC:DD:EE:FF,Home,[WPA2_PSK],6,-61,W");
+    CHECK(enow_get(f, 4, &m) < 0);
+    f[0] = 'Q';
+    CHECK(enow_get(f, ENOW_MSG_LEN, &m) < 0);
+    CHECK(enow_put(f, 100, ENOW_TEXT, 0, "x") < 0);
+    enow_put(f, sizeof(f), ENOW_TEXT, 0, "abc");
+    f[9] = 201;
+    CHECK(enow_get(f, ENOW_MSG_LEN, &m) < 0);
+    f[9] = 3;
+    CHECK(enow_get(f, 13, &m) < 0);
+    CHECK(enow_get(f, 14, &m) == 0);
+
+    enow_admin_t a = {.version = 9, .index = 1, .count = 3, .start = 14, .end = 39}, b;
+    CHECK(enow_admin_put(f, sizeof(f), &a) == ENOW_ADMIN_LEN);
+    CHECK(memcmp(f, "ENOW\x05\x09\x01\x03\x0e\x27", 10) == 0);
+    CHECK(enow_admin_get(f, ENOW_ADMIN_LEN, &b) == 0);
+    CHECK(b.version == 9 && b.index == 1 && b.count == 3 && b.start == 14 && b.end == 39);
+    CHECK(enow_get(f, ENOW_ADMIN_LEN, &m) == 0 && m.type == ENOW_ADMIN);
+
+    enow_put(f, sizeof(f), ENOW_CORE_REQUEST, 0, "PIGLET1\x02" "1.4.0");
+    enow_get(f, ENOW_MSG_LEN, &m);
+    CHECK(enow_kind(&m) == ENOW_KIND_PIGLET);
+    enow_put(f, sizeof(f), ENOW_CORE_REQUEST, 0, "C5P1;ROLE=EXTERNAL;BANDS=6");
+    enow_get(f, ENOW_MSG_LEN, &m);
+    CHECK(enow_kind(&m) == ENOW_KIND_6G);
+    enow_put(f, sizeof(f), ENOW_CORE_REQUEST, 0, "");
+    enow_get(f, ENOW_MSG_LEN, &m);
+    CHECK(enow_kind(&m) == ENOW_KIND_JCMK);
+}
+
+static void test_enow_records(void)
+{
+    enow_rec_t r;
+    char out[PROTO_LINE_MAX + 1];
+    const char *t = "a4:2b:b0:11:22:33,Home,[WPA2_PSK],6,-61,W";
+    CHECK(enow_record(t, strlen(t), &r) == ENOW_REC_WIFI);
+    CHECK(r.wifi.channel == 6 && r.freq == 2437 && r.wifi.rssi == -61 && r.wifi.auth == 3 && r.wifi.pairwise == 4);
+    enow_wifi_line(out, sizeof(out), 9, 0, &r);
+    SAME(out, "@W,9,0,A4:2B:B0:11:22:33,-61,6,2437,3,4,4,0,486f6d65*2F\n");
+
+    t = "A4:2B:B0:11:22:34,,WPA2EAP,149,-80,W";
+    CHECK(enow_record(t, strlen(t), &r) == ENOW_REC_WIFI);
+    CHECK(r.freq == 5745 && r.wifi.auth == 5 && (r.wifi.flags & WF_HIDDEN));
+    t = "A4:2B:B0:11:22:35,Six,[WPA3_PSK],37,-70,W6";
+    CHECK(enow_record(t, strlen(t), &r) == ENOW_REC_WIFI);
+    CHECK(r.freq == 6135 && r.wifi.auth == 6);
+    enow_wifi_line(out, sizeof(out), 1, 0, &r);
+    CHECK(strstr(out, ",37,6135,6,") != NULL);
+    t = "A4:2B:B0:11:22:36,Odd,[NEW],1,-50,W";
+    CHECK(enow_record(t, strlen(t), &r) == ENOW_REC_WIFI && r.wifi.auth == 0 && r.wifi.pairwise == 12);
+    t = "A4:2B:B0:11:22:37,Ssid,with,comma,[OPEN],1,-50,W";
+    CHECK(enow_record(t, strlen(t), &r) < 0);
+
+    t = "11:22:33:44:55:66,,[BLE],0,-72,B";
+    CHECK(enow_record(t, strlen(t), &r) == ENOW_REC_BLE);
+    proto_ble(out, sizeof(out), 4, 0, &r.ble);
+    CHECK(strncmp(out, "@B,4,0,11:22:33:44:55:66,0,-72,0,,*", 35) == 0);
+
+    CHECK(enow_record("x", 1, &r) < 0);
+    t = "A4:2B:B0:11:22:33,Home,[OPEN],6,-61,X";
+    CHECK(enow_record(t, strlen(t), &r) < 0);
+    t = "A4:2B:B0:11:22,Home,[OPEN],6,-61,W";
+    CHECK(enow_record(t, strlen(t), &r) < 0);
+    t = "A4:2B:B0:11:22:33,Home,[OPEN],six,-61,W";
+    CHECK(enow_record(t, strlen(t), &r) < 0);
+    t = "A4:2B:B0:11:22:33,Home,[OPEN],15,-61,W";
+    CHECK(enow_record(t, strlen(t), &r) < 0);
+}
+
+static void test_enow_ranges(void)
+{
+    uint8_t lo, hi;
+    CHECK(enow_range(0x7ffe, 0x1ffffffe, &lo, &hi) == 0 && lo == 0 && hi == 39);
+    CHECK(enow_range(1 << 1 | 1 << 6 | 1 << 11, 1, &lo, &hi) == 0 && lo == 0 && hi == 10);
+    CHECK(enow_range(1, 1u << 21 | 1u << 28, &lo, &hi) == 0 && enow_channels[lo] == 149 && enow_channels[hi] == 177);
+    CHECK(enow_range(1, 1u << 1 | 1u << 8, &lo, &hi) == 0 && enow_channels[lo] == 36 && enow_channels[hi] == 64);
+    CHECK(enow_range(1, 1u << 9 | 1u << 20, &lo, &hi) == 0 && enow_channels[lo] == 100 && enow_channels[hi] == 144);
+    CHECK(enow_range(1, 1u << 10 | 1u << 11, &lo, &hi) < 0);
+    CHECK(enow_range(1, 1, &lo, &hi) < 0);
+}
+
 int main(void)
 {
     test_checksum();
@@ -999,6 +1258,14 @@ int main(void)
     test_hub_commands();
     test_relay();
     test_hub_lines();
+    test_relayed_answers();
+    test_offers();
+    test_carried_lines();
+    test_via_lines();
+    test_relay_timing();
+    test_enow_frames();
+    test_enow_records();
+    test_enow_ranges();
     printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
 }

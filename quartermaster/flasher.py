@@ -1,4 +1,4 @@
-"""Flashes the node firmware onto an ESP32-C5 through the loader in its ROM, over pyserial alone.
+"""Flashes the node firmware onto an ESP32-C5, C3, C6 or S3 through the loader in its ROM, over pyserial alone.
 
 Follows Espressif's documented serial protocol: SLIP frames, the ROM's commands and its reset lines.
 """
@@ -11,6 +11,7 @@ import os
 import struct
 import time
 import zlib
+from collections import namedtuple
 
 MANIFEST = os.path.join(os.path.dirname(__file__), "assets", "node", "quartermaster-node.json")
 
@@ -19,17 +20,26 @@ SPI_SET_PARAMS, SPI_ATTACH, CHANGE_BAUDRATE = 0x0B, 0x0D, 0x0F
 DEFL_BEGIN, DEFL_DATA, FLASH_MD5, SECURITY_INFO = 0x10, 0x11, 0x13, 0x14
 INVALID = 0x05
 
-C5_ID = 23
+Chip = namedtuple("Chip", "key name efuse spi wdt force")
+C5_ID, C3_ID, C6_ID, S3_ID = 23, 5, 13, 9
+CHIPS = {
+    C5_ID: Chip("esp32c5", "ESP32-C5", 0x600B4800, 0x60003000, "lp", None),
+    C3_ID: Chip("esp32c3", "ESP32-C3", 0x60008800, 0x60002000, (0x60008000, 0x90, 0xA8, 0xAC, 0xB0), 0x600080F4),
+    C6_ID: Chip("esp32c6", "ESP32-C6", 0x600B0800, 0x60003000, "lp", None),
+    S3_ID: Chip("esp32s3", "ESP32-S3", 0x60007000, 0x60002000, (0x60008000, 0x98, 0xB0, 0xB4, 0xB8), 0x6000812C),
+}
 C5_MAGIC = (0x1101406F, 0x63E1406F, 0x5FD1406F, 0x30E1706F)
+C6_MAGIC = (0x2CE0806F,)
 MAGIC_REG = 0x40001000
 EFUSE_REVISION = 0x600B4800 + 0x44 + 8
 UART_CLKDIV = 0x60000014
 PCR_SYSCLK = 0x60096110
 SPI = 0x60003000
-SPI_USR, SPI_USR2, SPI_MISO_DLEN, SPI_W0 = SPI + 0x18, SPI + 0x20, SPI + 0x28, SPI + 0x58
+SPI_USR, SPI_USR2, SPI_MISO_DLEN, SPI_W0 = 0x18, 0x20, 0x28, 0x58
 SPI_CMD_USR = 1 << 18
 LP_WDT = 0x600B1C00
 WDT_KEY = 0x50D83AA1
+SWD_KEY = 0x8F1D312A
 
 ROM_BAUD = 115200
 NODE_BAUD = 921600
@@ -48,16 +58,17 @@ CLASSIC, CLASSIC_SLOW = classic(0.05), classic(0.55)
 USB_JTAG = (("rts", False), ("dtr", False), 0.1, ("dtr", True), ("rts", False), 0.1,
             ("rts", True), ("dtr", False), ("rts", True), 0.1, ("dtr", False), ("rts", False))
 
-NO_ANSWER = "No ESP32-C5 answered. Hold BOOT, plug the board in again, and retry."
+NO_ANSWER = "No ESP32 answered. Hold BOOT, plug the board in again, and retry."
 NO_PORT = "The board's port could not be opened. Plug the board in again and retry."
 LOST = "The board stopped answering. Plug it in again and retry."
-NOT_C5 = "This is not an ESP32-C5."
-EARLY = "This ESP32-C5 is an early sample (revision %d.%d) and cannot run the node firmware."
-NEWER = "This ESP32-C5 is a newer revision (%d.%d) than the node firmware knows. Update Quartermaster."
+NOT_C5 = "This is not an ESP32-C5, C3, C6 or S3."
+NO_BUILD = "Quartermaster has no node firmware for the %s. Update Quartermaster."
+EARLY = "This %s is an early sample (revision %d.%d) and cannot run the node firmware."
+NEWER = "This %s is a newer revision (%d.%d) than the node firmware knows. Update Quartermaster."
 UNREADY = "The board answered but would not get ready for flashing. Plug it in again and retry."
 NO_SERIAL = "A part of Quartermaster is missing (python3-serial). Reinstall Quartermaster."
 TOO_BIG = "The node firmware does not fit on this board."
-LOCKED = "This ESP32-C5 is locked against flashing (secure download mode)."
+LOCKED = "This %s is locked against flashing (secure download mode)."
 NO_FLASH = "The flash chip of this board did not answer."
 SMALL = "This board has %s of flash. A node needs 4 MB or more."
 DAMAGED = "The node firmware that came with Quartermaster is damaged. Reinstall Quartermaster."
@@ -109,23 +120,45 @@ def megabytes(size):
     return "%d MB" % (size >> 20) if size >= 1 << 20 else "%d KB" % (size >> 10)
 
 
-def load(manifest_path=MANIFEST):
-    """The manifest and a reader of its pieces, each checked against its size and SHA-256."""
+def chip_named(key):
+    return next((chip for chip in CHIPS.values() if chip.key == key), None)
+
+
+def manifest_chips(manifest):
+    """The chips a manifest has firmware for. A manifest of before 1.2.0 is for the ESP32-C5 alone."""
+    if isinstance(manifest.get("chips"), dict):
+        return dict(manifest["chips"])
+    return {manifest.get("chip", "esp32c5"): manifest}
+
+
+def load(manifest_path=MANIFEST, chip="esp32c5"):
+    """The manifest of one chip and a reader of its pieces, each checked against its size and SHA-256. An app given
+    as a slice of the merged image is cut from it."""
     try:
         with open(manifest_path, encoding="utf-8") as f:
-            manifest = json.load(f)
-    except (OSError, ValueError) as e:
+            top = json.load(f)
+        chips = manifest_chips(top)
+    except (OSError, ValueError, AttributeError) as e:
         raise FlashError(DAMAGED) from e
+    if chip not in chips:
+        named = chip_named(chip)
+        raise FlashError(NO_BUILD % (named.name if named else chip))
+    manifest = dict(chips[chip])
+    manifest.setdefault("version", top.get("version"))
     folder = os.path.dirname(os.path.abspath(manifest_path))
 
     def piece(name):
         try:
             entry = manifest[name]
-            with open(os.path.join(folder, os.path.basename(entry["file"])), "rb") as f:
-                data = f.read()
-            ok = len(data) == entry["size"] and hashlib.sha256(data).hexdigest() == entry["sha256"]
             offset = int(entry["offset"])
-        except (OSError, KeyError, TypeError, ValueError) as e:
+            if entry.get("slice"):
+                whole, base = piece(entry["slice"])
+                data = whole[offset - base:offset - base + int(entry["size"])]
+            else:
+                with open(os.path.join(folder, os.path.basename(entry["file"])), "rb") as f:
+                    data = f.read()
+            ok = len(data) == entry["size"] and hashlib.sha256(data).hexdigest() == entry["sha256"]
+        except (OSError, KeyError, TypeError, ValueError, AttributeError) as e:
             raise FlashError(DAMAGED) from e
         if not ok or offset % SECTOR:
             raise FlashError(DAMAGED)
@@ -143,6 +176,7 @@ class Flasher:
         self.native = False
         self.deflate = True
         self.revision = None
+        self.chip = None
         self.flash_size = 0
 
     def __enter__(self):
@@ -234,7 +268,7 @@ class Flasher:
         """first: the whole image from offset 0. update: only the app into ota_0, keeping NVS. Then resets."""
         if self.port is None:
             raise FlashError(LOST)
-        manifest, piece = load(manifest_path)
+        manifest, piece = load(manifest_path, self.chip.key if self.chip else "esp32c5")
         merged, base = piece("merged")
         if mode == "first":
             parts = [(merged, base)]
@@ -272,6 +306,11 @@ class Flasher:
         if self.port is None:
             return
         hold = 0.2 if self.native else 0.1
+        if self.chip is not None and self.chip.force:
+            try:
+                self._write_reg(self.chip.force, 0, 1)
+            except (FlashError, Silent, Refused):
+                pass
         try:
             self._lines((("dtr", False), ("rts", True), hold, ("rts", False)) + ((0.2,) if self.native else ()))
         finally:
@@ -354,8 +393,8 @@ class Flasher:
     def _read(self, address):
         return self._command(READ_REG, struct.pack("<I", address))[0]
 
-    def _write_reg(self, address, value):
-        self._command(WRITE_REG, struct.pack("<IIII", address, value, 0xFFFFFFFF, 0))
+    def _write_reg(self, address, value, mask=0xFFFFFFFF):
+        self._command(WRITE_REG, struct.pack("<IIII", address, value, mask, 0))
 
     def _identify(self):
         chip = None
@@ -366,40 +405,69 @@ class Flasher:
             flags = 0
         if chip is None:
             try:
-                chip = C5_ID if self._read(MAGIC_REG) in C5_MAGIC else 0
+                magic = self._read(MAGIC_REG)
+                chip = C5_ID if magic in C5_MAGIC else C6_ID if magic in C6_MAGIC else 0
             except Refused:
                 chip = 0
-        if chip != C5_ID:
+        self.chip = CHIPS.get(chip)
+        if self.chip is None:
             raise FlashError(NOT_C5)
+        name = self.chip.name
         if flags & 1 << 2:
-            raise FlashError(LOCKED)
-        word = self._read(EFUSE_REVISION)
-        self.revision = ((word >> 4) & 0x03, word & 0x0F)
-        if self.revision[0] == 0:
-            raise FlashError(EARLY % self.revision)
-        if self.revision[0] >= 2:
-            raise FlashError(NEWER % self.revision)
+            raise FlashError(LOCKED % name)
+        self.revision = self._revision()
+        if chip == C5_ID and self.revision[0] == 0 or chip == C3_ID and self.revision < (0, 3):
+            raise FlashError(EARLY % ((name,) + self.revision))
+        if self.revision[0] >= (2 if chip in (C5_ID, C3_ID) else 1):
+            raise FlashError(NEWER % ((name,) + self.revision))
+
+    def _revision(self):
+        """(major, minor) of the chip, read from its eFuses as Espressif's tools read them."""
+        block1 = self.chip.efuse + 0x44
+        if self.chip.key == "esp32c5":
+            word = self._read(EFUSE_REVISION)
+            return (word >> 4) & 0x03, word & 0x0F
+        word3 = self._read(block1 + 12)
+        if self.chip.key == "esp32c6":
+            return (word3 >> 22) & 0x03, (word3 >> 18) & 0x0F
+        word5 = self._read(block1 + 20)
+        minor = ((word5 >> 23) & 1) << 3 | (word3 >> 18) & 0x07
+        major = (word5 >> 24) & 0x03
+        if self.chip.key == "esp32s3" and minor & 0x07 == 0 and (word3 >> 24) & 0x07 == 1 and \
+                self._read(self.chip.efuse + 0x5C + 16) & 0x03 == 1:
+            return 0, 0
+        return major, minor
 
     def _calm_watchdogs(self):
         """The USB Serial/JTAG port leaves the RTC watchdogs running, and they would reset the board mid-write.
         Harmless on a UART boot, so it is done on every port in case the port was taken for the wrong kind."""
-        self._write_reg(LP_WDT + 0x18, WDT_KEY)
-        self._write_reg(LP_WDT, 0)
-        self._write_reg(LP_WDT + 0x18, 0)
-        self._write_reg(LP_WDT + 0x20, WDT_KEY)
-        self._write_reg(LP_WDT + 0x1C, self._read(LP_WDT + 0x1C) | 1 << 18)
-        self._write_reg(LP_WDT + 0x20, 0)
+        if self.chip.wdt == "lp":
+            self._write_reg(LP_WDT + 0x18, WDT_KEY)
+            self._write_reg(LP_WDT, 0)
+            self._write_reg(LP_WDT + 0x18, 0)
+            self._write_reg(LP_WDT + 0x20, WDT_KEY)
+            self._write_reg(LP_WDT + 0x1C, self._read(LP_WDT + 0x1C) | 1 << 18)
+            self._write_reg(LP_WDT + 0x20, 0)
+            return
+        base, config0, protect, swd, swd_protect = self.chip.wdt
+        self._write_reg(base + protect, WDT_KEY)
+        self._write_reg(base + config0, 0)
+        self._write_reg(base + protect, 0)
+        self._write_reg(base + swd_protect, SWD_KEY)
+        self._write_reg(base + swd, self._read(base + swd) | 1 << 31)
+        self._write_reg(base + swd_protect, 0)
 
     def _speed_up(self):
         """The ROM may take a 48 MHz crystal for 40 MHz, or the reverse; the baud rate asked for allows for that."""
         if self.baud == ROM_BAUD:
             return
-        expected = (self._read(PCR_SYSCLK) >> 24) & 0x7F
-        seen = ROM_BAUD * (self._read(UART_CLKDIV) & 0xFFFFF) / 1e6
-        crystal = 48 if seen > 45 else 40 if seen > 33 else 26
         asked = self.baud
-        if (crystal, expected) in ((48, 40), (40, 48)):
-            asked = self.baud * expected // crystal
+        if self.chip.key == "esp32c5":
+            expected = (self._read(PCR_SYSCLK) >> 24) & 0x7F
+            seen = ROM_BAUD * (self._read(UART_CLKDIV) & 0xFFFFF) / 1e6
+            crystal = 48 if seen > 45 else 40 if seen > 33 else 26
+            if (crystal, expected) in ((48, 40), (40, 48)):
+                asked = self.baud * expected // crystal
         try:
             self._command(CHANGE_BAUDRATE, struct.pack("<II", asked, 0))
         except Refused:
@@ -412,18 +480,19 @@ class Flasher:
         self._flush()
 
     def _attach(self):
+        spi = self.chip.spi
         self._command(SPI_ATTACH, struct.pack("<II", 0, 0))
-        usr, usr2 = self._read(SPI_USR), self._read(SPI_USR2)
-        self._write_reg(SPI_MISO_DLEN, 24 - 1)
-        self._write_reg(SPI_USR, 1 << 31 | 1 << 28)
-        self._write_reg(SPI_USR2, 7 << 28 | 0x9F)
-        self._write_reg(SPI_W0, 0)
-        self._write_reg(SPI, SPI_CMD_USR)
-        if all(self._read(SPI) & SPI_CMD_USR for _ in range(10)):
+        usr, usr2 = self._read(spi + SPI_USR), self._read(spi + SPI_USR2)
+        self._write_reg(spi + SPI_MISO_DLEN, 24 - 1)
+        self._write_reg(spi + SPI_USR, 1 << 31 | 1 << 28)
+        self._write_reg(spi + SPI_USR2, 7 << 28 | 0x9F)
+        self._write_reg(spi + SPI_W0, 0)
+        self._write_reg(spi, SPI_CMD_USR)
+        if all(self._read(spi) & SPI_CMD_USR for _ in range(10)):
             raise FlashError(NO_FLASH)
-        jedec = self._read(SPI_W0) & 0xFFFFFF
-        self._write_reg(SPI_USR, usr)
-        self._write_reg(SPI_USR2, usr2)
+        jedec = self._read(spi + SPI_W0) & 0xFFFFFF
+        self._write_reg(spi + SPI_USR, usr)
+        self._write_reg(spi + SPI_USR2, usr2)
         self.flash_size = flash_bytes(jedec)
         if not self.flash_size:
             raise FlashError(NO_FLASH)

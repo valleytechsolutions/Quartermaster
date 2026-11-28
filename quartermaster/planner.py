@@ -6,7 +6,13 @@ let Quartermaster limit them.
 
 A wireless node scans with the same times on each channel, but after every 0.6 s or so of scanning it goes back to
 the hub's channel to hand over what it heard, which takes up to 150 ms. Its channels take it longer, so the split
-counts its time as AIR_SLOWER times the time on the channels and gives it a smaller share.
+counts its time as AIR_SLOWER times the time on the channels and gives it a smaller share. A node that reaches the
+hub through another node waits for that node too, so it counts as AIR_RELAYED times as slow.
+
+Nodes that scan only 2.4 GHz (ESP32-C3, C6 and S3) take the 2.4 GHz channels, so that the ESP32-C5s are free for the
+many 5 GHz channels. A C5 only takes 2.4 GHz channels too when that finishes the sweep sooner. Nodes of the C5 Dual Band
+Wardriver and the Piglet ("block" nodes) scan one run of their own channel list, which has no 104 and 108, so they
+are given one run and never those two channels.
 """
 
 from collections import namedtuple
@@ -18,6 +24,8 @@ GHZ5 = (36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 
 BUSY = (1, 6, 11)
 BUSY_FROM = 3
 AIR_SLOWER = 1.15
+AIR_RELAYED = 1.35
+BLOCK_SKIPS = (104, 108)
 
 _CE = (13, ((36, 64), (100, 140), (149, 173)))
 _RULES = {
@@ -137,15 +145,79 @@ def _spread(items, nodes, times, weight):
     return shares
 
 
-def split(country, nodes, times=TIMES, bands=None, slow=()):
+def _load(share, weight, times):
+    return sweep_ms(share, times) * weight
+
+
+def _cut_group(items, group, times, weight):
+    if not group:
+        return {}
+    cuts = _cut(items, min(len(group), len(items)), times, [weight[n] for n in group]) if items else []
+    return {node_id: list(cuts[i]) if i < len(cuts) else [] for i, node_id in enumerate(group)}
+
+
+def _bands_split(items, nodes, times, weight, busy):
+    """Nodes of 2.4 GHz only next to dual band nodes: the 2.4 GHz channels to the first, and the fewest of them to the
+    dual band nodes that finishes the sweep soonest."""
+    caps = dict(nodes)
+    block = {n for n, c in nodes if "block" in c}
+    ghz24 = [n for n, c in nodes if "wifi24" in c and "wifi5" not in c]
+    dual = [n for n, c in nodes if {"wifi24", "wifi5"} <= c]
+    low = [item for item in items if item[0] == "2.4"]
+    high = [item for item in items if item[0] == "5"]
+    skipped = [item for item in high if item[1] in BLOCK_SKIPS] if block & set(dual) else []
+    high = [item for item in high if item not in skipped]
+    best = None
+    for k in range(len(low) + 1 if ghz24 and dual else 1):
+        if not dual:
+            shares = _cut_group(low, ghz24, times, weight)
+        elif not ghz24:
+            shares = _cut_group(low + high, dual, times, weight)
+        else:
+            shares = _cut_group(low[:len(low) - k], ghz24, times, weight)
+            shares.update(_cut_group(low[len(low) - k:] + high, dual, times, weight))
+        score = (max((_load(shares[n], weight[n], times) for n in shares), default=0), k)
+        if best is None or score < best[0]:
+            best = (score, shares)
+    shares = best[1] if best else {}
+    for node_id, _ in nodes:
+        shares.setdefault(node_id, [])
+    free = [n for n in dual if n not in block] + [n for n, c in nodes if "wifi5" in c and n not in dual and
+                                                  n not in block]
+    for item in skipped:
+        if free:
+            taker = min(free, key=lambda n: (_load(shares[n], weight[n], times), n))
+            shares[taker].append(item)
+    for item in busy:
+        able = [n for n, c in nodes if "wifi24" in c and n not in block and item not in shares[n]]
+        if able:
+            taker = min(able, key=lambda n: (n not in ghz24, _load(shares[n], weight[n], times), n))
+            shares[taker].append(item)
+    for node_id, c in caps.items():
+        if not ({"wifi24", "wifi5"} & c):
+            shares[node_id] = []
+    return shares
+
+
+def split(country, nodes, times=TIMES, bands=None, slow=(), relayed=()):
     """{node id: [(band, channel)]} for nodes given as (node id, capabilities), on the bands kept (None: all). The
-    nodes in `slow` are wireless nodes.
+    nodes in `slow` are wireless nodes, those in `relayed` reach the hub through another node.
 
     Every channel goes to one node, except that with three nodes or more 1, 6 and 11 go to two different nodes."""
     nodes = sorted((node_id, frozenset(caps)) for node_id, caps in nodes)
     if not nodes:
         return {}
-    weight = {node_id: AIR_SLOWER if node_id in slow else 1.0 for node_id, _ in nodes}
+    weight = {node_id: AIR_RELAYED if node_id in relayed else AIR_SLOWER if node_id in slow else 1.0
+              for node_id, _ in nodes}
+    able = [(n, c) for n, c in nodes if {"wifi24", "wifi5"} & c]
+    mixed = any("block" in caps for _, caps in nodes) or \
+        (any("wifi24" in c and "wifi5" not in c for _, c in able) and any({"wifi24", "wifi5"} <= c for _, c in able))
+    if mixed and all("wifi24" in c for _, c in able):
+        base = [item for item in channels(country) if bands is None or item[0] in bands]
+        busy = [("2.4", ch) for ch in BUSY if ("2.4", ch) in base] if len(nodes) >= BUSY_FROM else []
+        shares = _bands_split(base, nodes, times, weight, busy)
+        return {node_id: sorted(share, key=lambda item: (item[0] != "2.4", item[1]))
+                for node_id, share in shares.items()}
     items = _items(country, len(nodes), bands)
     if any(not {"wifi24", "wifi5"} <= caps for _, caps in nodes):
         shares = _spread(items, nodes, times, weight)
@@ -164,15 +236,15 @@ def split(country, nodes, times=TIMES, bands=None, slow=()):
     return {node_id: sorted(share, key=lambda item: (item[0] != "2.4", item[1])) for node_id, share in shares.items()}
 
 
-def make(country, nodes, previous=None, version=1, times=TIMES, bands=None, slow=()):
+def make(country, nodes, previous=None, version=1, times=TIMES, bands=None, slow=(), relayed=()):
     """The plan of each node, given as (node id, capabilities, Bluetooth wanted), on the bands kept (None: all). The
-    nodes in `slow` are wireless nodes.
+    nodes in `slow` are wireless nodes, those in `relayed` reach the hub through another node.
 
     A node whose share, times and Bluetooth are what it already has keeps its plan and version; the others get
     `version`."""
     country = country if country in _RULES else "01"
     previous = previous or {}
-    shares = split(country, [(node_id, caps) for node_id, caps, _ in nodes], times, bands, slow)
+    shares = split(country, [(node_id, caps) for node_id, caps, _ in nodes], times, bands, slow, relayed)
     plans = {}
     for node_id, caps, ble in nodes:
         ghz2, ghz5 = bitmaps(shares[node_id])

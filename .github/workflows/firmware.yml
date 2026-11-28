@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   node:
-    name: Quartermaster Node (ESP32-C5)
+    name: Quartermaster Node (ESP32-C5, C3, C6 and S3)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -25,9 +25,9 @@ jobs:
           esp_idf_version: v5.5.6
           target: esp32c5
           path: firmware/quartermaster-node
-          command: idf.py build && idf.py merge-bin -o quartermaster-node-merged.bin && idf.py size
+          command: sh build.sh
       - name: Package
-        run: python3 firmware/quartermaster-node/package.py --out build/node
+        run: python3 firmware/quartermaster-node/package.py --builds firmware/quartermaster-node --out build/node
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: quartermaster-node
@@ -35,7 +35,7 @@ jobs:
           if-no-files-found: error
       - name: Compare with the binaries in the repository
         run: |
-          for f in build/node/*.bin; do
+          for f in build/node/*.bin build/node/*.json; do
             shipped="quartermaster/assets/node/$(basename "$f")"
             if ! cmp -s "$f" "$shipped"; then
               echo "::warning::$(basename "$f") differs from $shipped; replace it with the build artifact before a release"

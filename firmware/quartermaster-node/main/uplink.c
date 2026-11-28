@@ -9,13 +9,14 @@
 #include "freertos/ringbuf.h"
 #include "freertos/task.h"
 
+#include "chip.h"
 #include "node.h"
 
 #define QUEUE_LEN 128
 #define RX_BUF 512
 #define UART_PORT UART_NUM_0
-#define UART_TX 11
-#define UART_RX 12
+#define UART_TX CHIP_UART_TX
+#define UART_RX CHIP_UART_RX
 #define BAUD 921600
 #define HOST_RETRY_MS 500
 #define DETAIL_MAX 32

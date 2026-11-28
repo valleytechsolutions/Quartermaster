@@ -35,7 +35,7 @@ PAGE = Template("""<!doctype html>
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark">
 <title>Quartermaster Node flasher</title>
-<meta name="description" content="Put the Quartermaster Node firmware $version on an ESP32-C5 board from your browser.">
+<meta name="description" content="Put the Quartermaster Node firmware $version on an ESP32-C5, C3, C6 or S3 board from your browser.">
 <style>
 :root{--bg:#04070a;--surface:#0d1317;--surface-2:#141d23;--line:#202d34;--text:#eaf1ed;--muted:#889992;
 --gold:#f5b301;--gold-dim:#604604;--ink:#1a1200;--esp-tools-button-color:#f5b301;--esp-tools-button-text-color:#1a1200;
@@ -84,9 +84,12 @@ $logo
 <span class="version">Firmware $version</span>
 
 <h2>What is a node?</h2>
-<p>A node is a small ESP32-C5 board that you plug into the CardputerZero by USB. It listens for Wi-Fi on 2.4 and
-5 GHz, and for Bluetooth when you ask, and tells Quartermaster what it hears. Quartermaster adds where you are and
-writes the log. A node can also run on a battery away from the CardputerZero and send what it hears by radio.</p>
+<p>A node is a small ESP32 board that you plug into the CardputerZero by USB. It listens for Wi-Fi, and for
+Bluetooth when you ask, and tells Quartermaster what it hears. Quartermaster adds where you are and writes the log. A
+node can also run on a battery away from the CardputerZero and send what it hears by radio, straight to the node
+that is plugged in or through other nodes on the way.</p>
+<p>An ESP32-C5 scans 2.4 and 5 GHz. An ESP32-C3, C6 or S3 scans 2.4 GHz, so Quartermaster gives those the 2.4 GHz
+channels and leaves the many 5 GHz channels to the C5s. Mix them as you like, up to 20 nodes.</p>
 
 <h2>Flash a board</h2>
 <ol>
@@ -123,10 +126,11 @@ cannot check how the board was set up, so if the board does not start after an u
 
 <h2>Boards</h2>
 <ul>
-<li>Seeed XIAO ESP32-C5</li>
-<li>Espressif ESP32-C5-DevKitC-1</li>
+<li>Seeed XIAO ESP32-C5, ESP32-C3, ESP32-C6 and ESP32-S3</li>
+<li>Espressif ESP32-C5-DevKitC-1, ESP32-C3-DevKitM-1, ESP32-C6-DevKitC-1 and ESP32-S3-DevKitC-1</li>
 <li>M5Stack Stamp-C5</li>
-<li>Other ESP32-C5 boards with 4 MB of flash or more</li>
+<li>ESP32-C3 Super Mini</li>
+<li>Other ESP32-C5, C3, C6 and S3 boards with 4 MB of flash or more</li>
 </ul>
 
 <h2>If the board is not found</h2>
@@ -138,6 +142,10 @@ cannot check how the board was set up, so if the board does not start after an u
 <details>
 <summary>M5Stack Stamp-C5</summary>
 <div><p>Hold pin G28 to GND while you plug the board in. Let go once it is in.</p></div>
+</details>
+<details>
+<summary>Other XIAO boards and the ESP32-C3 Super Mini</summary>
+<div><p>Hold the BOOT button while you plug the board in. Let go once it is in.</p></div>
 </details>
 <details>
 <summary>ESP32-C5-DevKitC-1</summary>
@@ -160,7 +168,7 @@ cannot flash, open the page in Chrome or Edge.</p>
 <strong>Settings &gt; Flash a node</strong>. It can also update the nodes you have added.</p>
 
 <footer>
-<p>Quartermaster Node firmware $version for ESP32-C5. Flashing by
+<p>Quartermaster Node firmware $version for the ESP32-C5, C3, C6 and S3. Flashing by
 <a href="https://github.com/esphome/esp-web-tools">ESP Web Tools</a>.
 <a href="https://github.com/valleytechsolutions/Quartermaster">Quartermaster on GitHub</a>.
 The firmware includes ESP-IDF and other open source parts: <a href="$notices">their licenses</a>.</p>
@@ -176,17 +184,21 @@ def logo():
     return svg.replace("<svg ", '<svg aria-hidden="true" focusable="false" ', 1)
 
 
-def manifest(version, parts, erase):
+FAMILIES = {"esp32c5": "ESP32-C5", "esp32c3": "ESP32-C3", "esp32c6": "ESP32-C6", "esp32s3": "ESP32-S3"}
+
+
+def manifest(version, builds, erase):
     data = {"name": "Quartermaster Node", "version": version, "new_install_prompt_erase": erase,
             "new_install_improv_wait_time": 0,
-            "builds": [{"chipFamily": "ESP32-C5", "parts": [{"path": p, "offset": o} for p, o in parts]}]}
+            "builds": [{"chipFamily": FAMILIES[chip], "parts": [{"path": p, "offset": o} for p, o in parts]}
+                       for chip, parts in builds]}
     return (json.dumps(data, indent=2) + "\n").encode("utf-8")
 
 
-def files(source=flasher.MANIFEST):
-    """Every file of the page folder, by name, from the bundled firmware index. Damaged firmware stops it."""
+def chip_files(source, chip):
+    """The merged image and the app of one chip, checked against the index and its partitions."""
     try:
-        index, piece = flasher.load(source)
+        index, piece = flasher.load(source, chip)
         merged, base = piece("merged")
         app, ota_0 = piece("app")
         version = str(index["version"])
@@ -199,15 +211,38 @@ def files(source=flasher.MANIFEST):
     if base != 0 or ota_0 != offsets.get("ota_0") or (ota_1 is not None and ota_0 + len(app) > ota_1) or \
             otadata % flasher.SECTOR or (after and min(after) < otadata + flasher.OTADATA_SIZE):
         raise SystemExit("The node firmware index does not match its partitions")
-    merged_name, app_name = os.path.basename(index["merged"]["file"]), os.path.basename(index["app"]["file"])
-    out = {
-        merged_name: merged,
-        app_name: app,
+    merged_name = os.path.basename(index["merged"]["file"])
+    app_name = os.path.basename(index["app"]["file"]) if index["app"].get("file") else \
+        "%s-app.bin" % merged_name[:-len(".bin")]
+    return version, (merged_name, merged, base), (app_name, app, ota_0), otadata
+
+
+def files(source=flasher.MANIFEST):
+    """Every file of the page folder, by name, from the bundled firmware index. Damaged firmware stops it."""
+    try:
+        with open(source, encoding="utf-8") as f:
+            have = flasher.manifest_chips(json.load(f))
+        chips = [chip for chip in FAMILIES if chip in have]
+    except (OSError, ValueError, AttributeError) as e:
+        raise SystemExit("The node firmware index is damaged: %s" % e)
+    if not chips:
+        raise SystemExit("The node firmware index has no chip the page can flash")
+    out, first, update, versions = {}, [], [], set()
+    for chip in chips:
+        version, merged, app, otadata = chip_files(source, chip)
+        versions.add(version)
+        out[merged[0]], out[app[0]] = merged[1], app[1]
+        first.append((chip, [(merged[0], merged[2])]))
+        update.append((chip, [(app[0], app[2]), (OTADATA, otadata)]))
+    if len(versions) != 1:
+        raise SystemExit("The chips of the node firmware index have different versions")
+    version = versions.pop()
+    out.update({
         OTADATA: b"\xff" * flasher.OTADATA_SIZE,
-        FIRST: manifest(version, [(merged_name, base)], True),
-        UPDATE: manifest(version, [(app_name, ota_0), (OTADATA, otadata)], False),
+        FIRST: manifest(version, first, True),
+        UPDATE: manifest(version, update, False),
         NOTICES: NOTICES_SOURCE.read_bytes(),
-    }
+    })
     out["index.html"] = PAGE.substitute(version=html.escape(version), script=ESP_WEB_TOOLS, logo=logo(),
                                         first=FIRST, update=UPDATE, notices=NOTICES).encode("utf-8")
     return out

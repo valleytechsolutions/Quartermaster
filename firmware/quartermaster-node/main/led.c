@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "chip.h"
 #include "node.h"
 
 #define TICK_MS 20
@@ -50,8 +51,8 @@ static void release(void)
         chan = NULL;
         enc = NULL;
     }
-    if (cur.kind != LED_NONE && cur.gpio == NODE_BUTTON_GPIO) {
-        gpio_config_t io = {.pin_bit_mask = 1ULL << NODE_BUTTON_GPIO, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
+    if (cur.kind != LED_NONE && cur.gpio == CHIP_BUTTON) {
+        gpio_config_t io = {.pin_bit_mask = 1ULL << CHIP_BUTTON, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
         gpio_config(&io);
     } else if (cur.kind != LED_NONE) {
         gpio_reset_pin(cur.gpio);

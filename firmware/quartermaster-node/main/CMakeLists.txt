@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "uplink.c" "scan.c" "ble.c" "led.c" "proto.c" "seen.c" "wire.c" "radio.c" "hub.c" "air.c"
+    SRCS "main.c" "uplink.c" "scan.c" "ble.c" "led.c" "proto.c" "seen.c" "wire.c" "radio.c" "hub.c" "air.c" "enow.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_wifi esp_event nvs_flash bt esp_driver_uart esp_driver_usb_serial_jtag
                   esp_driver_gpio esp_driver_rmt spi_flash esp_timer esp_psram efuse mbedtls esp_ringbuf)

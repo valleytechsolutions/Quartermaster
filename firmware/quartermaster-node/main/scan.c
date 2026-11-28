@@ -6,6 +6,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "soc/soc_caps.h"
+
 #include "node.h"
 #include "seen.h"
 
@@ -142,6 +144,9 @@ static void scan_task(void *arg)
         uint16_t a2, p2;
         uint32_t a5, p5;
         proto_split(&p, &a2, &a5, &p2, &p5);
+#if !SOC_WIFI_SUPPORT_5G
+        a5 = p5 = 0;
+#endif
         uint32_t start = node_ms();
         bool air = node.role == ROLE_AIR;
         if (air) {
@@ -182,7 +187,9 @@ void scan_init(const char *country)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#if SOC_WIFI_SUPPORT_5G
     ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
+#endif
     apply_country(country);
     xTaskCreate(scan_task, "scan", 4608, NULL, 4, &task);
 }

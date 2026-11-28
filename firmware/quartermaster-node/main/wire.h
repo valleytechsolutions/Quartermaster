@@ -7,14 +7,15 @@
 
 #define WIRE_MAGIC 'Q'
 #define WIRE_VERSION 1
-#define WIRE_NODES 8
-#define WIRE_SLOTS 10
+#define WIRE_NODES 17
+#define WIRE_SLOTS 19
 #define WIRE_KEY 16
 #define WIRE_PUB 65
 #define WIRE_CHECK 8
 #define WIRE_NAME 8
 #define WIRE_FRAME_MAX 1400
 #define WIRE_LINE_MAX 210
+#define WIRE_CARRY_MAX 250
 #define WIRE_CMDS 4
 #define WIRE_CMD_MAX 96
 #define WIRE_TRIES 6
@@ -31,13 +32,29 @@
 #define WIRE_REC_HEAD 5
 #define WIRE_TX_STALE_MS 1000u
 #define WIRE_HOLD_MS 2000u
+#define WIRE_TAG 8
+#define WIRE_HOPS 3
+#define WIRE_KIDS 4
+#define WIRE_ROUTES 16
+#define WIRE_WINDOW_MS 120u
+#define WIRE_WINDOW_LONE_MS 60u
+#define WIRE_WINDOW_EVERY 4
+#define WIRE_EARLY_MS 300u
+#define WIRE_LATE_MS 150u
+#define WIRE_PARENT_QUIET_MS 10000u
+#define WIRE_HUB_RETRY_MS 30000u
+#define WIRE_KID_KEEP_MS 60000u
+#define WIRE_FWD_KEEP_MS 10000u
+#define WIRE_VIA_MS 5000u
 #define WIRE_RING_ITEM(n) ((((size_t)(n) + 3u) & ~(size_t)3u) + 8u)
 
-enum { WIRE_JOIN = 1, WIRE_WAIT, WIRE_ADMIT, WIRE_DATA, WIRE_ACK, WIRE_BYE };
+enum { WIRE_JOIN = 1, WIRE_WAIT, WIRE_ADMIT, WIRE_DATA, WIRE_ACK, WIRE_BYE, WIRE_OFFER, WIRE_ASK };
 
-enum { WD_CMD_ACK = 1, WD_POLL = 2, WD_RUN = 4 };
+enum { WD_CMD_ACK = 1, WD_POLL = 2, WD_RUN = 4, WD_RELAY = 8 };
 
-enum { WA_RUN = 1, WA_BYE = 2, WA_POLL = 4, WA_BUSY = 8 };
+enum { WA_RUN = 1, WA_BYE = 2, WA_POLL = 4, WA_BUSY = 8, WA_RELAY = 16 };
+
+enum { WC_CMDS, WC_BYE };
 
 enum { PEER_FREE, PEER_NEW, PEER_UP, PEER_LEAVING };
 
@@ -74,10 +91,34 @@ typedef struct {
 } wire_cmd_t;
 
 typedef struct {
+    uint8_t mac[6];
+    uint8_t kind, ncmd;
+    wire_cmd_t cmd[WIRE_CMDS];
+} wire_carried_t;
+
+typedef struct {
     uint32_t session, seq;
     uint8_t flags, ncmd;
     wire_cmd_t cmd[WIRE_CMDS];
+    uint16_t next_ms;
+    uint8_t ncarried;
+    wire_carried_t carried[WIRE_NODES];
 } wire_ack_t;
+
+typedef struct {
+    uint8_t hub[6];
+    uint8_t hops;
+    int8_t rssi;
+    uint16_t next_ms;
+    uint8_t tag[WIRE_TAG];
+} wire_offer_t;
+
+typedef struct {
+    uint8_t id[6];
+    uint32_t ago, frames, resent;
+    int8_t rssi;
+    uint8_t has_ack, cmd_ack;
+} wire_via_t;
 
 typedef struct {
     uint8_t *buf;
@@ -101,6 +142,9 @@ typedef struct {
     int8_t rssi;
     uint32_t session, seq, since, heard, frames, resent;
     wire_queued_t cmd[WIRE_CMDS];
+    uint8_t via[6];
+    uint8_t has_via, via_ok;
+    uint32_t via_heard;
 } wire_peer_t;
 
 typedef struct {
@@ -132,6 +176,11 @@ typedef struct {
 } wire_tx_t;
 
 typedef struct {
+    uint32_t last, period;
+    uint8_t have;
+} wire_window_t;
+
+typedef struct {
     uint8_t armed, held;
     uint32_t down;
 } wire_button_t;
@@ -141,6 +190,8 @@ typedef struct {
     uint8_t state, heard_ok;
     int8_t rssi;
     uint32_t ago, frames, resent;
+    uint8_t via[6];
+    uint8_t has_via, hops;
 } wire_node_t;
 
 typedef struct {
@@ -170,10 +221,20 @@ int wire_bye_put(uint8_t *out, size_t cap);
 int wire_data_get(const uint8_t *d, size_t n, wire_data_t *w);
 int wire_rec_next(const wire_data_t *w, size_t *pos, uint32_t *stamp, const char **line, size_t *len);
 int wire_ack_put(uint8_t *out, size_t cap, const wire_peer_t *p, uint32_t session, uint32_t seq, uint8_t flags);
+int wire_ack_relay(uint8_t *out, size_t cap, size_t n, uint16_t next_ms);
+int wire_ack_carry(uint8_t *out, size_t cap, size_t n, const uint8_t mac[6], uint8_t kind, const wire_queued_t *cmd,
+                   unsigned ncmd);
 int wire_ack_get(const uint8_t *d, size_t n, wire_ack_t *a);
+int wire_offer_put(uint8_t *out, size_t cap, const wire_offer_t *o);
+int wire_offer_get(const uint8_t *d, size_t n, wire_offer_t *o);
+int wire_ask_put(uint8_t *out, size_t cap, const uint8_t hub[6]);
+int wire_ask_get(const uint8_t *d, size_t n, uint8_t hub[6]);
+void wire_offer_signed(const wire_offer_t *o, const uint8_t relay[6], uint8_t *msg, size_t *len);
 
 void wire_out_init(wire_out_t *o, uint8_t *buf, size_t cap, uint32_t seq);
 int wire_out_add(wire_out_t *o, uint32_t stamp, const char *line, size_t n);
+int wire_out_carry(wire_out_t *o, uint32_t stamp, const char *line, size_t n);
+size_t wire_out_free(const wire_out_t *o);
 int wire_out_frame(wire_out_t *o, uint8_t *out, size_t cap, const wire_data_t *head);
 int wire_out_poll(const wire_out_t *o, uint8_t *out, size_t cap, const wire_data_t *h);
 int wire_out_ack(wire_out_t *o, uint32_t seq, uint8_t flags);
@@ -185,6 +246,10 @@ void wire_peer_init(wire_peer_t *p, const uint8_t mac[6], uint8_t state, uint32_
 int wire_peer_fresh(const wire_peer_t *p, const wire_data_t *d);
 int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t now);
 int wire_peer_cmd(wire_peer_t *p, const char *line, size_t n);
+void wire_peer_sync(wire_peer_t *p, int has_ack, uint8_t ack);
+void wire_peer_take(wire_peer_t *p, const wire_carried_t *c);
+void wire_peer_via(wire_peer_t *p, const uint8_t via[6], const wire_via_t *v, uint32_t now);
+int wire_peer_up(const wire_peer_t *p, uint32_t now);
 void wire_peer_node(const wire_peer_t *p, uint32_t now, wire_node_t *n);
 
 void wire_pair_open(wire_pair_t *p, uint32_t now, unsigned seconds);
@@ -208,6 +273,11 @@ int wire_tx_result(const wire_tx_t *t);
 
 int wire_button(wire_button_t *b, int level, uint32_t now);
 
+int wire_offer_better(const wire_offer_t *a, int8_t a_rssi, const wire_offer_t *b, int8_t b_rssi);
+void wire_window_mark(wire_window_t *w, uint32_t now);
+uint16_t wire_window_next(const wire_window_t *w, uint32_t now);
+uint32_t wire_relay_budget(uint32_t now, int known, uint32_t next_at, uint32_t last_answer);
+
 void wire_chunk(uint16_t *c2, uint32_t *c5, unsigned n, uint16_t *o2, uint32_t *o5);
 unsigned wire_chunk_size(unsigned dwell);
 
@@ -216,7 +286,12 @@ const char *wire_pair_args(const proto_cmd_t *c, unsigned *seconds);
 const char *wire_to_args(const proto_cmd_t *c, uint8_t mac[6], char *line, size_t cap);
 int wire_remote_ok(const char *name);
 
+int wire_carry(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra, int sum,
+               uint8_t id[6]);
 int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra);
+int wire_via_line(char *out, size_t cap, const wire_via_t *v);
+int wire_via_get(const char *line, size_t n, wire_via_t *v);
+int wire_inner(const char *line, size_t n, uint8_t id[6], const char **inner, size_t *len);
 size_t wire_relay_need(const uint8_t mac[6], const wire_data_t *d);
 int wire_unrelay(const char *in, size_t n, char id[13], char *out, size_t cap);
 int wire_cluster_line(char *out, size_t cap, uint32_t seq, const wire_cluster_t *c);

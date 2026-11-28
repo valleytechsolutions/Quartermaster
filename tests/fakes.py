@@ -183,7 +183,7 @@ class Silent:
 
 
 class Rom:
-    """An ESP32-C5 behind a serial port that is not open yet. It is in its ROM loader after a reset sequence named in
+    """An ESP32-C5 (or the chip of chip_id: 5 C3, 13 C6, 9 S3) behind a serial port that is not open yet. It is in its ROM loader after a reset sequence named in
     enters ("classic", "usb"), after #BOOTLOADER at 921600 baud when it runs the node firmware, or all along while
     BOOT is held. Its flash is a bytearray. misses: resets it sleeps through; deaf: syncs it ignores after each reset;
     en_delay: how long its EN line needs before IO0 is let go; busy: reads of the SPI command register before the
@@ -204,9 +204,19 @@ class Rom:
         self._wake, self._busy = 0.0, 0
         self.attached, self.params, self.begins = False, None, []
         self.flash = bytearray(b"\xff" * int(flash_mb * (1 << 20)))
-        self.regs = {0x40001000: magic, 0x600B4800 + 0x44 + 8: revision[0] << 4 | revision[1],
-                     0x60096110: crystal[1] << 24, 0x60000014: round(crystal[0] * 1e6 / 115200),
-                     0x60003018: 0x80000064, 0x60003020: 0x70000003, 0x60003058: 0x12345678}
+        self.spi = 0x60002000 if chip_id in (5, 9) else 0x60003000
+        spi = self.spi
+        self.regs = {0x40001000: magic, 0x60096110: crystal[1] << 24, 0x60000014: round(crystal[0] * 1e6 / 115200),
+                     spi + 0x18: 0x80000064, spi + 0x20: 0x70000003, spi + 0x58: 0x12345678}
+        major, minor = revision
+        if chip_id == 13:
+            self.regs[0x600B0800 + 0x44 + 12] = major << 22 | minor << 18
+        elif chip_id in (5, 9):
+            block1 = (0x60008800 if chip_id == 5 else 0x60007000) + 0x44
+            self.regs[block1 + 12] = (minor & 7) << 18
+            self.regs[block1 + 20] = (minor >> 3) << 23 | major << 24
+        else:
+            self.regs[0x600B4800 + 0x44 + 8] = major << 4 | minor
         self.spi_usr = (0x80000064, 0x70000003)
         self.jedec = 0x4020 | (len(self.flash).bit_length() - 1) << 16
         self.now, self.events, self.commands, self.asked_baud = 0.0, [], [], None
@@ -314,14 +324,15 @@ class Rom:
         self._out += b"\xc0" + packet.replace(b"\xdb", b"\xdb\xdd").replace(b"\xc0", b"\xdb\xdc") + b"\xc0"
 
     def _rdid(self):
-        usr, usr2, dlen = self.regs[0x60003018], self.regs[0x60003020], self.regs.get(0x60003028)
+        spi = self.spi
+        usr, usr2, dlen = self.regs[spi + 0x18], self.regs[spi + 0x20], self.regs.get(spi + 0x28)
         if usr & 0x90000000 == 0x90000000 and usr2 == 0x7000009F and dlen == 23:
-            self.regs[0x60003058] = self.jedec
-        self.regs[0x60003000] = 0
+            self.regs[spi + 0x58] = self.jedec
+        self.regs[spi] = 0
 
     def _command(self, op, data, chk):
         ready = self.attached and self.params == len(self.flash) and self.spi_usr == (
-            self.regs[0x60003018], self.regs[0x60003020])
+            self.regs[self.spi + 0x18], self.regs[self.spi + 0x20])
         if op in self.refuse or op in (0x02, 0x10, 0x13) and not ready:
             self._answer(op, status=1, reason=0x05)
         elif op == 0x08 and self._deaf:
@@ -331,7 +342,7 @@ class Rom:
                 self._answer(op, 0x20120707)
         elif op == 0x0A:
             address = struct.unpack("<I", data)[0]
-            if address == 0x60003000 and self._busy:
+            if address == self.spi and self._busy:
                 self._busy -= 1
                 if not self._busy:
                     self._rdid()
@@ -339,7 +350,7 @@ class Rom:
         elif op == 0x09:
             address, value = struct.unpack_from("<II", data)
             self.regs[address] = value
-            if address == 0x60003000 and value & 1 << 18:
+            if address == self.spi and value & 1 << 18:
                 self._busy = self.busy
                 if not self._busy:
                     self._rdid()
@@ -769,6 +780,7 @@ class FakeAir(FakeNode):
         super().__init__(node_id, clock, caps=caps, firmware=firmware, **kwargs)
         self.out.clear()
         self.reach, self.hub, self.rssi = True, None, -52
+        self.via, self.hops = None, 1
 
 
 class FakeHub(FakeNode):
@@ -854,11 +866,12 @@ class FakeHub(FakeNode):
     def _node_line(self, node_id, now):
         heard = self.admitted[node_id]
         air = self.airs.get(node_id)
+        route = (air.via or "", str(air.hops)) if air is not None and air.via else ()
         if heard is None:
-            self._emit("N", node_id, "new", "", "", "0", "0")
+            self._emit("N", node_id, "new", "", "", "0", "0", *route)
         else:
             self._emit("N", node_id, "up" if now - heard < 60 else "lost", str(int((now - heard) * 1000)),
-                       str(air.rssi if air else -60), "1", "0")
+                       str(air.rssi if air else -60), "1", "0", *route)
 
     def _report(self):
         now = self.last_cluster = self.clock()

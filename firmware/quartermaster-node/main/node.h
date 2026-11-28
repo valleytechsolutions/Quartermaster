@@ -7,12 +7,11 @@
 #include "proto.h"
 #include "wire.h"
 
-#define NODE_FW "1.1.0"
+#define NODE_FW "1.2.0"
 #define NODE_WIFI_MAX 2048
 #define NODE_BLE_MAX 1024
 #define NODE_HOST_TIMEOUT_MS 30000
 #define NODE_AIR_AFTER_MS 10000
-#define NODE_BUTTON_GPIO 28
 
 enum { ROLE_USB, ROLE_HUB, ROLE_AIR };
 
@@ -84,8 +83,10 @@ void radio_drain(void);
 bool radio_channel(uint8_t ch);
 void radio_mac(uint8_t mac[6]);
 void radio_pmk(const uint8_t key[WIRE_KEY]);
+void radio_tag(const uint8_t key[WIRE_KEY], const uint8_t *msg, size_t n, uint8_t tag[WIRE_TAG]);
 bool radio_peer(const uint8_t mac[6], const uint8_t key[WIRE_KEY], const uint8_t node[6]);
 void radio_unpeer(const uint8_t mac[6]);
+bool radio_send_plain(const uint8_t mac[6], const void *d, size_t n);
 bool radio_kp_new(uint8_t pub[WIRE_PUB]);
 void radio_kp_free(void);
 bool radio_kek(const uint8_t peer[WIRE_PUB], const uint8_t node[6], const uint8_t hub[6], uint8_t kek[32]);

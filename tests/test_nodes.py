@@ -570,7 +570,7 @@ def test_the_settings_keep_only_nodes_that_make_sense(tmp_path):
     path = tmp_path / "config.json"
     path.write_text('{"country": "XX", "nodes": [{"id": "A0B1C2D3E4F5", "name": "Bow  lookout of the Black Pearl",'
                     ' "ble": true, "led": "ws2812,27"}, {"id": "a0b1c2d3e4f5"}, {"id": "nothex123456"}, 5,'
-                    ' {"id": "a0b1c2d3e4f6", "ble": "yes", "led": "gpio,12"}]}')
+                    ' {"id": "a0b1c2d3e4f6", "ble": "yes", "led": "gpio,49"}]}')
     cfg = config.load(path)
     assert cfg["country"] == "US" and config.DEFAULTS["country"] == "US"
     assert cfg["nodes"] == [{"id": ONE, "name": "Bow lookout of t", "ble": True, "led": "ws2812,27"},
@@ -981,6 +981,40 @@ def test_wireless_nodes_get_a_smaller_share_and_a_bluetooth_plan_through_the_hub
     assert any(command[:3] == ("TO", AIR1, "PLAN") for command in rig.hub.hub_commands)
 
 
+def test_a_node_heard_through_another_shows_the_way_and_gets_a_smaller_share(tmp_path):
+    rig = hub_rig(tmp_path)
+    rig.airs[AIR2].via, rig.airs[AIR2].hops = AIR1, 2
+    rig.manager.scan()
+    rig.manager.attach(rig, lambda networks, adapter: None, lambda devices: None)
+    rig.settle(6)
+    far, near = rig.manager.node(AIR2), rig.manager.node(AIR1)
+    assert far["via"] == AIR1 and far["hops"] == 2 and near["via"] is None and near["hops"] == 1
+    assert planner.sweep_ms(shares(rig)[AIR2]) <= planner.sweep_ms(shares(rig)[AIR1])
+    assert AIR2 in rig.manager.in_use()
+
+
+def test_a_2_4_ghz_only_node_takes_the_2_4_ghz_channels_and_the_c5s_the_5_ghz_ones(tmp_path):
+    air_nodes = [FakeAir(AIR1, caps="wifi24+ble+espnow", board="c3")]
+    fake_hub = FakeHub(HUB, airs=air_nodes)
+    fake_hub.saved_key, fake_hub.admitted[AIR1], air_nodes[0].hub = KEY, None, HUB
+    cfg = {"country": "US", "cluster_key": KEY, "nodes": [{"id": ONE, "name": "N0"},
+                                                         {"id": HUB, "name": "Hub", "hub": True},
+                                                         {"id": AIR1, "name": "C3", "wireless": True}]}
+    rig = Rig(tmp_path, {"ttyACM0": ("303a:1001", NATIVE, FakeNode(ONE)),
+                         "ttyACM1": ("303a:1001", HUB_LINK, fake_hub)}, cfg)
+    rig.manager.scan()
+    rig.manager.attach(rig, lambda networks, adapter: None, lambda devices: None)
+    rig.settle(6)
+    got = shares(rig)
+    assert {band for band, _ in got[AIR1]} == {"2.4"} and len(got[AIR1]) == 11
+    assert {band for band, _ in got[ONE]} == {"5"}
+    with pytest.raises(ValueError):
+        rig.manager.set_led(AIR1, "gpio,27,1")
+    rig.manager.set_led(AIR1, "ws2812,8")
+    with pytest.raises(ValueError):
+        rig.manager.set_led(ONE, "gpio,15")
+
+
 def test_the_hub_key_is_made_once_kept_in_the_settings_and_never_shown(tmp_path):
     keys, saved = [], []
     second = FakeHub(TWO)
@@ -1024,7 +1058,10 @@ def test_the_hub_key_is_made_once_kept_in_the_settings_and_never_shown(tmp_path)
                                    {"id": THREE, "hub": True, "wireless": True}])
     assert [(e.get("hub"), e.get("wireless")) for e in entries] == [(True, None), (None, None), (None, True)]
     many = config.node_entries([{"id": "%012x" % i, "wireless": i % 2 == 0} for i in range(40)])
-    assert len(many) == config.MAX_NODES + config.MAX_WIRELESS
+    assert len(many) == config.MAX_TOTAL and sum(1 for e in many if not e.get("wireless")) == config.MAX_NODES
+    many = config.node_entries([{"id": "%012x" % i, "wireless": i < 25} for i in range(40)])
+    assert len(many) == config.MAX_TOTAL == 20
+    assert sum(1 for e in many if e.get("wireless")) == config.MAX_WIRELESS == 17
 
 
 def test_a_hub_with_firmware_that_cannot_be_one_says_so_and_is_sent_nothing(tmp_path):

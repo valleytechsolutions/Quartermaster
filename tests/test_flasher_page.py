@@ -15,41 +15,52 @@ import flasher_page  # noqa: E402
 
 PAGE = ROOT / "docs" / "flasher"
 INDEX = json.loads(Path(flasher.MANIFEST).read_text())
+CHIPS = flasher.manifest_chips(INDEX)
+FAMILIES = {"esp32c5": "ESP32-C5", "esp32c3": "ESP32-C3", "esp32c6": "ESP32-C6", "esp32s3": "ESP32-S3"}
 
 
-def parts(name):
+def builds(name):
     data = json.loads((PAGE / name).read_text())
     assert data["name"] == "Quartermaster Node" and data["version"] == INDEX["version"]
-    (build,) = data["builds"]
-    assert build["chipFamily"] == "ESP32-C5"
-    return data, [(p["path"], p["offset"]) for p in build["parts"]]
+    found = {build["chipFamily"]: [(p["path"], p["offset"]) for p in build["parts"]] for build in data["builds"]}
+    assert sorted(found) == sorted(FAMILIES[chip] for chip in CHIPS)
+    return data, {chip: found[FAMILIES[chip]] for chip in CHIPS}
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_first_install_writes_the_merged_image_at_zero():
-    data, written = parts(flasher_page.FIRST)
+def test_the_page_flashes_every_chip_quartermaster_ships():
+    assert sorted(CHIPS) == ["esp32c3", "esp32c5", "esp32c6", "esp32s3"]
+
+
+def test_first_install_writes_the_merged_image_of_each_chip_at_zero():
+    data, written = builds(flasher_page.FIRST)
     assert data["new_install_prompt_erase"] is True and data["new_install_improv_wait_time"] == 0
-    assert written == [(INDEX["merged"]["file"], 0)]
-    assert sha(PAGE / written[0][0]) == INDEX["merged"]["sha256"]
+    for chip, parts in written.items():
+        assert parts == [(CHIPS[chip]["merged"]["file"], 0)]
+        assert sha(PAGE / parts[0][0]) == CHIPS[chip]["merged"]["sha256"]
 
 
-def test_update_writes_the_app_at_ota_0_and_clears_otadata():
-    data, written = parts(flasher_page.UPDATE)
+def test_update_writes_the_app_of_each_chip_at_ota_0_and_clears_otadata():
+    data, written = builds(flasher_page.UPDATE)
     assert data["new_install_prompt_erase"] is False and data["new_install_improv_wait_time"] == 0
-    offsets = INDEX["partition_offsets"]
-    assert written == [(INDEX["app"]["file"], offsets["ota_0"]), (flasher_page.OTADATA, offsets["otadata"])]
-    assert INDEX["app"]["offset"] == offsets["ota_0"]
-    assert sha(PAGE / written[0][0]) == INDEX["app"]["sha256"]
+    for chip, parts in written.items():
+        offsets = CHIPS[chip]["partition_offsets"]
+        assert parts[1:] == [(flasher_page.OTADATA, offsets["otadata"])]
+        assert parts[0][1] == offsets["ota_0"] == CHIPS[chip]["app"]["offset"]
+        assert sha(PAGE / parts[0][0]) == CHIPS[chip]["app"]["sha256"]
+        merged = (PAGE / CHIPS[chip]["merged"]["file"]).read_bytes()
+        assert merged[offsets["ota_0"]:] == (PAGE / parts[0][0]).read_bytes()
     assert (PAGE / flasher_page.OTADATA).read_bytes() == b"\xff" * flasher.OTADATA_SIZE
 
 
 def test_every_manifest_path_is_a_file_next_to_it():
     for name in (flasher_page.FIRST, flasher_page.UPDATE):
-        for path, offset in parts(name)[1]:
-            assert "/" not in path and (PAGE / path).is_file() and offset % flasher.SECTOR == 0
+        for parts in builds(name)[1].values():
+            for path, offset in parts:
+                assert "/" not in path and (PAGE / path).is_file() and offset % flasher.SECTOR == 0
 
 
 def test_regenerating_changes_nothing():
@@ -87,8 +98,8 @@ def test_the_page_says_first_install_always_clears_settings():
 def test_damaged_firmware_is_refused(tmp_path):
     source = tmp_path / "node"
     shutil.copytree(Path(flasher.MANIFEST).parent, source)
-    app = source / INDEX["app"]["file"]
-    app.write_bytes(app.read_bytes()[:-1] + b"\x00")
+    merged = source / CHIPS["esp32c3"]["merged"]["file"]
+    merged.write_bytes(merged.read_bytes()[:-1] + b"\x00")
     with pytest.raises(SystemExit):
         flasher_page.files(source / "quartermaster-node.json")
 

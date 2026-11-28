@@ -257,9 +257,16 @@ const char *proto_plan(const proto_cmd_t *c, proto_plan_t *p)
     return NULL;
 }
 
+static uint64_t led_pins = 0x1f8007ffULL;
+
+void proto_led_pins(uint64_t mask)
+{
+    led_pins = mask;
+}
+
 static int pin_ok(unsigned long g)
 {
-    return g <= 10 || (g >= 23 && g <= 28);
+    return g < 64 && (led_pins >> g & 1);
 }
 
 const char *proto_led(const proto_cmd_t *c, proto_led_t *l)
@@ -277,7 +284,7 @@ const char *proto_led(const proto_cmd_t *c, proto_led_t *l)
     if (strcmp(c->argv[0], "gpio") && strcmp(c->argv[0], "ws2812")) {
         return "kind";
     }
-    if (c->argc < 2 || !number(c->argv[1], 10, 28, &g) || !pin_ok(g)) {
+    if (c->argc < 2 || !number(c->argv[1], 10, 48, &g) || !pin_ok(g)) {
         return "gpio";
     }
     if (c->argc == 3 && *c->argv[2] && !number(c->argv[2], 10, 1, &al)) {
