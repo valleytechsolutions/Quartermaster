@@ -231,6 +231,69 @@ int wire_ack_put(uint8_t *out, size_t cap, const wire_peer_t *p, uint32_t sessio
     return n;
 }
 
+static size_t ack_end(const uint8_t *out, size_t n)
+{
+    size_t pos = 13;
+    for (unsigned i = 0; i < out[12] && pos + 2 <= n; i++) {
+        pos += 2 + out[pos + 1];
+    }
+    return pos;
+}
+
+int wire_ack_relay(uint8_t *out, size_t cap, size_t n, uint16_t next_ms)
+{
+    if (n < 13 || ack_end(out, n) != n || n + 3 > cap) {
+        return -1;
+    }
+    out[n] = next_ms;
+    out[n + 1] = next_ms >> 8;
+    out[n + 2] = 0;
+    return n + 3;
+}
+
+int wire_ack_carry(uint8_t *out, size_t cap, size_t n, const uint8_t mac[6], uint8_t kind, const wire_queued_t *cmd,
+                   unsigned ncmd)
+{
+    size_t at = ack_end(out, n);
+    if (n < 13 || at + 3 > n || out[at + 2] >= WIRE_NODES || ncmd > WIRE_CMDS) {
+        return -1;
+    }
+    size_t need = 8;
+    for (unsigned i = 0; i < ncmd; i++) {
+        need += 2 + cmd[i].len;
+    }
+    if (n + need > cap) {
+        return -1;
+    }
+    memcpy(out + n, mac, 6);
+    out[n + 6] = kind;
+    out[n + 7] = ncmd;
+    n += 8;
+    for (unsigned i = 0; i < ncmd; i++) {
+        out[n] = cmd[i].id;
+        out[n + 1] = cmd[i].len;
+        memcpy(out + n + 2, cmd[i].line, cmd[i].len);
+        n += 2 + cmd[i].len;
+    }
+    out[at + 2]++;
+    return n;
+}
+
+static int cmds_get(const uint8_t *d, size_t n, size_t *pos, unsigned count, wire_cmd_t *cmd)
+{
+    for (unsigned i = 0; i < count; i++) {
+        size_t p = *pos;
+        if (p + 2 > n || d[p + 1] == 0 || d[p + 1] >= WIRE_CMD_MAX || p + 2 + d[p + 1] > n) {
+            return -1;
+        }
+        cmd[i].id = d[p];
+        cmd[i].len = d[p + 1];
+        cmd[i].line = (const char *)d + p + 2;
+        *pos = p + 2 + d[p + 1];
+    }
+    return 0;
+}
+
 int wire_ack_get(const uint8_t *d, size_t n, wire_ack_t *a)
 {
     if (wire_type(d, n) != WIRE_ACK || n < 13 || d[12] > WIRE_CMDS) {
@@ -240,17 +303,91 @@ int wire_ack_get(const uint8_t *d, size_t n, wire_ack_t *a)
     a->seq = get32(d + 7);
     a->flags = d[11];
     a->ncmd = d[12];
+    a->next_ms = 0;
+    a->ncarried = 0;
     size_t pos = 13;
-    for (unsigned i = 0; i < a->ncmd; i++) {
-        if (pos + 2 > n || d[pos + 1] == 0 || d[pos + 1] >= WIRE_CMD_MAX || pos + 2 + d[pos + 1] > n) {
+    if (cmds_get(d, n, &pos, a->ncmd, a->cmd)) {
+        return -1;
+    }
+    if (pos == n) {
+        return 0;
+    }
+    if (pos + 3 > n || d[pos + 2] > WIRE_NODES) {
+        return -1;
+    }
+    a->next_ms = d[pos] | d[pos + 1] << 8;
+    a->ncarried = d[pos + 2];
+    pos += 3;
+    for (unsigned i = 0; i < a->ncarried; i++) {
+        wire_carried_t *c = &a->carried[i];
+        if (pos + 8 > n || d[pos + 6] > WC_BYE || d[pos + 7] > WIRE_CMDS) {
             return -1;
         }
-        a->cmd[i].id = d[pos];
-        a->cmd[i].len = d[pos + 1];
-        a->cmd[i].line = (const char *)d + pos + 2;
-        pos += 2 + d[pos + 1];
+        memcpy(c->mac, d + pos, 6);
+        c->kind = d[pos + 6];
+        c->ncmd = d[pos + 7];
+        pos += 8;
+        if (cmds_get(d, n, &pos, c->ncmd, c->cmd)) {
+            return -1;
+        }
     }
     return pos == n ? 0 : -1;
+}
+
+int wire_offer_put(uint8_t *out, size_t cap, const wire_offer_t *o)
+{
+    int n = head(out, cap, 13 + WIRE_TAG, WIRE_OFFER);
+    if (n < 0) {
+        return -1;
+    }
+    memcpy(out + 3, o->hub, 6);
+    out[9] = o->hops;
+    out[10] = (uint8_t)o->rssi;
+    out[11] = o->next_ms;
+    out[12] = o->next_ms >> 8;
+    memcpy(out + 13, o->tag, WIRE_TAG);
+    return 13 + WIRE_TAG;
+}
+
+int wire_offer_get(const uint8_t *d, size_t n, wire_offer_t *o)
+{
+    if (wire_type(d, n) != WIRE_OFFER || n != 13 + WIRE_TAG) {
+        return -1;
+    }
+    memcpy(o->hub, d + 3, 6);
+    o->hops = d[9];
+    o->rssi = (int8_t)d[10];
+    o->next_ms = d[11] | d[12] << 8;
+    memcpy(o->tag, d + 13, WIRE_TAG);
+    return o->hops >= 1 && o->hops < WIRE_HOPS ? 0 : -1;
+}
+
+int wire_ask_put(uint8_t *out, size_t cap, const uint8_t hub[6])
+{
+    int n = head(out, cap, 9, WIRE_ASK);
+    if (n < 0) {
+        return -1;
+    }
+    memcpy(out + 3, hub, 6);
+    return 9;
+}
+
+int wire_ask_get(const uint8_t *d, size_t n, uint8_t hub[6])
+{
+    if (wire_type(d, n) != WIRE_ASK || n != 9) {
+        return -1;
+    }
+    memcpy(hub, d + 3, 6);
+    return 0;
+}
+
+void wire_offer_signed(const wire_offer_t *o, const uint8_t relay[6], uint8_t *msg, size_t *len)
+{
+    memcpy(msg, "qm-offer", 8);
+    memcpy(msg + 8, relay, 6);
+    memcpy(msg + 14, o->hub, 6);
+    msg[20] = o->hops;
+    *len = 21;
 }
 
 void wire_out_init(wire_out_t *o, uint8_t *buf, size_t cap, uint32_t seq)
@@ -261,9 +398,9 @@ void wire_out_init(wire_out_t *o, uint8_t *buf, size_t cap, uint32_t seq)
     o->seq = seq;
 }
 
-int wire_out_add(wire_out_t *o, uint32_t stamp, const char *line, size_t n)
+static int out_put(wire_out_t *o, uint32_t stamp, const char *line, size_t n, size_t max)
 {
-    if (n == 0 || n > WIRE_LINE_MAX - 4 || o->len + WIRE_REC_HEAD + n > o->cap) {
+    if (n == 0 || n > max || o->len + WIRE_REC_HEAD + n > o->cap) {
         return -1;
     }
     uint8_t *r = o->buf + o->len;
@@ -272,6 +409,21 @@ int wire_out_add(wire_out_t *o, uint32_t stamp, const char *line, size_t n)
     memcpy(r + WIRE_REC_HEAD, line, n);
     o->len += WIRE_REC_HEAD + n;
     return 0;
+}
+
+int wire_out_add(wire_out_t *o, uint32_t stamp, const char *line, size_t n)
+{
+    return out_put(o, stamp, line, n, WIRE_LINE_MAX - 4);
+}
+
+int wire_out_carry(wire_out_t *o, uint32_t stamp, const char *line, size_t n)
+{
+    return out_put(o, stamp, line, n, WIRE_CARRY_MAX);
+}
+
+size_t wire_out_free(const wire_out_t *o)
+{
+    return o->cap - o->len;
 }
 
 static void drop_sent(wire_out_t *o)
@@ -375,6 +527,27 @@ int wire_peer_fresh(const wire_peer_t *p, const wire_data_t *d)
     return !(p->have_seq && p->session == d->session && (int32_t)(d->seq - p->seq) <= 0);
 }
 
+void wire_peer_sync(wire_peer_t *p, int has_ack, uint8_t ack)
+{
+    if (!p->synced) {
+        p->synced = 1;
+        if (has_ack) {
+            p->next_id = ack + 1;
+            for (unsigned i = 0; i < p->ncmd; i++) {
+                p->cmd[i].id = p->next_id++;
+            }
+        }
+    } else if (has_ack) {
+        unsigned k = 0;
+        for (unsigned i = 0; i < p->ncmd; i++) {
+            if ((int8_t)(p->cmd[i].id - ack) > 0) {
+                p->cmd[k++] = p->cmd[i];
+            }
+        }
+        p->ncmd = k;
+    }
+}
+
 int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t now)
 {
     p->heard = now;
@@ -383,23 +556,7 @@ int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t n
     if (p->state == PEER_NEW) {
         p->state = PEER_UP;
     }
-    if (!p->synced) {
-        p->synced = 1;
-        if (d->flags & WD_CMD_ACK) {
-            p->next_id = d->cmd_ack + 1;
-            for (unsigned i = 0; i < p->ncmd; i++) {
-                p->cmd[i].id = p->next_id++;
-            }
-        }
-    } else if (d->flags & WD_CMD_ACK) {
-        unsigned k = 0;
-        for (unsigned i = 0; i < p->ncmd; i++) {
-            if ((int8_t)(p->cmd[i].id - d->cmd_ack) > 0) {
-                p->cmd[k++] = p->cmd[i];
-            }
-        }
-        p->ncmd = k;
-    }
+    wire_peer_sync(p, (d->flags & WD_CMD_ACK) != 0, d->cmd_ack);
     if (d->flags & WD_POLL) {
         return 0;
     }
@@ -412,6 +569,40 @@ int wire_peer_data(wire_peer_t *p, const wire_data_t *d, int8_t rssi, uint32_t n
     p->seq = d->seq;
     p->frames++;
     return 1;
+}
+
+void wire_peer_take(wire_peer_t *p, const wire_carried_t *c)
+{
+    p->synced = 1;
+    p->ncmd = 0;
+    for (unsigned i = 0; i < c->ncmd && i < WIRE_CMDS; i++) {
+        wire_queued_t *q = &p->cmd[p->ncmd++];
+        q->id = c->cmd[i].id;
+        q->len = c->cmd[i].len;
+        memcpy(q->line, c->cmd[i].line, q->len);
+        q->line[q->len] = 0;
+    }
+}
+
+void wire_peer_via(wire_peer_t *p, const uint8_t via[6], const wire_via_t *v, uint32_t now)
+{
+    memcpy(p->via, via, 6);
+    p->has_via = 1;
+    p->via_ok = 1;
+    p->via_heard = now - (v->ago < WIRE_SILENCE_MS ? v->ago : WIRE_SILENCE_MS);
+    p->rssi = v->rssi;
+    p->frames = v->frames;
+    p->resent = v->resent;
+    if (p->state == PEER_NEW) {
+        p->state = PEER_UP;
+    }
+    wire_peer_sync(p, v->has_ack, v->cmd_ack);
+}
+
+int wire_peer_up(const wire_peer_t *p, uint32_t now)
+{
+    return (p->heard_ok && now - p->heard < WIRE_SILENCE_MS) ||
+           (p->has_via && p->via_ok && now - p->via_heard < WIRE_SILENCE_MS);
 }
 
 int wire_peer_cmd(wire_peer_t *p, const char *line, size_t n)
@@ -429,13 +620,22 @@ int wire_peer_cmd(wire_peer_t *p, const char *line, size_t n)
 
 void wire_peer_node(const wire_peer_t *p, uint32_t now, wire_node_t *n)
 {
+    memset(n, 0, sizeof(*n));
     memcpy(n->mac, p->mac, 6);
     n->state = p->state;
-    n->heard_ok = p->heard_ok;
+    n->heard_ok = p->heard_ok || (p->has_via && p->via_ok);
     n->rssi = p->rssi;
-    n->ago = p->heard_ok ? now - p->heard : 0;
+    uint32_t direct = p->heard_ok ? now - p->heard : 0xffffffffu;
+    uint32_t relayed = p->has_via && p->via_ok ? now - p->via_heard : 0xffffffffu;
+    n->ago = n->heard_ok ? (direct < relayed ? direct : relayed) : 0;
     n->frames = p->frames;
     n->resent = p->resent;
+    n->hops = 1;
+    if (p->has_via) {
+        memcpy(n->via, p->via, 6);
+        n->has_via = 1;
+        n->hops = 2;
+    }
 }
 
 void wire_pair_open(wire_pair_t *p, uint32_t now, unsigned seconds)
@@ -645,6 +845,51 @@ int wire_button(wire_button_t *b, int level, uint32_t now)
     return 1;
 }
 
+static int offer_score(const wire_offer_t *o, int8_t rssi)
+{
+    int weakest = rssi < o->rssi ? rssi : o->rssi;
+    return -(int)o->hops * 1000 + weakest;
+}
+
+int wire_offer_better(const wire_offer_t *a, int8_t a_rssi, const wire_offer_t *b, int8_t b_rssi)
+{
+    return offer_score(a, a_rssi) > offer_score(b, b_rssi);
+}
+
+void wire_window_mark(wire_window_t *w, uint32_t now)
+{
+    if (w->have) {
+        uint32_t gap = now - w->last;
+        if (gap < 5000u) {
+            w->period = w->period ? (w->period * 3 + gap) / 4 : gap;
+        }
+    }
+    w->have = 1;
+    w->last = now;
+}
+
+uint16_t wire_window_next(const wire_window_t *w, uint32_t now)
+{
+    if (!w->have || !w->period) {
+        return 0;
+    }
+    uint32_t since = now - w->last;
+    uint32_t left = since < w->period ? w->period - since : 0;
+    return left > 3000u ? 3000u : left;
+}
+
+uint32_t wire_relay_budget(uint32_t now, int known, uint32_t next_at, uint32_t last_answer)
+{
+    int32_t until = (int32_t)(next_at - now);
+    if (known && until > (int32_t)WIRE_EARLY_MS && now - last_answer < 4000u) {
+        return 0;
+    }
+    if (!known || until < 0) {
+        return WIRE_EARLY_MS + WIRE_LATE_MS;
+    }
+    return (uint32_t)until + WIRE_LATE_MS;
+}
+
 void wire_chunk(uint16_t *c2, uint32_t *c5, unsigned n, uint16_t *o2, uint32_t *o5)
 {
     *o2 = 0;
@@ -774,22 +1019,54 @@ static int number_end(const char *s, size_t n, size_t pos, size_t *end, unsigned
     return i > pos && (i == n || s[i] == ',');
 }
 
-int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra)
+int wire_inner(const char *line, size_t n, uint8_t id[6], const char **inner, size_t *len)
 {
-    char id[13];
-    wire_hexid(mac, id);
-    if (n < 3 || line[0] != '@' || line[2] != ',' || memchr(line, '*', n) || memchr(line, '\n', n)) {
+    char hex[13];
+    if (n < 18 || strncmp(line, "@R,", 3) || line[15] != ',' || line[16] != '@') {
+        return 0;
+    }
+    memcpy(hex, line + 3, 12);
+    hex[12] = 0;
+    for (int i = 0; i < 12; i++) {
+        if (hexval(hex[i]) < 0 || (hex[i] >= 'A' && hex[i] <= 'F')) {
+            return 0;
+        }
+    }
+    if (wire_id(hex, id)) {
+        return 0;
+    }
+    *inner = line + 16;
+    *len = n - 16;
+    return 1;
+}
+
+int wire_carry(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra, int sum,
+               uint8_t id[6])
+{
+    uint8_t who[6];
+    char hex[13];
+    const char *body = line;
+    size_t blen = n;
+    if (!wire_inner(line, n, who, &body, &blen)) {
+        memcpy(who, mac, 6);
+    }
+    if (blen < 3 || body[0] != '@' || body[2] != ',' || body[1] == 'R' || memchr(body, '*', blen) ||
+        memchr(body, '\n', blen)) {
         return -1;
     }
-    int len = proto_put(out, cap, 0, "@R,%s,", id);
+    if (id) {
+        memcpy(id, who, 6);
+    }
+    wire_hexid(who, hex);
+    int len = proto_put(out, cap, 0, "@R,%s,", hex);
     if (len < 0) {
         return -1;
     }
-    const char *comma = (line[1] == 'W' || line[1] == 'B') ? memchr(line + 3, ',', n - 3) : NULL;
+    const char *comma = (body[1] == 'W' || body[1] == 'B') ? memchr(body + 3, ',', blen - 3) : NULL;
     size_t end;
     unsigned long long age;
-    if (comma && number_end(line, n, comma - line + 1, &end, &age)) {
-        size_t start = comma - line + 1;
+    if (comma && number_end(body, blen, comma - body + 1, &end, &age)) {
+        size_t start = comma - body + 1;
         age += extra;
         if (age > 0xffffffffull) {
             age = 0xffffffffull;
@@ -797,22 +1074,97 @@ int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, si
         if ((size_t)len + start >= cap) {
             return -1;
         }
-        memcpy(out + len, line, start);
+        memcpy(out + len, body, start);
         len = proto_put(out, cap, len + start, "%lu", (unsigned long)age);
-        if (len < 0 || (size_t)len + (n - end) >= cap) {
+        if (len < 0 || (size_t)len + (blen - end) >= cap) {
             return -1;
         }
-        memcpy(out + len, line + end, n - end);
-        len += n - end;
+        memcpy(out + len, body + end, blen - end);
+        len += blen - end;
     } else {
-        if ((size_t)len + n >= cap) {
+        if ((size_t)len + blen >= cap) {
             return -1;
         }
-        memcpy(out + len, line, n);
-        len += n;
+        memcpy(out + len, body, blen);
+        len += blen;
     }
     out[len] = 0;
-    return proto_end(out, cap, len);
+    return sum ? proto_end(out, cap, len) : len;
+}
+
+int wire_relay(char *out, size_t cap, const uint8_t mac[6], const char *line, size_t n, uint32_t extra)
+{
+    return wire_carry(out, cap, mac, line, n, extra, 1, NULL);
+}
+
+int wire_via_line(char *out, size_t cap, const wire_via_t *v)
+{
+    char id[13];
+    wire_hexid(v->id, id);
+    int n = proto_put(out, cap, 0, "@V,%s,%lu,%d,%lu,%lu,", id, (unsigned long)v->ago, v->rssi,
+                      (unsigned long)v->frames, (unsigned long)v->resent);
+    if (v->has_ack) {
+        n = proto_put(out, cap, n, "%u", v->cmd_ack);
+    }
+    return n;
+}
+
+static int field_number(const char **s, const char *end, long long lo, long long hi, long long *v)
+{
+    const char *p = *s;
+    int neg = 0;
+    if (p < end && *p == '-') {
+        neg = 1;
+        p++;
+    }
+    const char *digits = p;
+    long long x = 0;
+    while (p < end && *p >= '0' && *p <= '9' && p - digits < 10) {
+        x = x * 10 + (*p - '0');
+        p++;
+    }
+    if (p == digits || (p < end && *p != ',')) {
+        return -1;
+    }
+    x = neg ? -x : x;
+    if (x < lo || x > hi) {
+        return -1;
+    }
+    *v = x;
+    *s = p < end ? p + 1 : p;
+    return 0;
+}
+
+int wire_via_get(const char *line, size_t n, wire_via_t *v)
+{
+    const char *end = line + n;
+    char hex[13];
+    long long ago, rssi, frames, resent, ack;
+    if (n < 19 || strncmp(line, "@V,", 3) || line[15] != ',') {
+        return -1;
+    }
+    memcpy(hex, line + 3, 12);
+    hex[12] = 0;
+    const char *p = line + 16;
+    if (wire_id(hex, v->id) || field_number(&p, end, 0, 0xffffffffll, &ago) ||
+        field_number(&p, end, -128, 127, &rssi) || field_number(&p, end, 0, 0xffffffffll, &frames) ||
+        field_number(&p, end, 0, 0xffffffffll, &resent) || p[-1] != ',') {
+        return -1;
+    }
+    v->ago = ago;
+    v->rssi = rssi;
+    v->frames = frames;
+    v->resent = resent;
+    v->has_ack = 0;
+    v->cmd_ack = 0;
+    if (p < end) {
+        if (field_number(&p, end, 0, 255, &ack) || p != end) {
+            return -1;
+        }
+        v->has_ack = 1;
+        v->cmd_ack = ack;
+    }
+    return 0;
 }
 
 size_t wire_relay_need(const uint8_t mac[6], const wire_data_t *d)
@@ -878,7 +1230,13 @@ int wire_node_line(char *out, size_t cap, uint32_t seq, const wire_node_t *n)
     } else {
         len = proto_put(out, cap, len, ",");
     }
-    len = proto_put(out, cap, len, ",%lu,%lu", (unsigned long)n->frames, (unsigned long)n->resent);
+    len = proto_put(out, cap, len, ",%lu,%lu,", (unsigned long)n->frames, (unsigned long)n->resent);
+    if (n->has_via) {
+        char via[13];
+        wire_hexid(n->via, via);
+        len = proto_put(out, cap, len, "%s", via);
+    }
+    len = proto_put(out, cap, len, ",%u", n->hops);
     return proto_end(out, cap, len);
 }
 

@@ -122,6 +122,7 @@ proto_parse_t proto_parse(const char *line, size_t n, proto_cmd_t *c);
 int proto_country_ok(const char *cc);
 const char *proto_plan(const proto_cmd_t *c, proto_plan_t *p);
 const char *proto_led(const proto_cmd_t *c, proto_led_t *l);
+void proto_led_pins(uint64_t mask);
 const char *proto_ident(const proto_cmd_t *c, unsigned *seconds);
 void proto_default_plan(proto_plan_t *p, const char *country);
 void proto_split(const proto_plan_t *p, uint16_t *a2, uint32_t *a5, uint16_t *p2, uint32_t *p5);

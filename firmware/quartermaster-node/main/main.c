@@ -15,12 +15,17 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "soc/lp_aon_reg.h"
 #include "soc/soc.h"
+#if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6
+#include "soc/lp_aon_reg.h"
+#else
+#include "soc/rtc_cntl_reg.h"
+#endif
 #if CONFIG_SPIRAM
 #include "esp_psram.h"
 #endif
 
+#include "chip.h"
 #include "node.h"
 
 #define STATUS_MS 2000
@@ -38,7 +43,7 @@ static proto_led_t led_cfg;
 static bool button_on;
 static wire_button_t button;
 static unsigned flash_mb, psram_mb;
-static const char *board = "c5";
+static const char *board = CHIP_NAME;
 
 uint32_t node_ms(void)
 {
@@ -66,7 +71,7 @@ void node_hello(proto_hello_t *h)
     h->flash_mb = flash_mb;
     h->psram_mb = psram_mb;
     h->board = board;
-    h->caps = node.no_ble ? "wifi24+wifi5+espnow" : "wifi24+wifi5+ble+espnow";
+    h->caps = node.no_ble ? CHIP_CAPS "+espnow" : CHIP_CAPS "+ble+espnow";
     memcpy(h->country, p.country, 3);
     h->plan = p.version;
     h->running = node.running;
@@ -223,16 +228,16 @@ void node_run(bool on)
 static void button_setup(void)
 {
     memset(&button, 0, sizeof(button));
-    button_on = !(led_cfg.kind != LED_NONE && led_cfg.gpio == NODE_BUTTON_GPIO);
+    button_on = !(led_cfg.kind != LED_NONE && led_cfg.gpio == CHIP_BUTTON);
     if (button_on) {
-        gpio_config_t io = {.pin_bit_mask = 1ULL << NODE_BUTTON_GPIO, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
+        gpio_config_t io = {.pin_bit_mask = 1ULL << CHIP_BUTTON, .mode = GPIO_MODE_INPUT, .pull_up_en = 1};
         button_on = gpio_config(&io) == ESP_OK;
     }
 }
 
 static void button_poll(uint32_t now)
 {
-    if (button_on && wire_button(&button, gpio_get_level(NODE_BUTTON_GPIO), now)) {
+    if (button_on && wire_button(&button, gpio_get_level(CHIP_BUTTON), now)) {
         air_unpair();
         uplink_log("wireless: pairing cleared");
     }
@@ -243,7 +248,13 @@ static void restart(bool download)
     stop();
     uplink_flush(300);
     if (download) {
+#if CONFIG_IDF_TARGET_ESP32C5
         REG_SET_FIELD(LP_AON_SYS_CFG_REG, LP_AON_FORCE_DOWNLOAD_BOOT, 1);
+#elif CONFIG_IDF_TARGET_ESP32C6
+        REG_SET_BIT(LP_AON_SYS_CFG_REG, LP_AON_FORCE_DOWNLOAD_BOOT);
+#else
+        REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+#endif
     }
     esp_restart();
 }
@@ -407,6 +418,7 @@ static void identify(void)
         psram_mb = esp_psram_get_size() >> 20;
     }
 #endif
+#if CONFIG_IDF_TARGET_ESP32C5
     uint8_t in_package = 0;
     esp_efuse_read_field_blob(ESP_EFUSE_FLASH_CAP, &in_package, 3);
     if (flash_mb >= 8) {
@@ -414,6 +426,7 @@ static void identify(void)
     } else if (flash_mb == 4 && psram_mb == 0 && in_package) {
         board = "stamp-c5";
     }
+#endif
 }
 
 static const char *crash_name(esp_reset_reason_t r)
@@ -443,13 +456,14 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
     identify();
+    proto_led_pins(CHIP_LED_PINS);
     load(&led_cfg);
     proto_plan_t p;
     proto_default_plan(&p, stored_cc);
     node.plan = p;
     uplink_init(psram_mb ? 8192 : 4096);
     hub_init();
-    air_init(psram_mb ? 32768 : 8192);
+    air_init(psram_mb ? 32768 : 16384);
     const char *crash = crash_name(esp_reset_reason());
     if (crash) {
         uplink_log("reset: %s", crash);
