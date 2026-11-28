@@ -1121,8 +1121,9 @@ def test_a_real_rtl_adsb_stand_in_is_heard_runs_niced_and_pinned_and_its_whole_g
                        dongles=lambda: [{}], feeds=(), out=tmp_path / "run", poll=0.05)
     rx.start(time.time())
     try:
-        assert wait_until(lambda: rx.count == 1 and (tmp_path / "run" / "child").exists(), 10)
-        assert rx.state == adsb.RUNNING and rx.sky.planes["a1b2c3"].near is not None
+        assert wait_until(lambda: rx.count == 1 and rx.sky.planes["a1b2c3"].near is not None
+                          and (tmp_path / "run" / "child").exists(), 10)
+        assert rx.state == adsb.RUNNING
         pid = rx.proc.pid
         with open("/proc/%d/stat" % pid) as stat:
             assert int(stat.read().rsplit(")", 1)[1].split()[16]) == 10
