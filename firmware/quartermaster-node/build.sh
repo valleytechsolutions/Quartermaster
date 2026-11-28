@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
 cd "$(dirname "$0")"
+unset IDF_TARGET
 for target in ${*:-esp32c5 esp32c3 esp32c6 esp32s3}; do
     dir="build-$target"
     idf.py -B "$dir" -D SDKCONFIG="$dir/sdkconfig" set-target "$target"
