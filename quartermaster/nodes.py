@@ -16,7 +16,7 @@ import threading
 import time
 
 from . import dragon_link, faults, hardware, planner
-from .config import MAX_NODES, MAX_WIRELESS, NODE_NAME_MAX, cluster_key, node_entries
+from .config import MAX_NODES, MAX_TOTAL, MAX_WIRELESS, NODE_NAME_MAX, cluster_key, node_entries
 from .wifi import band_of, security_label
 
 BAUD = 921600
@@ -53,7 +53,8 @@ NEWER = "Update Quartermaster to use this node"
 OLDER = "Needs a firmware update"
 REFUSED = "Did not take its channels"
 NO_BLE = "No Bluetooth: the node is short of memory"
-FULL = "Quartermaster takes up to %d nodes" % MAX_NODES
+FULL = "Quartermaster takes up to %d nodes" % MAX_TOTAL
+FULL_USB = "Quartermaster takes up to %d plugged-in nodes" % MAX_NODES
 NOT_A_NODE = "That is not a node"
 FULL_WIRELESS = "The hub takes up to %d wireless nodes" % MAX_WIRELESS
 NO_HUB = "Waiting for the hub. Plug it in."
@@ -89,6 +90,27 @@ def xor(data):
         size = (size + 1) // 2
         value = (value & ((1 << 8 * size) - 1)) ^ (value >> 8 * size)
     return value
+
+
+LED_PINS = {
+    "c5": frozenset(range(0, 11)) | frozenset(range(23, 29)),
+    "c3": frozenset(range(0, 11)),
+    "c6": frozenset(range(0, 12)) | {14, 15} | frozenset(range(18, 24)),
+    "s3": frozenset(range(0, 19)) | {21} | frozenset(range(38, 43)) | frozenset(range(45, 49)),
+}
+CHIP_NAMES = {"c5": "ESP32-C5", "c3": "ESP32-C3", "c6": "ESP32-C6", "s3": "ESP32-S3"}
+
+
+def chip_of(board):
+    """The chip of a node's board name: c5, c3, c6 or s3."""
+    board = (board or "").lower()
+    return next((chip for chip in ("c3", "c6", "s3") if chip in board.split("-")), "c5")
+
+
+def led_ok(led, board):
+    """Whether the #LED arguments use a GPIO the node's chip can drive."""
+    parts = led.split(",")
+    return parts[0] == "none" or len(parts) > 1 and parts[1].isdigit() and int(parts[1]) in LED_PINS[chip_of(board)]
 
 
 def command(name, *args):
@@ -426,6 +448,7 @@ class AirLink(NodeLink):
         self.heard = self.asked = self.rssi = None
         self.link = "new"
         self.frames = self.resent = 0
+        self.via, self.hops = None, 1
 
     @property
     def node_id(self):
@@ -779,9 +802,10 @@ class NodeManager:
         self._follow_hub()
         members = self._members()
         air = frozenset(node_id for node_id in members if node_id not in self.links)
+        relayed = frozenset(node_id for node_id in air if self.air[node_id].hops > 1)
         nodes = tuple((node_id, tuple(self._link(node_id).hello["capabilities"]),
                        self._entry(node_id)["ble"] and self.ble) for node_id in members)
-        key = (self.country, nodes, self.bands, air)
+        key = (self.country, nodes, self.bands, air, relayed)
         if key == self._key:
             return
         self._key = key
@@ -789,7 +813,8 @@ class NodeManager:
             for node_id in set(self.plans) - set(members):
                 if node_id in self.air and node_id not in self.links:
                     self.left[node_id] = AWAY
-        plans = planner.make(self.country, nodes, self.plans, self.version + 1, bands=self.bands, slow=air)
+        plans = planner.make(self.country, nodes, self.plans, self.version + 1, bands=self.bands, slow=air,
+                             relayed=relayed)
         if any(plan.version == self.version + 1 for plan in plans.values()):
             self.version += 1
         self.plans = plans
@@ -875,7 +900,7 @@ class NodeManager:
                 self.hub_said = now
                 self.pair_until = now + int(fields[3])
                 self._hub_up()
-            elif kind == "N" and len(fields) == 8:
+            elif kind == "N" and len(fields) in (8, 10):
                 entries = self._air_heard(link, fields, now)
             elif kind == "J" and len(fields) == 6 and len(fields[2]) == 12 and fields[2].lower() not in self.links:
                 node_id = fields[2].lower()
@@ -909,6 +934,9 @@ class NodeManager:
             if fields[5]:
                 air.rssi = int(fields[5])
             air.frames, air.resent = int(fields[6]), int(fields[7])
+            if len(fields) == 10:
+                air.via = fields[8].lower() or None
+                air.hops = max(1, int(fields[9] or 1))
         except ValueError:
             hub.bad += 1
         if air.hello is None and air.up(now) and (air.asked is None or now - air.asked >= HELLO_SECONDS):
@@ -991,8 +1019,9 @@ class NodeManager:
         self.forgotten.pop(node_id, None)
         entry = self._entry(node_id)
         if entry is None:
-            if sum(1 for other in self.configured if other.get("wireless")) >= MAX_WIRELESS:
-                self.pair_error = FULL_WIRELESS
+            if sum(1 for other in self.configured if other.get("wireless")) >= MAX_WIRELESS or \
+                    len(self.configured) >= MAX_TOTAL:
+                self.pair_error = FULL_WIRELESS if len(self.configured) < MAX_TOTAL else FULL
                 return None
             self.configured.append(node_entries([{"id": node_id, "name": name, "wireless": True}])[0])
         elif entry.get("hub"):
@@ -1151,6 +1180,7 @@ class NodeManager:
                 "hub_ready": hub and link is not None and link is self.hub_link and self.hub_ok,
                 "wireless_nodes": sum(1 for other in self.air.values() if other.up(now)) if hub else 0,
                 "link_rssi": air.rssi if air is not None else last.get("rssi") if link is None else None,
+                "via": air.via if air is not None else None, "hops": air.hops if air is not None else 1,
                 "in_use": self.owner is not None and connected and node_id in self.plans,
                 "plan_version": plan.version if plan else 0, "plan_channels": [ch for _, ch in share],
                 "plan_bands": sorted({band for band, _ in share}, key=("2.4", "5").index),
@@ -1230,8 +1260,10 @@ class NodeManager:
         with self.lock:
             if self._entry(entry[0]["id"]) is not None:
                 return
-            if sum(1 for other in self.configured if not other.get("wireless")) >= MAX_NODES:
+            if len(self.configured) >= MAX_TOTAL:
                 raise ValueError(FULL)
+            if sum(1 for other in self.configured if not other.get("wireless")) >= MAX_NODES:
+                raise ValueError(FULL_USB)
             self.configured.append(entry[0])
             entries = self._changed()
         self._save(entries)
@@ -1327,6 +1359,8 @@ class NodeManager:
             if hub is None or not self.hub_ok:
                 return False
             entry = self._entry(node_id)
+            if entry is None and len(self.configured) >= MAX_TOTAL:
+                raise ValueError(FULL)
             if entry is None and sum(1 for other in self.configured if other.get("wireless")) >= MAX_WIRELESS:
                 raise ValueError(FULL_WIRELESS)
             hub.send("ADMIT", node_id)
@@ -1344,6 +1378,11 @@ class NodeManager:
     def set_led(self, node_id, led):
         """led: the #LED arguments, such as "gpio,27,1", "ws2812,27" or "none". The node keeps it."""
         if not node_entries([{"id": node_id, "led": led}])[0].get("led"):
+            raise ValueError("That is not an LED this node can use")
+        with self.lock:
+            live = self._link(node_id)
+            hello = live.hello if live is not None and live.hello else (self.last.get(node_id) or {}).get("hello")
+        if not led_ok(led, hello["board"] if hello else ""):
             raise ValueError("That is not an LED this node can use")
         self._set(node_id, "led", led)
         with self.lock:

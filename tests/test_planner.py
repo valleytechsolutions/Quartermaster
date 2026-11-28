@@ -173,3 +173,51 @@ def test_a_wireless_node_is_counted_slower_where_bands_differ_and_where_1_6_and_
     shares = planner.split("US", group, bands={"2.4"}, slow={slow})
     usb = max(planner.sweep_ms(share) for node_id, share in shares.items() if node_id != slow)
     assert planner.sweep_ms(shares[slow]) * planner.AIR_SLOWER <= usb
+
+
+C3 = ("wifi24", "ble", "espnow")
+BLOCK = ("wifi24", "wifi5", "block")
+
+
+@pytest.mark.parametrize("country", ["US", "DE", "JP", "01"])
+def test_2_4_ghz_only_nodes_take_the_2_4_ghz_channels_and_c5s_the_5_ghz_ones(country):
+    c5s, c3s = ids(2), ["%012x" % (0xb0b1c2d3e400 + i) for i in range(3)]
+    shares = planner.split(country, [(n, BOTH) for n in c5s] + [(n, C3) for n in c3s])
+    everything = set(planner.channels(country))
+    assert set().union(*map(set, shares.values())) == everything
+    for n in c3s:
+        assert {band for band, _ in shares[n]} == {"2.4"}
+    assert all(band == "5" for n in c5s for band, _ in shares[n])
+    for ch in planner.BUSY:
+        assert sum(("2.4", ch) in shares[n] for n in c3s) == 2
+
+
+def test_a_c5_only_takes_2_4_ghz_channels_when_that_finishes_the_sweep_sooner():
+    shares = planner.split("01", [("a", BOTH), ("b", BOTH), ("c", BOTH), ("d", C3)])
+    assert {band for band, _ in shares["d"]} == {"2.4"}
+    assert any(band == "2.4" for n in "abc" for band, _ in shares[n])
+    worst = max(planner.sweep_ms(share) for share in shares.values())
+    assert worst < planner.sweep_ms(planner.channels("01")) / 2
+
+
+def test_only_2_4_ghz_nodes_leave_5_ghz_unscanned_and_share_2_4_ghz():
+    shares = planner.split("US", [("a", C3), ("b", C3)])
+    assert sorted(shares["a"] + shares["b"]) == [("2.4", ch) for ch in range(1, 12)]
+
+
+def test_block_nodes_get_one_run_of_their_list_and_never_104_or_108():
+    shares = planner.split("US", [("a", BLOCK), ("b", BLOCK), ("c", C3)])
+    order = [item for item in planner.channels("US") if item[1] not in (104, 108)]
+    for n in "ab":
+        assert shares[n] and not any(ch in (104, 108) for _, ch in shares[n])
+        spots = [order.index(item) for item in shares[n]]
+        assert spots == list(range(spots[0], spots[0] + len(spots)))
+    assert {band for band, _ in shares["c"]} == {"2.4"} and len(shares["c"]) == 11
+    shares = planner.split("US", [("a", BLOCK), ("b", BOTH)])
+    assert ("5", 104) in shares["b"] and ("5", 108) in shares["b"]
+
+
+def test_a_node_heard_through_another_is_counted_slower_than_one_heard_directly():
+    direct = planner.split("US", nodes(2), slow=set(ids(2)))
+    relayed = planner.split("US", nodes(2), slow=set(ids(2)), relayed={ids(2)[1]})
+    assert planner.sweep_ms(relayed[ids(2)[1]]) < planner.sweep_ms(direct[ids(2)[1]])

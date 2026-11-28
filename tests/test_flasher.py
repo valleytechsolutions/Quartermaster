@@ -187,16 +187,65 @@ def test_a_board_that_stops_answering_mid_write_says_so():
 
 
 def test_other_chips_are_refused():
-    assert refusal(Rom(chip_id=5)) == "This is not an ESP32-C5."
-    assert refusal(Rom(chip_id=None, magic=0x00F01D83)) == "This is not an ESP32-C5."
+    assert refusal(Rom(chip_id=2)) == "This is not an ESP32-C5, C3, C6 or S3."
+    assert refusal(Rom(chip_id=None, magic=0x00F01D83)) == "This is not an ESP32-C5, C3, C6 or S3."
     assert connected(Rom(chip_id=None)).flash_size == 4 << 20
+    assert connected(Rom(chip_id=None, magic=0x2CE0806F, revision=(0, 1))).chip.key == "esp32c6"
+
+
+@pytest.mark.parametrize("chip_id, key, spi, good, early, newer", [
+    (5, "esp32c3", 0x60002000, (0, 4), (0, 2), (2, 0)),
+    (13, "esp32c6", 0x60003000, (0, 1), None, (1, 0)),
+    (9, "esp32s3", 0x60002000, (0, 2), None, (1, 0)),
+])
+def test_the_c3_c6_and_s3_are_flashed_with_their_own_registers(tmp_path, chip_id, key, spi, good, early, newer):
+    rom = Rom(chip_id=chip_id, crystal=(40, 40), revision=good)
+    board = connected(rom, native_usb=False)
+    assert board.chip.key == key and board.revision == good and board.flash_size == 4 << 20
+    assert rom.attached and rom.regs[spi + 0x18] == 0x80000064
+    assert rom.asked_baud == 460800
+    name = board.chip.name
+    if early:
+        assert refusal(Rom(chip_id=chip_id, crystal=(40, 40), revision=early)) == \
+            "This %s is an early sample (revision %d.%d) and cannot run the node firmware." % ((name,) + early)
+    assert refusal(Rom(chip_id=chip_id, crystal=(40, 40), revision=newer)) == \
+        "This %s is a newer revision (%d.%d) than the node firmware knows. Update Quartermaster." % ((name,) + newer)
+    assert refusal(Rom(chip_id=chip_id, crystal=(40, 40), revision=good, secure=True)) == flasher.LOCKED % name
+    merged = firmware()
+    path = manifest(tmp_path, merged)
+    with pytest.raises(FlashError) as caught:
+        board.install(path, "first")
+    assert str(caught.value) == flasher.NO_BUILD % name
+    data = json.loads(path.read_text())
+    data = {"version": "1.2.0", "chips": {"esp32c5": data, key: dict(data, app={
+        "slice": "merged", "offset": APP, "size": len(merged) - APP,
+        "sha256": hashlib.sha256(merged[APP:]).hexdigest()})}}
+    path.write_text(json.dumps(data))
+    rom = Rom(chip_id=chip_id, crystal=(40, 40), revision=good)
+    rom.flash[:len(merged)] = merged
+    connected(rom).install(path, "update")
+    assert rom.booted and [offset for _, offset in rom.begins] == [APP, OTADATA]
+
+
+def test_the_watchdogs_of_the_c3_and_s3_are_calmed_through_their_rtc_registers():
+    for chip_id, (config0, protect, swd, swd_protect) in ((5, (0x90, 0xA8, 0xAC, 0xB0)),
+                                                         (9, (0x98, 0xB0, 0xB4, 0xB8))):
+        rom = Rom(chip_id=chip_id, revision=(0, 4))
+        rom.regs[0x60008000 + config0] = 0xC0000000
+        board = connected(rom)
+        assert rom.regs[0x60008000 + config0] == 0 and rom.regs[0x60008000 + swd] & 1 << 31
+        assert rom.regs[0x60008000 + protect] == 0 and rom.regs[0x60008000 + swd_protect] == 0
+        force = 0x600080F4 if chip_id == 5 else 0x6000812C
+        rom.regs[force] = 1
+        board.hard_reset()
+        assert rom.regs[force] == 0 and rom.booted
 
 
 def test_early_samples_small_flash_and_locked_boards_are_refused():
     assert refusal(Rom(revision=(0, 1))) == \
         "This ESP32-C5 is an early sample (revision 0.1) and cannot run the node firmware."
     assert refusal(Rom(flash_mb=2)) == "This board has 2 MB of flash. A node needs 4 MB or more."
-    assert refusal(Rom(secure=True)) == flasher.LOCKED
+    assert refusal(Rom(secure=True)) == flasher.LOCKED % "ESP32-C5"
     board = connected(Rom(revision=(1, 2), flash_mb=8))
     assert board.revision == (1, 2) and board.flash_size == 8 << 20
 
@@ -209,7 +258,7 @@ def test_a_flash_chip_that_does_not_answer_is_said_so():
 
 def test_a_board_that_does_not_answer_asks_for_boot_to_be_held():
     rom = Rom(enters=())
-    assert refusal(rom) == "No ESP32-C5 answered. Hold BOOT, plug the board in again, and retry."
+    assert refusal(rom) == "No ESP32 answered. Hold BOOT, plug the board in again, and retry."
     assert not rom.commands
     assert connected(Rom(enters=(), held=True)).flash_size == 4 << 20
 
@@ -316,7 +365,13 @@ def test_failures_while_getting_ready_or_used_wrongly_are_plain_words(monkeypatc
 def test_the_bundled_node_firmware_matches_its_manifest():
     if not os.path.exists(flasher.MANIFEST):
         pytest.skip("no node firmware bundled")
-    manifest, piece = flasher.load()
-    for name in ("merged", "app"):
-        data, offset = piece(name)
-        assert offset == manifest[name]["offset"] and len(data) == manifest[name]["size"]
+    with open(flasher.MANIFEST, encoding="utf-8") as f:
+        chips = flasher.manifest_chips(json.load(f))
+    assert sorted(chips) == ["esp32c3", "esp32c5", "esp32c6", "esp32s3"]
+    for chip in chips:
+        manifest, piece = flasher.load(flasher.MANIFEST, chip)
+        assert manifest["bootloader_offset"] == (0x2000 if chip == "esp32c5" else 0)
+        for name in ("merged", "app"):
+            data, offset = piece(name)
+            assert offset == manifest[name]["offset"] and len(data) == manifest[name]["size"]
+        assert piece("merged")[0][manifest["app"]["offset"]:] == piece("app")[0]

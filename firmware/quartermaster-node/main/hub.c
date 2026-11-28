@@ -815,7 +815,7 @@ static void data(const radio_rx_t *r, uint32_t now)
     if (!p || wire_data_get(r->data, r->len, &d)) {
         return;
     }
-    uint8_t flags = (node.running ? WA_RUN : 0) | (d.flags & WD_POLL ? WA_POLL : 0);
+    uint8_t flags = (node.running ? WA_RUN : 0) | (d.flags & WD_POLL ? WA_POLL : 0) | (d.flags & WD_RELAY ? WA_RELAY : 0);
     if (p->state == PEER_LEAVING) {
         int n = wire_ack_put(frame, sizeof(frame), NULL, d.session, d.seq, flags | WA_BYE);
         radio_send(p->mac, frame, n);

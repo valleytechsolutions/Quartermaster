@@ -67,9 +67,10 @@ SECTIONS = [
          "changed."),
     ]),
     ("NODES", [
-        ("nodes", "Nodes", None, "ESP32-C5 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
+        ("nodes", "Nodes", None, "ESP32 boards that scan Wi-Fi beside your adapters, on USB or wireless. Add, "
          "name or update them here."),
-        ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5 board, or update a node."),
+        ("flash_node", "Flash a node", None, "Put the node firmware on an ESP32-C5, C3, C6 or S3 board, or update a "
+         "node."),
         ("biscuit_node", "Biscuit node", None, "Be a Pager 6 GHz node for a Biscuit or Biscuit Pro, with a 6 GHz "
          "USB adapter. Add it from a node search on the Biscuit."),
     ]),
@@ -151,11 +152,12 @@ MAX_IGNORED = 64
 MAX_WATCH, WATCH_LENGTH = 8, 32
 MAX_SKIP, SKIP_LENGTH = 32, 64
 MAX_NODES = 8
-MAX_WIRELESS = 8
+MAX_WIRELESS = 17
+MAX_TOTAL = 20
 NODE_NAME_MAX = 16
 _MAC = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
 _NODE_ID = re.compile(r"[0-9a-f]{12}")
-_LED = re.compile(r"none|(gpio|ws2812),([0-9]|10|2[3-8])(,[01])?")
+_LED = re.compile(r"none|(gpio|ws2812),([0-9]|[1-3][0-9]|4[0-8])(,[01])?")
 _KEY = re.compile(r"[0-9a-f]{32}")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _IFACE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
@@ -218,7 +220,7 @@ def node_entries(items):
         if isinstance(item.get("led"), str) and _LED.fullmatch(item["led"]):
             entry["led"] = item["led"]
         wireless = item.get("wireless") is True
-        if sum(1 for other in nodes if other.get("wireless", False) == wireless) >= \
+        if len(nodes) >= MAX_TOTAL or sum(1 for other in nodes if other.get("wireless", False) == wireless) >= \
                 (MAX_WIRELESS if wireless else MAX_NODES):
             continue
         if wireless:

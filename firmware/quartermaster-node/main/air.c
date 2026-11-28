@@ -66,7 +66,7 @@ static uint8_t answer;
 static wire_ack_t ack;
 
 static uint8_t parent[6], hops = 1;
-static bool via_relay, next_known;
+static bool via_relay, next_known, parent_relays;
 static uint32_t next_at, last_answer, last_hub_try;
 static int8_t hub_run = -1, parent_rssi;
 static kid_t kids[WIRE_KIDS];
@@ -251,6 +251,7 @@ static void acked(const wire_ack_t *a)
         return;
     }
     hub_run = (a->flags & WA_RUN) != 0;
+    parent_relays = (a->flags & WA_RELAY) != 0;
     if (via_relay) {
         next_known = a->next_ms != 0;
         next_at = now + a->next_ms;
@@ -268,7 +269,8 @@ static void acked(const wire_ack_t *a)
 
 static bool can_relay(uint32_t now)
 {
-    return paired && st.state == AIR_LINKED && hops < WIRE_HOPS && now - last_answer < WIRE_PARENT_QUIET_MS;
+    return paired && parent_relays && st.state == AIR_LINKED && hops < WIRE_HOPS &&
+           now - last_answer < WIRE_PARENT_QUIET_MS;
 }
 
 static void offer(void)

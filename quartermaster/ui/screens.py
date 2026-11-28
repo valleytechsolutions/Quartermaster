@@ -12,7 +12,7 @@ import time
 
 from .. import (__version__, accounts, adsb, config, flasher, hardware, lora, mesh, powerguard, qr, recon,
                 updates_check, uploads, wigle)
-from ..nodes import NEWER, NO_HUB, NOT_ON_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED
+from ..nodes import CHIP_NAMES, NEWER, NO_HUB, NOT_ON_HUB, NOT_PLUGGED, OLDER, PAIR_SECONDS, UNPLUGGED, chip_of
 from ..tracker import BLE, BT, WIFI
 from . import icons, splash
 from .gfx import (AMBER, BAND_COLOR, BG, CONTENT_BOTTOM, CONTENT_TOP, CYAN, FAINT, GOLD, GOLD_DIM, GOLD_INK, GREEN,
@@ -27,9 +27,19 @@ REPO = "github.com/valleytechsolutions/Quartermaster"
 THANKS = ("Thanks to justcallmekoko, Code_Hedge, Ekoms_Savior, Jesse Hale, ChrisDaCrunk, Vileer from "
           "Hacker\u00a0Gadgets, LocoSp, Awok and Talking Sasquach")
 BOARD_NAMES = {"stamp-c5": "Stamp-C5"}
+FOREIGN = {"jcmk": "C5 Wardriver", "jcmk6g": "C5 Wardriver", "piglet": "Piglet"}
 # The status light of each board, as #LED takes it, with the name in the list and the short name on the row.
 LIGHTS = (("gpio,27,1", "XIAO ESP32-C5", "XIAO"), ("ws2812,27", "ESP32-C5-DevKitC-1", "DevKitC"),
           ("gpio,28", "Stamp-C5", "Stamp-C5"), ("none", "No light", "None"))
+CHIP_LIGHTS = {
+    "c5": LIGHTS,
+    "c3": (("ws2812,8", "ESP32-C3-DevKitM-1", "DevKitM"), ("gpio,8,1", "ESP32-C3 Super Mini", "Mini"),
+           ("none", "No light", "None")),
+    "c6": (("gpio,15,1", "XIAO ESP32-C6", "XIAO"), ("ws2812,8", "ESP32-C6-DevKitC-1", "DevKitC"),
+           ("none", "No light", "None")),
+    "s3": (("gpio,21,1", "XIAO ESP32-S3", "XIAO"), ("ws2812,48", "ESP32-S3-DevKitC-1", "DevKitC"),
+           ("ws2812,38", "ESP32-S3-DevKitC-1 v1.1", "DevKitC 1.1"), ("none", "No light", "None")),
+}
 BOOT_HELP = ("XIAO: hold BOOT while you plug it in.", "Stamp-C5: hold G28 to GND while you plug it in.",
              "DevKit: hold BOOT and press RESET.")
 
@@ -145,14 +155,26 @@ def bundled_firmware():
         return ""
 
 
+def foreign(node):
+    """The name of the other wardriver firmware a wireless node runs, or ""."""
+    return FOREIGN.get(node.get("firmware") or "", "")
+
+
 def board_name(node):
-    return BOARD_NAMES.get(node.get("board") or "", "ESP32-C5")
+    board = node.get("board") or ""
+    return foreign(node) or BOARD_NAMES.get(board) or CHIP_NAMES[chip_of(board)]
+
+
+def lights_of(node):
+    return CHIP_LIGHTS[chip_of(node.get("board"))]
 
 
 def light_name(node):
+    if foreign(node):
+        return "Its own"
     if not node["led"]:
         return "Not set"
-    return next((short for value, _, short in LIGHTS if value == node["led"]), node["led"])
+    return next((short for value, _, short in lights_of(node) if value == node["led"]), node["led"])
 
 
 def default_name(node):
@@ -161,6 +183,8 @@ def default_name(node):
 
 def old_firmware(node):
     """True when the firmware that came with Quartermaster is newer than the node's."""
+    if foreign(node):
+        return False
     return node["error"] == OLDER or updates_check.newer(bundled_firmware(), node["firmware"] or "")
 
 
@@ -1647,7 +1671,7 @@ class Nodes(Screen, ListMixin):
         rows = self.rows(app)
         if not rows:
             empty_state(c, "chip", "No nodes yet",
-                        app.nodes.error or "Plug in an ESP32-C5 board that runs the node firmware. To put the "
+                        app.nodes.error or "Plug in an ESP32 board that runs the node firmware. To put the "
                         "firmware on a board, use Settings > Flash a node.")
             return
         self.clamp(len(rows), self.VISIBLE)
@@ -1672,7 +1696,7 @@ class Nodes(Screen, ListMixin):
             c.text_right(W - 14, y + 2, word, font("ui", 9), color)
         self.scrollbar(c, len(rows), self.VISIBLE, y1=TOP + self.VISIBLE * 17 - 2)
         note, color = (app.nodes.error, AMBER) if app.nodes.error else hub_note(app) or \
-            ("Up to %d nodes. Each one scans its share of the channels." % config.MAX_NODES, FAINT)
+            ("Up to %d nodes. Each one scans its share of the channels." % config.MAX_TOTAL, FAINT)
         c.text((10, CONTENT_BOTTOM - 13), note, font("ui", 8), color, width=W - 20)
 
     def handle(self, key, app):
@@ -1731,8 +1755,9 @@ class NodeDetail(Screen, ListMixin):
         actions = [("name", "Name", node["name"])]
         if not node["hub"]:
             actions.append(("ble", "Bluetooth", "On" if node["ble"] else "Off"))
-        actions.append(("light", "Light", light_name(node)))
-        actions.append(("identify", "Identify", "Blink its light"))
+        if not foreign(node):
+            actions.append(("light", "Light", light_name(node)))
+            actions.append(("identify", "Identify", "Blink its light"))
         if not node["wireless"] and (node["hub"] or "espnow" in node["capabilities"]):
             actions.append(("hub", "Hub for wireless nodes", "On" if node["hub"] else "Off"))
         if old_firmware(node) and not air:
@@ -1755,7 +1780,8 @@ class NodeDetail(Screen, ListMixin):
         c.text_right(W - 10, y0 + 3, word, font("ui", 9), color)
         air = node["wireless"] and not node["port"]
         if node["firmware"]:
-            kind = "wireless" if air else "hub" if node["hub"] else \
+            kind = ("wireless via %s" % node["via"][-4:].upper() if node.get("via") else "wireless") if air else \
+                "hub" if node["hub"] else \
                 "chip %s  %d MB flash" % (node["chip"], node["flash_mb"] or 0)
             facts = "%s  firmware %s  %s" % (board_name(node), node["firmware"], kind)
         else:
@@ -1826,7 +1852,7 @@ class NodeDetail(Screen, ListMixin):
                                hint="Up to %d letters." % config.NODE_NAME_MAX, limit=config.NODE_NAME_MAX))
         elif action == "light":
             current = node["led"] or ("gpio,28" if node["board"] == "stamp-c5" else None)
-            app.push(Picker("Its light", [(value, label, "") for value, label, _ in LIGHTS], current,
+            app.push(Picker("Its light", [(value, label, "") for value, label, _ in lights_of(node)], current,
                             lambda value: self.set_light(app, node_id, value)))
         elif action == "identify":
             if not node["led"] or node["led"] == "none":
@@ -2002,7 +2028,7 @@ def flash_targets(app):
         if hardware.port_mark(port["real"]) in ("gps", "node") or port["real"] == gps:
             continue
         targets.append({"node": None, "path": port["path"], "native": port["native"],
-                        "title": "%s on %s" % ("ESP32-C5" if port["native"] else "USB serial", port["name"]),
+                        "title": "%s on %s" % ("ESP32" if port["native"] else "USB serial", port["name"]),
                         "detail": "No node firmware", "mode": "first", "configured": False})
     return targets
 
@@ -2034,7 +2060,7 @@ class FlashTargets(Screen, ListMixin):
         if not targets:
             icons.draw(c, "chip", W // 2 - 12, TOP + 2, 24, LINE)
             c.text_center(W // 2, TOP + 30, "No board found", font("bold", 12), TEXT)
-            c.text_center(W // 2, TOP + 47, "Plug in an ESP32-C5 board. If it does not show up:", font("ui", 9), MUTED)
+            c.text_center(W // 2, TOP + 47, "Plug in an ESP32 board. If it does not show up:", font("ui", 9), MUTED)
             boot_help(c, TOP + 65, FAINT)
             return
         self.clamp(len(targets), self.VISIBLE)
@@ -2065,8 +2091,9 @@ class FlashTargets(Screen, ListMixin):
 class Flashing(Screen):
     title = "FLASHING"
     refresh = 0.25
-    PERMANENT = (flasher.NOT_C5, flasher.TOO_BIG, flasher.LOCKED, flasher.DAMAGED, flasher.NO_SERIAL)
-    PERMANENT_STARTS = tuple(words.split("%")[0] for words in (flasher.EARLY, flasher.NEWER, flasher.SMALL))
+    PERMANENT = (flasher.NOT_C5, flasher.TOO_BIG, flasher.DAMAGED, flasher.NO_SERIAL)
+    PERMANENT_LIKE = tuple(re.compile(re.escape(words).replace("%s", ".+").replace("%d", "[0-9]+"))
+                           for words in (flasher.LOCKED, flasher.EARLY, flasher.NEWER, flasher.SMALL, flasher.NO_BUILD))
 
     def __init__(self, job):
         self.job = job
@@ -2074,7 +2101,7 @@ class Flashing(Screen):
     def permanent(self):
         """A failure that trying again on the same board cannot mend."""
         error = self.job.error or ""
-        return error in self.PERMANENT or error.startswith(self.PERMANENT_STARTS)
+        return error in self.PERMANENT or any(words.fullmatch(error) for words in self.PERMANENT_LIKE)
 
     def hints(self, app):
         if self.job.state == "failed" and self.job.error == flasher.LAYOUT and self.job.mode != "first":

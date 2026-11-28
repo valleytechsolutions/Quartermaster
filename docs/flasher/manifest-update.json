@@ -1,6 +1,6 @@
 {
   "name": "Quartermaster Node",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "new_install_prompt_erase": false,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -8,7 +8,46 @@
       "chipFamily": "ESP32-C5",
       "parts": [
         {
-          "path": "quartermaster-node-1.1.0-app.bin",
+          "path": "quartermaster-node-1.2.0-esp32c5-app.bin",
+          "offset": 131072
+        },
+        {
+          "path": "otadata-blank.bin",
+          "offset": 61440
+        }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-C3",
+      "parts": [
+        {
+          "path": "quartermaster-node-1.2.0-esp32c3-app.bin",
+          "offset": 131072
+        },
+        {
+          "path": "otadata-blank.bin",
+          "offset": 61440
+        }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "quartermaster-node-1.2.0-esp32c6-app.bin",
+          "offset": 131072
+        },
+        {
+          "path": "otadata-blank.bin",
+          "offset": 61440
+        }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "quartermaster-node-1.2.0-esp32s3-app.bin",
           "offset": 131072
         },
         {
